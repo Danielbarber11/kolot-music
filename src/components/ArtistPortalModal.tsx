@@ -87,13 +87,13 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     } catch {}
     return {
       id: 'artist_' + Date.now(),
-      name: 'פרופיל אמן',
+      name: '',
       genre: 'Pop',
-      isConnected: true,
+      isConnected: false,
       isPrivate: true,
       tracksCount: 0,
       joinedDate: new Date().getFullYear().toString(),
-      providerPlatform: 'חשבון אמן אישי',
+      providerPlatform: 'חשבון אמן',
     };
   });
 
@@ -358,7 +358,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
             const autoPrivateArtist: ArtistProfile = {
               id: user.uid,
               name: user.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-              bio: isHe ? 'פרופיל אמן במצב הממתין להעלאת שירים' : 'Artist profile awaiting track upload',
+              bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
               avatarUrl: user.photoURL || undefined,
               joinedDate: new Date().getFullYear().toString(),
               googleUid: user.uid,
@@ -407,7 +407,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
           const autoPrivateArtist: ArtistProfile = {
             id: user.uid,
             name: user.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-            bio: isHe ? 'פרופיל אמן במצב הממתין להעלאת שירים' : 'Artist profile awaiting track upload',
+            bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
             avatarUrl: user.photoURL || undefined,
             joinedDate: new Date().getFullYear().toString(),
             googleUid: user.uid,
@@ -439,6 +439,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     await logoutUser();
     setCurrentUser(null);
     localStorage.removeItem('wikiarchive_artist_account');
+    localStorage.removeItem('wikiarchive_cached_auth_user');
+    localStorage.removeItem('kolot_terms_accepted');
   };
 
   const processAudioFile = (file: File) => {
@@ -961,7 +963,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
                 <div className="space-y-1 text-center sm:text-right flex-1 min-w-0 pb-1">
                   <h1 className="text-xl sm:text-3xl font-normal text-white tracking-tight drop-shadow truncate">
-                    {currentArtist.name || currentUser?.displayName || 'פרופיל אמן'}
+                    {currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist')}
                   </h1>
 
                   {/* Profile subtitle: number of songs • number of albums */}
@@ -2292,7 +2294,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                       </div>
                     </div>
                     <div className="space-y-1 text-center sm:text-right">
-                      <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל אמן' : 'Artist Profile Photo'}</h4>
+                      <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
                       <p className="text-[10px] text-neutral-400">{isHe ? 'תמונה זו תוצג בעמוד האמן שלך ובחיפושים.' : 'This photo will be shown on your profile and search results.'}</p>
                       <p className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר ב-GitHub Storage' : 'Stored on GitHub'}</p>
                     </div>

@@ -27,6 +27,9 @@ import {
   fetchLiveAudioFromArchive,
   deduplicateTracks,
   searchModern21stCenturyTracks,
+  fetchAllArtistProfiles,
+  checkTermsAcceptedInFirestore,
+  saveTermsAcceptedToFirestore,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt } from './TrackCoverArt';
@@ -167,28 +170,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
           );
         } catch {}
 
-        const localTermsAccepted = localStorage.getItem('kolot_terms_accepted') === 'true';
-        if (localTermsAccepted) {
+        // Check terms in Firestore (one-time source of truth)
+        const hasAccepted = await checkTermsAcceptedInFirestore(user.uid);
+        if (hasAccepted) {
+          localStorage.setItem('kolot_terms_accepted', 'true');
           setShowTermsModal(false);
-          try {
-            const profile = await getArtistAccountByGoogleUid(user.uid);
-            if (profile) setActiveArtistProfile(profile);
-          } catch {}
-          return;
+        } else {
+          setShowTermsModal(true);
         }
 
-        try {
-          const profile = await getArtistAccountByGoogleUid(user.uid);
-          if (profile) {
-            setActiveArtistProfile(profile);
-            if (!profile.hasAcceptedTerms) {
-              setShowTermsModal(true);
-            }
-          } else {
-            setShowTermsModal(true);
-          }
-        } catch {
-          setShowTermsModal(true);
+        // Always try to load profile from GitHub first (source of truth)
+        const profiles = await fetchAllArtistProfiles();
+        const myProfile = profiles.find(p => p.id === user.uid || p.googleUid === user.uid);
+        if (myProfile) {
+          setActiveArtistProfile(myProfile);
+          localStorage.setItem('wikiarchive_artist_account', JSON.stringify(myProfile));
         }
       } else {
         localStorage.removeItem('wikiarchive_cached_auth_user');
@@ -199,10 +195,18 @@ export const SongsView: React.FC<SongsViewProps> = ({
   }, []);
 
   const handleAcceptTerms = async () => {
+    if (!authUser) return;
     setShowTermsModal(false);
     localStorage.setItem('kolot_cookie_consent_accepted', 'true');
     localStorage.setItem('kolot_terms_accepted', 'true');
-    if (authUser) {
+    
+    // Save to Firestore so it's a one-time thing
+    await saveTermsAcceptedToFirestore(authUser.uid, authUser.displayName || 'User');
+    
+    // Create bare profile if not exists
+    const profiles = await fetchAllArtistProfiles();
+    const existing = profiles.find(p => p.id === authUser.uid || p.googleUid === authUser.uid);
+    if (!existing) {
       const updated: ArtistProfile = {
         id: authUser.uid,
         name: authUser.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
@@ -213,11 +217,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
         hasAcceptedTerms: true,
         acceptedTermsAt: new Date().toISOString(),
         isPrivate: true,
-        tracksCount: activeArtistProfile?.tracksCount || 0,
+        tracksCount: 0,
         providerPlatform: 'חשבון גוגל',
       };
       setActiveArtistProfile(updated);
-      await saveArtistAccountToFirebase(updated);
+      localStorage.setItem('wikiarchive_artist_account', JSON.stringify(updated));
     }
   };
 
@@ -619,7 +623,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
               <button
                 onClick={handleProfileClick}
                 className="w-9 h-9 sm:w-9.5 sm:h-9.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
-                title={authUser.displayName || (isHe ? 'פרופיל אמן' : 'Profile')}
+                title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
               >
                 {authUser.photoURL || activeArtistProfile?.avatarUrl ? (
                   <img
@@ -681,7 +685,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           <button
             onClick={handleProfileClick}
             className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
-            title={authUser.displayName || (isHe ? 'פרופיל אמן' : 'Profile')}
+            title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
           >
             {authUser.photoURL || activeArtistProfile?.avatarUrl ? (
               <img

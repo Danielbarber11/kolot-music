@@ -610,6 +610,17 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
   return true;
 }
 
+async function updateMasterProfilesIndexOnGitHub(repoFullName: string, profiles: any[], token: string): Promise<void> {
+  if (!token) return;
+  try {
+    const indexPath = `profiles_index.json`;
+    const indexBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(profiles, null, 2))));
+    await commitFileToGitHub(repoFullName, indexPath, indexBase64, `Update profiles_index.json (${profiles.length} profiles)`, token);
+  } catch (e) {
+    console.warn('Failed to update profiles_index.json:', e);
+  }
+}
+
 /**
  * Save Artist Profile metadata and avatar to GitHub
  */
@@ -652,6 +663,13 @@ export async function uploadArtistProfileToGitHub(
     commitFileToGitHub(backupRepo, profilePath, profileBase64, metaMsg, token),
   ]);
 
+  // Refresh index
+  fetchArtistProfilesFromGitHub().then((updatedProfiles) => {
+    if (token) {
+      updateMasterProfilesIndexOnGitHub(repo, updatedProfiles, token).catch(() => {});
+    }
+  }).catch(() => {});
+
   return { success: true, avatarUrl: finalAvatarUrl };
 }
 
@@ -663,6 +681,28 @@ export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
   const repo = normalizeRepoFullName(config.repoName);
   const token = config.token || DEFAULT_TOKEN;
 
+  // 1. Try fetching master index via CDN
+  try {
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/profiles_index.json?t=${Date.now()}`;
+    const rawUrl = `https://raw.githubusercontent.com/${repo}/main/profiles_index.json?t=${Date.now()}`;
+    
+    let res = await fetch(cdnUrl).catch(() => null);
+    if (!res || !res.ok) {
+      res = await fetch(rawUrl).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        return data.map(p => ({
+          ...p,
+          avatarUrl: getStreamingMediaUrl(p.avatarUrl),
+        }));
+      }
+    }
+  } catch {}
+
+  // 2. Fallback: Query API and fetch in parallel
   try {
     const listRes = await fetch(`https://api.github.com/repos/${repo}/contents/profiles`, {
       headers: getGitHubHeaders(token),
@@ -697,6 +737,11 @@ export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
         profiles.push(r.value);
       }
     });
+
+    if (profiles.length > 0 && token) {
+      updateMasterProfilesIndexOnGitHub(repo, profiles, token).catch(() => {});
+    }
+
     return profiles;
   } catch (err) {
     console.warn('Failed to fetch artist profiles from GitHub:', err);

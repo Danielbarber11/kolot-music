@@ -1,5 +1,5 @@
 import { JamendoTrack } from '../types';
-import { getArtistTracksFromFirebase, deleteArtistTrackFromFirebase, getArtistAccountsFromFirebase } from './firebaseService';
+import { getArtistTracksFromFirebase, deleteArtistTrackFromFirebase, getArtistAccountsFromFirebase, saveArtistAccountToFirebase } from './firebaseService';
 import { loadTracksFromIndexedDB } from './localTrackStorage';
 import { 
   fetchTracksFromGitHubRepo, 
@@ -243,7 +243,6 @@ export function getSavedRepoTracks(): JamendoTrack[] {
   }
   return [];
 }
-
 /**
  * Instant song pool returns cached cloud tracks + repo tracks + verified default tracks for 0ms initial load
  */
@@ -254,10 +253,67 @@ export function getInstantSongPool(): JamendoTrack[] {
   return deduplicateTracks(combined);
 }
 
+const CLOUD_PROFILES_CACHE_KEY = 'kolot_cloud_profiles_cache';
+
+export async function fetchAllArtistProfiles(): Promise<any[]> {
+  try {
+    const ghProfiles = await fetchArtistProfilesFromGitHub();
+    if (Array.isArray(ghProfiles)) {
+      // Force local cache to strictly match GitHub
+      localStorage.setItem(CLOUD_PROFILES_CACHE_KEY, JSON.stringify(ghProfiles));
+      return ghProfiles;
+    }
+  } catch (err) {
+    console.warn('GitHub profiles fetch error:', err);
+  }
+  
+  try {
+    const cached = localStorage.getItem(CLOUD_PROFILES_CACHE_KEY);
+    if (cached) return JSON.parse(cached);
+  } catch {}
+  
+  return [];
+}
+
+/**
+ * Tracks if user has accepted terms in Firestore to ensure one-time requirement
+ */
+export async function checkTermsAcceptedInFirestore(uid: string): Promise<boolean> {
+  try {
+    const fbAccounts = await getArtistAccountsFromFirebase();
+    const account = fbAccounts.find(a => a.id === uid || a.googleUid === uid);
+    return !!account?.hasAcceptedTerms;
+  } catch {
+    return false;
+  }
+}
+
+export async function saveTermsAcceptedToFirestore(uid: string, name: string): Promise<void> {
+  try {
+    await saveArtistAccountToFirebase({
+      id: uid,
+      name: name,
+      isConnected: true,
+      hasAcceptedTerms: true,
+      acceptedTermsAt: new Date().toISOString(),
+      isPrivate: true,
+      tracksCount: 0,
+      joinedDate: new Date().getFullYear().toString(),
+      providerPlatform: 'Google Auth',
+    } as any);
+  } catch (err) {
+    console.warn('Failed to save terms acceptance to Firestore:', err);
+  }
+}
+
 /**
  * Migrates data from Firebase to GitHub if any is found.
  */
 export async function migrateFirebaseToGitHub(): Promise<void> {
+  // Only run migration once per session to save bandwidth
+  if ((window as any)._kolot_migration_run) return;
+  (window as any)._kolot_migration_run = true;
+
   console.info('Checking for data to migrate from Firebase to GitHub...');
   
   try {
@@ -266,7 +322,6 @@ export async function migrateFirebaseToGitHub(): Promise<void> {
     if (fbTracks.length > 0) {
       console.info(`Found ${fbTracks.length} tracks in Firebase. Migrating...`);
       for (const track of fbTracks) {
-        // Fetch audio and cover as blobs if they exist
         const audioBlob = track.audioUrl ? await urlToBlob(track.audioUrl) : null;
         const coverBlob = track.coverUrl ? await urlToBlob(track.coverUrl) : null;
         
@@ -281,14 +336,14 @@ export async function migrateFirebaseToGitHub(): Promise<void> {
     // 2. Migrate Artist Profiles
     const fbAccounts = await getArtistAccountsFromFirebase();
     if (fbAccounts.length > 0) {
-      console.info(`Found ${fbAccounts.length} artist accounts in Firebase. Migrating...`);
       for (const artist of fbAccounts) {
+        // Skip migration if it's a bare auth record
+        if (!artist.avatarUrl && !artist.bio && artist.tracksCount === 0) continue;
+        
         const avatarBlob = artist.avatarUrl ? await urlToBlob(artist.avatarUrl) : null;
         await uploadArtistProfileToGitHub(artist, avatarBlob || undefined);
       }
     }
-    
-    console.info('Migration process finished.');
   } catch (err) {
     console.warn('Migration failed:', err);
   }
@@ -313,44 +368,36 @@ export async function fetchAllRealSongs(
     console.warn('GitHub tracks fetch warning:', e);
   }
 
-  // Auto-purge stale local tracks that no longer exist in GitHub repo and mark as deleted permanently
-  try {
-    const activeGitHubIds = new Set(ghTracks.map((t) => t.id));
-    const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
-    if (savedLocal) {
-      const parsed: JamendoTrack[] = JSON.parse(savedLocal);
-      if (Array.isArray(parsed)) {
-        parsed.forEach((t) => {
-          if (t.id?.startsWith('artist_track_') && !activeGitHubIds.has(t.id)) {
-            markSongAsDeleted(t.id, t.name, t.artistName);
+  // Force local cache to strictly match GitHub (GitHub is absolute source of truth)
+  if (ghTracks.length > 0) {
+    try {
+      const activeGitHubIds = new Set(ghTracks.map((t) => t.id));
+      
+      // 1. Purge kolot_uploaded_tracks (files intended for upload)
+      const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
+      if (savedLocal) {
+        const parsed: JamendoTrack[] = JSON.parse(savedLocal);
+        if (Array.isArray(parsed)) {
+          // If a track is an "artist_track" (local-only type) but not in GitHub anymore, delete it.
+          const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
+          if (cleaned.length !== parsed.length) {
+            localStorage.setItem('kolot_uploaded_tracks', JSON.stringify(cleaned));
           }
-        });
-        const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
-        localStorage.setItem('kolot_uploaded_tracks', JSON.stringify(cleaned));
+        }
       }
+      
+      // 2. Refresh the high-speed cloud cache
+      saveCachedCloudTracks(ghTracks);
+    } catch (err) {
+      console.warn('Stale track sync notice:', err);
     }
-    const savedCloud = localStorage.getItem(CLOUD_TRACKS_CACHE_KEY);
-    if (savedCloud) {
-      const parsed: JamendoTrack[] = JSON.parse(savedCloud);
-      if (Array.isArray(parsed)) {
-        parsed.forEach((t) => {
-          if (t.id?.startsWith('artist_track_') && !activeGitHubIds.has(t.id)) {
-            markSongAsDeleted(t.id, t.name, t.artistName);
-          }
-        });
-        const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
-        localStorage.setItem(CLOUD_TRACKS_CACHE_KEY, JSON.stringify(cleaned));
-      }
-    }
-  } catch (err) {
-    console.warn('Stale track sync notice:', err);
+  } else if (instantPool.some(t => t.id.startsWith('artist_track_'))) {
+    // If GitHub returns empty but we have local tracks, they might have been deleted from GitHub
+    // We should be careful here, but if the user wants strict GitHub source of truth:
+    // localStorage.removeItem('kolot_uploaded_tracks');
   }
 
-  // Merge with priority: GitHub -> Instant Pool
-  const combined = deduplicateTracks([...ghTracks, ...instantPool]);
-
-  saveCachedCloudTracks(combined);
-
+  const combined = deduplicateTracks([...ghTracks, ...VERIFIED_REAL_TRACKS]);
   if (onProgress) onProgress(combined.length);
   if (onBatch) onBatch(combined);
 
