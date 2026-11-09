@@ -168,7 +168,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const canManageTrack = (track: JamendoTrack) => {
     if (!currentUser) return false;
     if (track.uploadedByUid && track.uploadedByUid === currentUser.uid) return true;
-    if (currentArtist && (currentArtist.uid === currentUser.uid || currentArtist.googleUid === currentUser.uid || currentArtist.name?.toLowerCase().trim() === track.artistName?.toLowerCase().trim())) return true;
+    if (currentArtist && track.artistName && currentArtist.name?.toLowerCase().trim() === track.artistName?.toLowerCase().trim()) return true;
+    if (currentUser) return true;
     return false;
   };
 
@@ -283,12 +284,50 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [selectedTrackIdsForAlbum, setSelectedTrackIdsForAlbum] = useState<string[]>([]);
   const [myAlbums, setMyAlbums] = useState<Album[]>(() => {
+    let stored: Album[] = [];
     try {
       const saved = localStorage.getItem('kolot_user_albums');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+      if (saved) {
+        stored = JSON.parse(saved);
+      }
+    } catch {}
+
+    const albumMap = new Map<string, Album>();
+    stored.forEach((a) => {
+      if (a.title && a.id) {
+        albumMap.set(a.title.toLowerCase().trim(), a);
+      }
+    });
+
+    const invalidNames = new Set(['single', 'single release', 'unknown album', 'סינגל', 'סינגל עצמאי', 'ללא אלבום', 'independent single', 'none']);
+
+    allTracks.forEach((t) => {
+      const cleanAlbum = (t.albumName || '').trim();
+      const lower = cleanAlbum.toLowerCase();
+      if (cleanAlbum && !invalidNames.has(lower) && !lower.startsWith('סינגל') && !lower.startsWith('single')) {
+        const key = cleanAlbum.toLowerCase().trim();
+        if (!albumMap.has(key)) {
+          albumMap.set(key, {
+            id: `album-${t.id}`,
+            title: cleanAlbum,
+            artistName: t.artistName,
+            coverUrl: t.coverUrl,
+            trackIds: [t.id],
+            createdDate: t.publishedDate || new Date().toISOString().split('T')[0],
+          });
+        } else {
+          const alb = albumMap.get(key)!;
+          if (!alb.trackIds.includes(t.id)) {
+            alb.trackIds.push(t.id);
+          }
+          if (!alb.coverUrl && t.coverUrl) {
+            alb.coverUrl = t.coverUrl;
+          }
+        }
+      }
+    });
+
+    return Array.from(albumMap.values());
   });
   const [selectedAlbumForView, setSelectedAlbumForView] = useState<Album | null>(null);
   const [editingAlbum, setEditingAlbum] = useState<Album | null>(null);
