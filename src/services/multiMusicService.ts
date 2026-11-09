@@ -33,7 +33,13 @@ export function getCachedCloudTracks(): JamendoTrack[] {
     if (saved) {
       const parsed: JamendoTrack[] = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        const deletedSet = getDeletedSongIds();
+        return parsed.filter((t) => {
+          if (!t || !t.id || !t.name) return false;
+          const normArtist = (t.artistName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+          const normName = (t.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+          return !deletedSet.has(t.id) && !deletedSet.has(`del_${normArtist}::${normName}`);
+        });
       }
     }
   } catch (e) {
@@ -182,7 +188,13 @@ export function getSavedRepoTracks(): JamendoTrack[] {
     if (savedLocal) {
       const parsed: JamendoTrack[] = JSON.parse(savedLocal);
       if (Array.isArray(parsed)) {
-        return parsed;
+        const deletedSet = getDeletedSongIds();
+        return parsed.filter((t) => {
+          if (!t || !t.id || !t.name) return false;
+          const normArtist = (t.artistName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+          const normName = (t.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+          return !deletedSet.has(t.id) && !deletedSet.has(`del_${normArtist}::${normName}`);
+        });
       }
     }
   } catch (e) {
