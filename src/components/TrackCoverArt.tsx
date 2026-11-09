@@ -24,21 +24,11 @@ const GENRE_GRADIENTS: Record<string, string> = {
   Cinematic: 'from-violet-700 via-purple-800 to-slate-950',
 };
 
-// Check if URL is an authentic uploaded image vs. generic stock/placeholder
+// Check if URL is a valid non-empty cover image URL
 export const isAuthenticCover = (url?: string): boolean => {
   if (!url || typeof url !== 'string') return false;
   const trimmed = url.trim();
-  if (!trimmed) return false;
-  if (
-    trimmed.includes('images.unsplash.com') ||
-    trimmed.includes('unsplash.com') ||
-    trimmed.includes('placeholder') ||
-    trimmed.includes('dummyimage') ||
-    trimmed.includes('picsum.photos')
-  ) {
-    return false;
-  }
-  return true;
+  return trimmed.length > 0;
 };
 
 export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
