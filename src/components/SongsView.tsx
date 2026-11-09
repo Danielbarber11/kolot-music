@@ -239,39 +239,30 @@ export const SongsView: React.FC<SongsViewProps> = ({
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
 
-  // Mount effect
+  // Mount effect - Instant 0-lag load
   useEffect(() => {
-    testFirestoreConnection();
-    getArtistTracksFromFirebase().then((fbTracks) => {
-      if (fbTracks && fbTracks.length > 0) {
-        setAllTracks((prev) => deduplicateTracks([...fbTracks, ...prev]));
+    // 1. Instantly populate from local cache & storage (0ms delay)
+    const instant = getInstantSongPool();
+    if (instant.length > 0) {
+      setAllTracks(instant);
+    }
+
+    // 2. Fetch remote updates in parallel asynchronously
+    Promise.allSettled([
+      getArtistTracksFromFirebase(),
+      getArtistAccountsFromFirebase(),
+      fetchAllRealSongs(),
+    ]).then(([fbTracksRes, fbAccountsRes, allSongsRes]) => {
+      if (fbTracksRes.status === 'fulfilled' && fbTracksRes.value?.length) {
+        setAllTracks((prev) => deduplicateTracks([...fbTracksRes.value, ...prev]));
+      }
+      if (fbAccountsRes.status === 'fulfilled' && fbAccountsRes.value?.length) {
+        setAllArtists(fbAccountsRes.value.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+      }
+      if (allSongsRes.status === 'fulfilled' && allSongsRes.value?.length) {
+        setAllTracks((prev) => deduplicateTracks([...allSongsRes.value, ...prev]));
       }
     });
-
-    getArtistAccountsFromFirebase().then((accounts) => {
-      if (accounts) {
-        setAllArtists(accounts.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
-      }
-    });
-
-    fetchAllRealSongs(undefined, (updatedBatch) => {
-      setAllTracks((prev) => deduplicateTracks(updatedBatch));
-    });
-
-    const streamAdditionalBatches = async () => {
-      for (let p = 6; p <= 12; p++) {
-        try {
-          const more = await fetchLiveAudioFromArchive('', p);
-          if (more.length > 0) {
-            setAllTracks((prev) => deduplicateTracks([...prev, ...more]));
-          }
-        } catch (e) {
-          console.warn('Background stream batch failed:', e);
-        }
-      }
-    };
-
-    streamAdditionalBatches();
   }, []);
 
   const openSongPlayer = (track: JamendoTrack) => {
