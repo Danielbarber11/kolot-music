@@ -42,6 +42,10 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
 }) => {
   const [hasError, setHasError] = useState(false);
 
+  React.useEffect(() => {
+    setHasError(false);
+  }, [coverUrl]);
+
   const effectiveUrl = getStreamingMediaUrl(coverUrl);
   const isValidUrl = isAuthenticCover(effectiveUrl);
   const gradient = GENRE_GRADIENTS[genre] || GENRE_GRADIENTS['Pop'];

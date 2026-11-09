@@ -262,7 +262,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     }
 
     // Mark permanently deleted across the whole app
-    markSongAsDeleted(trackId);
+    markSongAsDeleted(trackId, track.name, track.artistName);
     setConfirmDeleteId(null);
     setDeletedTrackIds((prev) => [...prev, trackId]);
 

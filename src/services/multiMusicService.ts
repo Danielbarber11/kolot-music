@@ -100,13 +100,14 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
   const normalize = (str?: string) => (str || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
   for (const t of tracks) {
-    if (!t || !t.name || !t.name.trim()) continue;
-    if (t.id && deletedSet.has(t.id)) continue;
-    if (!t.audioUrl || typeof t.audioUrl !== 'string' || !t.audioUrl.trim()) continue;
-
     const normArtist = normalize(t.artistName || 'אמן לא ידוע');
     const normName = normalize(t.name);
     const titleArtistKey = `${normArtist}::${normName}`;
+
+    if (t.id && deletedSet.has(t.id)) continue;
+    if (deletedSet.has(`del_${titleArtistKey}`)) continue;
+    if (!t.audioUrl || typeof t.audioUrl !== 'string' || !t.audioUrl.trim()) continue;
+
     const rawIdKey = t.id ? t.id.trim() : titleArtistKey;
 
     // Find if track already exists by ID or by Title+Artist combination
