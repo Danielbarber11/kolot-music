@@ -165,6 +165,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
             })
           );
         } catch {}
+
+        const localTermsAccepted = localStorage.getItem('kolot_terms_accepted') === 'true';
+        if (localTermsAccepted) {
+          setShowTermsModal(false);
+          try {
+            const profile = await getArtistAccountByGoogleUid(user.uid);
+            if (profile) setActiveArtistProfile(profile);
+          } catch {}
+          return;
+        }
+
         try {
           const profile = await getArtistAccountByGoogleUid(user.uid);
           if (profile) {

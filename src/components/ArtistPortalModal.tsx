@@ -785,7 +785,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   });
 
   const sampleTrack = myUploadedTracks[0] || allTracks[0];
-  const activeAvatar = currentArtist.avatarUrl || currentUser?.photoURL || sampleTrack?.coverUrl;
+  const activeAvatar = currentArtist.avatarUrl || currentUser?.photoURL || undefined;
   const extractedArtistColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
   const themeColor = extractedArtistColor || (sampleTrack ? getTrackInstantColor(sampleTrack) : { r: 99, g: 102, b: 241 });
 

@@ -160,6 +160,20 @@ export function saveGitHubStorageConfig(config: GitHubRepoStorageConfig): void {
   localStorage.setItem('kolot_github_storage_config', JSON.stringify(cleanConfig));
 }
 
+function getGitHubHeaders(token?: string, includeContentType: boolean = false): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.v3+json',
+  };
+  if (includeContentType) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const cleanToken = (token || '').trim();
+  if (cleanToken && cleanToken !== 'undefined' && cleanToken !== 'null' && cleanToken !== '') {
+    headers['Authorization'] = `token ${cleanToken}`;
+  }
+  return headers;
+}
+
 /**
  * Test connectivity with GitHub repositories
  */
@@ -170,7 +184,7 @@ export async function testGitHubConnection(
   const fullRepo = normalizeRepoFullName(repoName);
   try {
     const res = await fetch(`https://api.github.com/repos/${fullRepo}`, {
-      headers: token ? { Authorization: `token ${token}` } : {},
+      headers: getGitHubHeaders(token),
     });
 
     if (res.ok) {
@@ -272,10 +286,7 @@ async function commitFileToGitHub(
     let sha: string | undefined;
     try {
       const checkRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
-        headers: {
-          Authorization: `token ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
+        headers: getGitHubHeaders(token),
       });
       if (checkRes.ok) {
         const existingData = await checkRes.json();
@@ -285,11 +296,7 @@ async function commitFileToGitHub(
 
     const putRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
       method: 'PUT',
-      headers: {
-        Authorization: `token ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/vnd.github.v3+json',
-      },
+      headers: getGitHubHeaders(token, true),
       body: JSON.stringify({
         message: commitMessage,
         content: base64Content,
@@ -423,10 +430,7 @@ export async function uploadTrackToGitHubRepo(
 async function fetchTracksFromSingleRepo(repoFullName: string, token: string): Promise<JamendoTrack[]> {
   try {
     const listRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/tracks`, {
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: 'application/vnd.github.v3+json',
-      },
+      headers: getGitHubHeaders(token),
     });
 
     if (!listRes.ok) return [];
@@ -495,10 +499,7 @@ async function deleteFileFromGitHub(
 ): Promise<boolean> {
   try {
     const checkRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: 'application/vnd.github.v3+json',
-      },
+      headers: getGitHubHeaders(token),
     });
     if (!checkRes.ok) return false;
     const existingData = await checkRes.json();
@@ -507,11 +508,7 @@ async function deleteFileFromGitHub(
 
     const delRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
       method: 'DELETE',
-      headers: {
-        Authorization: `token ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/vnd.github.v3+json',
-      },
+      headers: getGitHubHeaders(token, true),
       body: JSON.stringify({
         message: commitMessage,
         sha,
