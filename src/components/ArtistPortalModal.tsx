@@ -726,8 +726,12 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       globalTrackColorCache.set(newTrack.coverUrl, computedColor);
     }
 
+    // Capture file references BEFORE resetting form state
+    const currentAudioFile = rawAudioFile;
+    const currentCoverFile = rawCoverFile;
+
     // 1. Save track to local storage & broadcast to UI immediately (0-lag UX)
-    await persistTrackToStorage(newTrack, rawAudioFile || undefined);
+    await persistTrackToStorage(newTrack, currentAudioFile || undefined);
     onTrackPublished(newTrack);
 
     setIsPublishing(false);
@@ -754,9 +758,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     }, 1000);
 
     // 2. Background sync to GitHub repositories & Firebase Firestore
-    const currentAudioFile = rawAudioFile;
-    const currentCoverFile = rawCoverFile;
-
     Promise.allSettled([
       uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined).then((ghRes) => {
         if (ghRes.success) {
@@ -780,6 +781,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     ]).catch((err) => {
       console.warn('Background cloud sync notice:', err);
     });
+
   };
 
   const myUploadedTracks = allTracks.filter((t) => {

@@ -441,7 +441,45 @@ export async function uploadTrackToGitHubRepo(
   };
 }
 
+async function updateMasterTracksIndexOnGitHub(repoFullName: string, tracks: JamendoTrack[], token: string): Promise<void> {
+  if (!token) return;
+  try {
+    const indexPath = `tracks_index.json`;
+    const indexBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(tracks, null, 2))));
+    await commitFileToGitHub(repoFullName, indexPath, indexBase64, `Update tracks_index.json (${tracks.length} tracks)`, token);
+  } catch (e) {
+    console.warn('Failed to update tracks_index.json:', e);
+  }
+}
+
 async function fetchTracksFromSingleRepo(repoFullName: string, token: string): Promise<JamendoTrack[]> {
+  // 1. Try fetching high-speed master index via CDN or raw GitHub
+  try {
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json?t=${Date.now()}`;
+    const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/main/tracks_index.json?t=${Date.now()}`;
+    
+    let res = await fetch(cdnUrl).catch(() => null);
+    if (!res || !res.ok) {
+      res = await fetch(rawUrl).catch(() => null);
+    }
+
+    if (res && res.ok) {
+      const data: JamendoTrack[] = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map((t) => ({
+          ...t,
+          bgColor: t.bgColor || computeTrackBgColor(t),
+          audioUrl: getStreamingMediaUrl(t.audioUrl),
+          coverUrl: getStreamingMediaUrl(t.coverUrl),
+          artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
+        }));
+      }
+    }
+  } catch (indexErr) {
+    console.warn('tracks_index.json fetch notice:', indexErr);
+  }
+
+  // 2. Fallback: Query GitHub API /contents/tracks and fetch JSON files IN PARALLEL
   try {
     const listRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/tracks`, {
       headers: getGitHubHeaders(token),
@@ -452,32 +490,41 @@ async function fetchTracksFromSingleRepo(repoFullName: string, token: string): P
     const files = await listRes.json();
     if (!Array.isArray(files)) return [];
 
-    const tracks: JamendoTrack[] = [];
-    for (const file of files) {
-      if (file.name.endsWith('.json') && file.download_url) {
-        try {
-          const itemRes = await fetch(file.download_url);
-          if (itemRes.ok) {
-            const data: JamendoTrack = await itemRes.json();
-            if (data.id && data.name) {
-              let finalBgColor = data.bgColor;
-              if (!finalBgColor) {
-                finalBgColor = computeTrackBgColor(data);
-                updateTrackColorInGitHubRepo(data.id, finalBgColor, data).catch(() => {});
-              }
+    const jsonFiles = files.filter((f: any) => f.name && f.name.endsWith('.json') && f.download_url);
+    if (jsonFiles.length === 0) return [];
 
-              tracks.push({
-                ...data,
-                bgColor: finalBgColor,
-                audioUrl: getStreamingMediaUrl(data.audioUrl),
-                coverUrl: getStreamingMediaUrl(data.coverUrl),
-                artistAvatarUrl: getStreamingMediaUrl(data.artistAvatarUrl || data.coverUrl),
-              });
-            }
+    // Parallel HTTP requests for ultra-fast loading
+    const fetchPromises = jsonFiles.map(async (file: any) => {
+      try {
+        const itemRes = await fetch(file.download_url);
+        if (itemRes.ok) {
+          const data: JamendoTrack = await itemRes.json();
+          if (data.id && data.name) {
+            return {
+              ...data,
+              bgColor: data.bgColor || computeTrackBgColor(data),
+              audioUrl: getStreamingMediaUrl(data.audioUrl),
+              coverUrl: getStreamingMediaUrl(data.coverUrl),
+              artistAvatarUrl: getStreamingMediaUrl(data.artistAvatarUrl || data.coverUrl),
+            };
           }
-        } catch {}
+        }
+      } catch {}
+      return null;
+    });
+
+    const results = await Promise.allSettled(fetchPromises);
+    const tracks: JamendoTrack[] = [];
+    results.forEach((r) => {
+      if (r.status === 'fulfilled' && r.value) {
+        tracks.push(r.value);
       }
+    });
+
+    if (tracks.length > 0 && token) {
+      updateMasterTracksIndexOnGitHub(repoFullName, tracks, token).catch(() => {});
     }
+
     return tracks;
   } catch (err) {
     console.warn(`Failed to fetch tracks from GitHub repo ${repoFullName}:`, err);
@@ -549,8 +596,16 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
     deleteFileFromGitHub(backupRepo, `tracks/${trackId}.json`, msg, token),
     deleteFileFromGitHub(repo, `audio/${trackId}.mp3`, msg, token),
     deleteFileFromGitHub(backupRepo, `audio/${trackId}.mp3`, msg, token),
+    deleteFileFromGitHub(repo, `covers/${trackId}.jpg`, msg, token),
     deleteFileFromGitHub(backupRepo, `covers/${trackId}.jpg`, msg, token),
   ]);
+
+  // Refresh index
+  fetchTracksFromSingleRepo(repo, token).then((updatedTracks) => {
+    if (token) {
+      updateMasterTracksIndexOnGitHub(repo, updatedTracks, token).catch(() => {});
+    }
+  }).catch(() => {});
 
   return true;
 }
@@ -601,7 +656,7 @@ export async function uploadArtistProfileToGitHub(
 }
 
 /**
- * Fetch all artist profiles from GitHub
+ * Fetch all artist profiles from GitHub in parallel with CDN index fallback
  */
 export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
   const config = getGitHubStorageConfig();
@@ -618,24 +673,34 @@ export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
     const files = await listRes.json();
     if (!Array.isArray(files)) return [];
 
+    const profileFiles = files.filter((f: any) => f.name && f.name.endsWith('.json') && f.download_url);
+    if (profileFiles.length === 0) return [];
+
+    const fetchPromises = profileFiles.map(async (file: any) => {
+      try {
+        const itemRes = await fetch(file.download_url);
+        if (itemRes.ok) {
+          const data = await itemRes.json();
+          return {
+            ...data,
+            avatarUrl: getStreamingMediaUrl(data.avatarUrl),
+          };
+        }
+      } catch {}
+      return null;
+    });
+
+    const results = await Promise.allSettled(fetchPromises);
     const profiles: any[] = [];
-    for (const file of files) {
-      if (file.name.endsWith('.json') && file.download_url) {
-        try {
-          const itemRes = await fetch(file.download_url);
-          if (itemRes.ok) {
-            const data = await itemRes.json();
-            profiles.push({
-              ...data,
-              avatarUrl: getStreamingMediaUrl(data.avatarUrl),
-            });
-          }
-        } catch {}
+    results.forEach((r) => {
+      if (r.status === 'fulfilled' && r.value) {
+        profiles.push(r.value);
       }
-    }
+    });
     return profiles;
   } catch (err) {
     console.warn('Failed to fetch artist profiles from GitHub:', err);
     return [];
   }
 }
+
