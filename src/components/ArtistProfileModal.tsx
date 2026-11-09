@@ -11,7 +11,7 @@ import {
   Disc,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, Album } from '../types';
+import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { useExtractedColor, getTrackInstantColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks } from '../services/multiMusicService';
@@ -25,6 +25,7 @@ interface ArtistProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
   allTracks: JamendoTrack[];
+  allArtists?: ArtistProfile[];
   onPlayTrack: (track: JamendoTrack) => void;
   lang: Language;
   onToggleLike?: (id: string) => void;
@@ -39,6 +40,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   isOpen,
   onClose,
   allTracks,
+  allArtists = [],
   onPlayTrack,
   lang,
   currentTrack,
@@ -114,28 +116,34 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const sampleTrack = artistTracks[0] || currentTrack || fullPool[0];
 
+  const artistInfo = allArtists.find(a => (a.name || '').toLowerCase().trim() === cleanQuery);
+  const artistBio = artistInfo?.bio || '';
+
   // Dedicated artist avatar with authentic image resolution
-  let rawAvatarUrl: string | undefined = undefined;
-  const trackWithAvatar = artistTracks.find((t) => isAuthenticCover(t.artistAvatarUrl)) || (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
-  if (trackWithAvatar?.artistAvatarUrl) {
-    rawAvatarUrl = trackWithAvatar.artistAvatarUrl;
-  } else {
-    try {
-      const saved = localStorage.getItem('wikiarchive_artist_account') || localStorage.getItem('kolot_artist_account_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (
-          parsed.name?.toLowerCase().trim() === cleanQuery &&
-          parsed.avatarUrl &&
-          isAuthenticCover(parsed.avatarUrl)
-        ) {
-          rawAvatarUrl = parsed.avatarUrl;
+  let rawAvatarUrl: string | undefined = artistInfo?.avatarUrl;
+
+  if (!isAuthenticCover(rawAvatarUrl)) {
+    const trackWithAvatar = artistTracks.find((t) => isAuthenticCover(t.artistAvatarUrl)) || (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
+    if (trackWithAvatar?.artistAvatarUrl) {
+      rawAvatarUrl = trackWithAvatar.artistAvatarUrl;
+    } else {
+      try {
+        const saved = localStorage.getItem('wikiarchive_artist_account') || localStorage.getItem('kolot_artist_account_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (
+            parsed.name?.toLowerCase().trim() === cleanQuery &&
+            parsed.avatarUrl &&
+            isAuthenticCover(parsed.avatarUrl)
+          ) {
+            rawAvatarUrl = parsed.avatarUrl;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
-  if (!rawAvatarUrl) {
+  if (!isAuthenticCover(rawAvatarUrl)) {
     const trackWithCover = artistTracks.find((t) => isAuthenticCover(t.coverUrl)) || (isAuthenticCover(sampleTrack?.coverUrl) ? sampleTrack : undefined);
     if (trackWithCover?.coverUrl) {
       rawAvatarUrl = trackWithCover.coverUrl;
@@ -276,6 +284,12 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
                 {artistTracks.length} {isHe ? 'שירים' : 'tracks'}
                 {artistAlbums.length > 0 && ` • ${artistAlbums.length} ${isHe ? 'אלבומים' : 'albums'}`}
               </p>
+
+              {artistBio && (
+                <p className="text-xs text-white/60 max-w-xl font-normal leading-relaxed pt-1 line-clamp-2">
+                  {artistBio}
+                </p>
+              )}
             </div>
           </div>
         </div>

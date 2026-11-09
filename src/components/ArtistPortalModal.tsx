@@ -42,7 +42,7 @@ import {
   onAuthUserChanged,
   getArtistAccountByGoogleUid,
 } from '../services/firebaseService';
-import { uploadTrackToGitHubRepo, deleteTrackFromGitHubRepo } from '../services/githubStorageService';
+import { uploadTrackToGitHubRepo, deleteTrackFromGitHubRepo, uploadArtistProfileToGitHub } from '../services/githubStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, useExtractedColor, globalTrackColorCache } from '../services/colorService';
@@ -126,6 +126,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [rawCoverFile, setRawCoverFile] = useState<File | null>(null);
   const [isAudioDragging, setIsAudioDragging] = useState(false);
   const [isCoverDragging, setIsCoverDragging] = useState(false);
+  const [artistAvatarFile, setArtistAvatarFile] = useState<File | null>(null);
+  const [artistAvatarPreview, setArtistAvatarPreview] = useState<string | null>(null);
   const [customGenreText, setCustomGenreText] = useState('');
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
 
@@ -600,6 +602,10 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
       setCurrentArtist(updatedArtist);
       await saveArtistAccountToFirebase(updatedArtist);
+      
+      // Save to GitHub as well
+      await uploadArtistProfileToGitHub(updatedArtist, artistAvatarFile || undefined);
+      
       setPublishSuccess(true);
       setTimeout(() => setPublishSuccess(false), 2500);
       setActiveTab('profile');
@@ -2252,6 +2258,44 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                 </div>
 
                 <div className="space-y-4">
+                  <div className="flex flex-col sm:flex-row gap-5 items-center pb-4 border-b border-neutral-800/50">
+                    <div className="relative group">
+                      <div className="w-24 h-24 rounded-full border-2 border-dashed border-neutral-700 hover:border-emerald-400 overflow-hidden flex items-center justify-center bg-neutral-900 transition-all cursor-pointer">
+                        {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
+                          <img
+                            src={artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL || ''}
+                            className="w-full h-full object-cover"
+                            alt="Preview"
+                          />
+                        ) : (
+                          <User className="w-8 h-8 text-neutral-600 group-hover:text-emerald-400 transition-colors" />
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setArtistAvatarFile(file);
+                              const reader = new FileReader();
+                              reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className="absolute -bottom-1 -right-1 bg-emerald-500 p-1.5 rounded-full shadow-lg border-2 border-neutral-950 pointer-events-none">
+                        <Pencil className="w-3 h-3 text-white" />
+                      </div>
+                    </div>
+                    <div className="space-y-1 text-center sm:text-right">
+                      <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל אמן' : 'Artist Profile Photo'}</h4>
+                      <p className="text-[10px] text-neutral-400">{isHe ? 'תמונה זו תוצג בעמוד האמן שלך ובחיפושים.' : 'This photo will be shown on your profile and search results.'}</p>
+                      <p className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר ב-GitHub Storage' : 'Stored on GitHub'}</p>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-white font-extrabold text-xs mb-2">
                       {isHe ? 'שם האמן / שם הבמה (חובה) *' : 'Artist / Stage Name (Required) *'}

@@ -64,6 +64,20 @@ export function fileToBase64(fileOrBlob: Blob): Promise<string> {
 }
 
 /**
+ * Fetches a URL and returns it as a Blob
+ */
+export async function urlToBlob(url: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.blob();
+  } catch (err) {
+    console.warn('Failed to fetch URL to blob:', err);
+    return null;
+  }
+}
+
+/**
  * Resolves any raw.githubusercontent.com media URL into a high-speed,
  * streaming-compatible CDN URL (jsDelivr) without content-disposition attachments or sandbox headers.
  */
@@ -535,9 +549,93 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
     deleteFileFromGitHub(backupRepo, `tracks/${trackId}.json`, msg, token),
     deleteFileFromGitHub(repo, `audio/${trackId}.mp3`, msg, token),
     deleteFileFromGitHub(backupRepo, `audio/${trackId}.mp3`, msg, token),
-    deleteFileFromGitHub(repo, `covers/${trackId}.jpg`, msg, token),
     deleteFileFromGitHub(backupRepo, `covers/${trackId}.jpg`, msg, token),
   ]);
 
   return true;
+}
+
+/**
+ * Save Artist Profile metadata and avatar to GitHub
+ */
+export async function uploadArtistProfileToGitHub(
+  artist: any,
+  avatarFile?: File | Blob
+): Promise<{ success: boolean; avatarUrl?: string }> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
+  const token = config.token || DEFAULT_TOKEN;
+
+  let finalAvatarUrl = artist.avatarUrl;
+
+  // 1. Upload Avatar if provided
+  if (avatarFile) {
+    try {
+      const avatarBase64 = await fileToBase64(avatarFile);
+      const avatarPath = `avatars/${artist.id}.jpg`;
+      const msg = `Update avatar for artist: ${artist.name}`;
+
+      const res = await commitFileToGitHub(repo, avatarPath, avatarBase64, msg, token);
+      if (res.success) {
+        finalAvatarUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${avatarPath}`;
+      }
+      await commitFileToGitHub(backupRepo, avatarPath, avatarBase64, msg, token);
+    } catch (err) {
+      console.warn('Avatar upload failed:', err);
+    }
+  }
+
+  // 2. Upload Profile JSON
+  const profileWithUrl = { ...artist, avatarUrl: finalAvatarUrl };
+  const profilePath = `profiles/${artist.id}.json`;
+  const profileBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(profileWithUrl, null, 2))));
+  const metaMsg = `Update profile: ${artist.name}`;
+
+  await Promise.allSettled([
+    commitFileToGitHub(repo, profilePath, profileBase64, metaMsg, token),
+    commitFileToGitHub(backupRepo, profilePath, profileBase64, metaMsg, token),
+  ]);
+
+  return { success: true, avatarUrl: finalAvatarUrl };
+}
+
+/**
+ * Fetch all artist profiles from GitHub
+ */
+export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const token = config.token || DEFAULT_TOKEN;
+
+  try {
+    const listRes = await fetch(`https://api.github.com/repos/${repo}/contents/profiles`, {
+      headers: getGitHubHeaders(token),
+    });
+
+    if (!listRes.ok) return [];
+
+    const files = await listRes.json();
+    if (!Array.isArray(files)) return [];
+
+    const profiles: any[] = [];
+    for (const file of files) {
+      if (file.name.endsWith('.json') && file.download_url) {
+        try {
+          const itemRes = await fetch(file.download_url);
+          if (itemRes.ok) {
+            const data = await itemRes.json();
+            profiles.push({
+              ...data,
+              avatarUrl: getStreamingMediaUrl(data.avatarUrl),
+            });
+          }
+        } catch {}
+      }
+    }
+    return profiles;
+  } catch (err) {
+    console.warn('Failed to fetch artist profiles from GitHub:', err);
+    return [];
+  }
 }

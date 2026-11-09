@@ -48,6 +48,7 @@ import {
   loginWithGoogle,
   deleteArtistTrackFromFirebase,
 } from '../services/firebaseService';
+import { fetchArtistProfilesFromGitHub } from '../services/githubStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
@@ -266,13 +267,29 @@ export const SongsView: React.FC<SongsViewProps> = ({
       getArtistTracksFromFirebase(),
       getArtistAccountsFromFirebase(),
       fetchAllRealSongs(),
-    ]).then(([fbTracksRes, fbAccountsRes, allSongsRes]) => {
+      fetchArtistProfilesFromGitHub(),
+    ]).then(([fbTracksRes, fbAccountsRes, allSongsRes, ghProfilesRes]) => {
       if (fbTracksRes.status === 'fulfilled' && fbTracksRes.value?.length) {
         setAllTracks((prev) => deduplicateTracks([...fbTracksRes.value, ...prev]));
       }
+      
+      let combinedArtists: ArtistProfile[] = [];
       if (fbAccountsRes.status === 'fulfilled' && fbAccountsRes.value?.length) {
-        setAllArtists(fbAccountsRes.value.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+        combinedArtists = [...fbAccountsRes.value];
       }
+      if (ghProfilesRes.status === 'fulfilled' && ghProfilesRes.value?.length) {
+        // Merge GH profiles, preferring them over Firebase
+        const ghProfiles = ghProfilesRes.value;
+        const profileMap = new Map<string, ArtistProfile>();
+        combinedArtists.forEach(a => profileMap.set(a.id, a));
+        ghProfiles.forEach((p: any) => profileMap.set(p.id, p));
+        combinedArtists = Array.from(profileMap.values());
+      }
+      
+      if (combinedArtists.length > 0) {
+        setAllArtists(combinedArtists.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+      }
+
       if (allSongsRes.status === 'fulfilled' && allSongsRes.value?.length) {
         setAllTracks((prev) => deduplicateTracks([...allSongsRes.value, ...prev]));
       }
@@ -1699,6 +1716,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             isOpen={!!profileArtistName}
             onClose={() => setProfileArtistName(null)}
             allTracks={Array.isArray(allTracks) ? allTracks : []}
+            allArtists={allArtists}
             onPlayTrack={(track) => openSongPlayer(track)}
             lang={lang}
             onToggleLike={toggleFavorite}

@@ -1,7 +1,14 @@
 import { JamendoTrack } from '../types';
-import { getArtistTracksFromFirebase } from './firebaseService';
+import { getArtistTracksFromFirebase, deleteArtistTrackFromFirebase, getArtistAccountsFromFirebase } from './firebaseService';
 import { loadTracksFromIndexedDB } from './localTrackStorage';
-import { fetchTracksFromGitHubRepo, computeTrackBgColor } from './githubStorageService';
+import { 
+  fetchTracksFromGitHubRepo, 
+  computeTrackBgColor,
+  uploadTrackToGitHubRepo,
+  uploadArtistProfileToGitHub,
+  fetchArtistProfilesFromGitHub,
+  urlToBlob
+} from './githubStorageService';
 
 /**
  * Clean Storage-Only Music Service
@@ -248,7 +255,47 @@ export function getInstantSongPool(): JamendoTrack[] {
 }
 
 /**
- * Fetches all saved tracks from Firebase, GitHub & Storage, updating the instant cache
+ * Migrates data from Firebase to GitHub if any is found.
+ */
+export async function migrateFirebaseToGitHub(): Promise<void> {
+  console.info('Checking for data to migrate from Firebase to GitHub...');
+  
+  try {
+    // 1. Migrate Tracks
+    const fbTracks = await getArtistTracksFromFirebase();
+    if (fbTracks.length > 0) {
+      console.info(`Found ${fbTracks.length} tracks in Firebase. Migrating...`);
+      for (const track of fbTracks) {
+        // Fetch audio and cover as blobs if they exist
+        const audioBlob = track.audioUrl ? await urlToBlob(track.audioUrl) : null;
+        const coverBlob = track.coverUrl ? await urlToBlob(track.coverUrl) : null;
+        
+        const res = await uploadTrackToGitHubRepo(track, audioBlob || undefined, coverBlob || undefined);
+        if (res.success) {
+          console.info(`Migrated track: ${track.name}. Deleting from Firebase...`);
+          await deleteArtistTrackFromFirebase(track.id);
+        }
+      }
+    }
+
+    // 2. Migrate Artist Profiles
+    const fbAccounts = await getArtistAccountsFromFirebase();
+    if (fbAccounts.length > 0) {
+      console.info(`Found ${fbAccounts.length} artist accounts in Firebase. Migrating...`);
+      for (const artist of fbAccounts) {
+        const avatarBlob = artist.avatarUrl ? await urlToBlob(artist.avatarUrl) : null;
+        await uploadArtistProfileToGitHub(artist, avatarBlob || undefined);
+      }
+    }
+    
+    console.info('Migration process finished.');
+  } catch (err) {
+    console.warn('Migration failed:', err);
+  }
+}
+
+/**
+ * Fetches all saved tracks from GitHub primarily, and runs migration in background.
  */
 export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
@@ -256,12 +303,8 @@ export async function fetchAllRealSongs(
 ): Promise<JamendoTrack[]> {
   const instantPool = getInstantSongPool();
 
-  let fbTracks: JamendoTrack[] = [];
-  try {
-    fbTracks = await getArtistTracksFromFirebase();
-  } catch (e) {
-    console.warn('Firebase tracks fetch warning:', e);
-  }
+  // Run migration in background without blocking
+  migrateFirebaseToGitHub().catch(() => {});
 
   let ghTracks: JamendoTrack[] = [];
   try {
@@ -303,8 +346,8 @@ export async function fetchAllRealSongs(
     console.warn('Stale track sync notice:', err);
   }
 
-  // Merge with priority: Firestore -> GitHub -> Instant Pool
-  const combined = deduplicateTracks([...fbTracks, ...ghTracks, ...instantPool]);
+  // Merge with priority: GitHub -> Instant Pool
+  const combined = deduplicateTracks([...ghTracks, ...instantPool]);
 
   saveCachedCloudTracks(combined);
 
