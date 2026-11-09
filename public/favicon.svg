@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="120" height="120" style="background: transparent;">
+  <defs>
+    <!-- גרדיאנט שחור-פחם למראה אלגנטי -->
+    <linearGradient id="darkLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2c2c2c" />
+      <stop offset="50%" stop-color="#141414" />
+      <stop offset="100%" stop-color="#000000" />
+    </linearGradient>
+
+    <!-- צל עדין לתחושת עומק -->
+    <filter id="softShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#000000" flood-opacity="0.28" />
+    </filter>
+  </defs>
+
+  <g filter="url(#softShadow)">
+    <!-- חצי לב שמאלי -->
+    <path d="M100 156 C80 138, 46 112, 46 82 C46 58, 66 48, 82 54 C88 56, 93 61, 96 66" 
+          fill="none" 
+          stroke="url(#darkLogoGrad)" 
+          stroke-width="10" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" />
+
+    <!-- חצי לב ימני -->
+    <path d="M100 156 C120 138, 154 112, 154 82 C154 62, 138 50, 122 54" 
+          fill="none" 
+          stroke="url(#darkLogoGrad)" 
+          stroke-width="10" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" />
+
+    <!-- התו המוזיקלי -->
+    <path d="M101 38 L108 38 C112 52, 128 62, 130 82 C131 94, 125 104, 118 110 C122 98, 122 86, 118 76 C115 69, 110 64, 108 62 L108 116 C108 126, 98 134, 87 134 C78 134, 72 128, 72 120 C72 110, 81 102, 92 102 C96 102, 99 103, 101 105 Z" 
+          fill="url(#darkLogoGrad)" />
+  </g>
+</svg>

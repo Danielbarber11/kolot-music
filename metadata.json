@@ -1,0 +1,6 @@
+{
+  "name": "WikiArchive AI Quantum - ויקיארכיון",
+  "description": "פלטפורמה חדשנית המחברת בין ויקיפדיה לארכיון האינטרנט Internet Archive עם בוט בינה מלאכותית, ארכיון סרטונים, נגן מדיה וחיבור למכשיר.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

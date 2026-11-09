@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Artist Accounts collection
+    match /artistAccounts/{artistId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.id is string
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 100;
+      allow delete: if false;
+    }
+
+    // Artist Tracks collection
+    match /artistTracks/{trackId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.id is string
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 200
+        && request.resource.data.artistName is string
+        && request.resource.data.artistName.size() <= 100
+        && request.resource.data.audioUrl is string
+        && request.resource.data.audioUrl.size() <= 1000;
+      allow delete: if false;
+    }
+  }
+}

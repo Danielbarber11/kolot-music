@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@theme {
+  --color-spotify-green: #1ed760;
+  --color-signal-red: #b85850;
+  --color-void-black: #000000;
+  --color-carbon: #121212;
+  --color-graphite: #1f1f1f;
+  --color-smoke: #292929;
+  --color-iron: #333333;
+  --color-steel: #535353;
+  --color-fog: #73777c;
+  --color-mist: #b3b3b3;
+  --color-bone: #c5c5c5;
+  --color-pure-white: #ffffff;
+  --color-promo-gradient: #509bf5;
+  --color-magenta-glow: #af2896;
+}
+
+:root {
+  --color-spotify-green: #1ed760;
+  --color-signal-red: #b85850;
+  --color-void-black: #000000;
+  --color-carbon: #121212;
+  --color-graphite: #1f1f1f;
+  --color-smoke: #292929;
+  --color-iron: #333333;
+  --color-steel: #535353;
+  --color-fog: #73777c;
+  --color-mist: #b3b3b3;
+  --color-bone: #c5c5c5;
+  --color-pure-white: #ffffff;
+  --color-promo-gradient: #509bf5;
+  --gradient-promo-gradient: linear-gradient(90deg, rgb(175, 40, 150), rgb(80, 155, 245));
+  --color-magenta-glow: #af2896;
+  --gradient-magenta-glow: linear-gradient(90deg, rgb(175, 40, 150), rgb(80, 155, 245));
+}
+
+/* Hide scrollbars globally across all elements */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.custom-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+html, body {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+  background-color: #000000;
+  color: #ffffff;
+}
+
+/* Continuous Marquee Scrolling Animations for Long Song Titles */
+@keyframes marquee-ltr {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes marquee-rtl {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(50%);
+  }
+}
+
+.animate-marquee-ltr {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: marquee-ltr 14s linear infinite;
+}
+
+.animate-marquee-rtl {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: marquee-rtl 14s linear infinite;
+}
+
+.animate-marquee-ltr:hover,
+.animate-marquee-rtl:hover {
+  animation-play-state: paused;
+}
+
+/* Hide scrollbars completely on mobile touch screens */
+@media (max-width: 640px) {
+  * {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+  ::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+}
+
