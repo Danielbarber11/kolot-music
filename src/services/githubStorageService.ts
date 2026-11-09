@@ -114,6 +114,12 @@ export function calculateRealStorageUsage(tracks: JamendoTrack[]): { usedBytes: 
 }
 
 export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
+  const envToken =
+    (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
+    (import.meta.env?.VITE_KOLOT as string) ||
+    ((import.meta.env as any)?.KOLOT as string) ||
+    DEFAULT_TOKEN;
+
   try {
     const saved = localStorage.getItem('kolot_github_storage_config');
     if (saved) {
@@ -121,7 +127,7 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
       return {
         repoName: normalizeRepoFullName(parsed.repoName),
         backupRepoName: normalizeBackupRepoFullName(parsed.backupRepoName),
-        token: parsed.token || DEFAULT_TOKEN,
+        token: parsed.token || envToken,
         capacityMb: 1000,
         usedBytes: parsed.usedBytes || 0,
         fileCount: parsed.fileCount || 0,
@@ -135,7 +141,7 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
   return {
     repoName: DEFAULT_REPO_NAME,
     backupRepoName: DEFAULT_BACKUP_REPO_NAME,
-    token: DEFAULT_TOKEN,
+    token: envToken,
     capacityMb: 1000,
     usedBytes: 0,
     fileCount: 0,

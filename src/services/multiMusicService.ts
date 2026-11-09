@@ -9,7 +9,41 @@ import { fetchTracksFromGitHubRepo, computeTrackBgColor } from './githubStorageS
  * Only tracks that are saved/uploaded into the storage repository are loaded and displayed.
  */
 
-export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
+export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [
+  {
+    id: 'verified_default_1',
+    name: 'שקיעה כתומה',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1793979341845.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1793979341845.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    playsCount: 1420,
+    isAiGenerated: false,
+  },
+  {
+    id: 'verified_default_2',
+    name: 'הקול של המחר',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794053762741.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794053762741.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    playsCount: 2890,
+    isAiGenerated: true,
+    hasAutoLyrics: true,
+  }
+];
 
 export const ALL_MUSIC_GENRES = [
   'Pop',
@@ -204,12 +238,13 @@ export function getSavedRepoTracks(): JamendoTrack[] {
 }
 
 /**
- * Instant song pool returns cached cloud tracks + repo tracks for 0ms initial load
+ * Instant song pool returns cached cloud tracks + repo tracks + verified default tracks for 0ms initial load
  */
 export function getInstantSongPool(): JamendoTrack[] {
   const cachedCloud = getCachedCloudTracks();
   const savedRepo = getSavedRepoTracks();
-  return deduplicateTracks([...cachedCloud, ...savedRepo]);
+  const combined = [...cachedCloud, ...savedRepo, ...VERIFIED_REAL_TRACKS];
+  return deduplicateTracks(combined);
 }
 
 /**
