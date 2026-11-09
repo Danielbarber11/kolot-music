@@ -231,21 +231,29 @@ export async function resumePendingUploads(): Promise<void> {
 
     console.info(`Resuming ${pendingIds.length} interrupted uploads...`);
     
+    // Load all tracks from storage to find the metadata
+    const allCached = await loadTracksFromIndexedDB();
+    
     for (const id of pendingIds) {
-      const allCached = await loadTracksFromIndexedDB();
       const track = allCached.find(t => t.id === id);
-      if (!track) continue;
+      if (!track) {
+        // If track metadata is missing, we can't resume
+        const currentPending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
+        localStorage.setItem('kolot_pending_uploads', JSON.stringify(currentPending.filter((pid: string) => pid !== id)));
+        continue;
+      }
 
       const audioBlob = await getCachedAudioBlob(id);
-      const coverBlob = track.coverUrl?.startsWith('data:') ? await urlToBlob(track.coverUrl) : null;
+      const coverBlob = (track.coverUrl && track.coverUrl.startsWith('data:')) ? await urlToBlob(track.coverUrl) : null;
       
+      console.info(`Attempting to upload pending track: ${track.name}...`);
       const res = await uploadTrackToGitHubRepo(track, audioBlob || undefined, coverBlob || undefined);
       if (res.success) {
         // Remove from pending
         const currentPending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
         const updated = currentPending.filter((pid: string) => pid !== id);
         localStorage.setItem('kolot_pending_uploads', JSON.stringify(updated));
-        console.info(`Interrupted upload for ${track.name} recovered successfully.`);
+        console.info(`Interrupted upload for ${track.name} recovered and pushed to GitHub.`);
       }
     }
   } catch (err) {
@@ -431,4 +439,20 @@ export async function fetchModernTrendingHits(): Promise<JamendoTrack[]> {
 
 export function getTotalSongCount(): number {
   return getInstantSongPool().length;
+}
+
+// Background pre-initialization
+let initPromise: Promise<any> | null = null;
+export function initializeMultiMusicService(): Promise<any> {
+  if (initPromise) return initPromise;
+  
+  initPromise = (async () => {
+    // Start fetching everything in parallel immediately
+    const songsPromise = fetchAllRealSongs();
+    const profilesPromise = fetchAllArtistProfiles();
+    
+    return Promise.allSettled([songsPromise, profilesPromise]);
+  })();
+  
+  return initPromise;
 }

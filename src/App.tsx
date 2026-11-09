@@ -1,14 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { SongsView } from './components/SongsView';
 import { SongPlayerPage } from './components/SongPlayerPage';
+import { SplashScreen } from './components/SplashScreen';
 import { Language, JamendoTrack } from './types';
-import { getInstantSongPool } from './services/multiMusicService';
+import { getInstantSongPool, fetchAllRealSongs } from './services/multiMusicService';
 import { SecurityGuard } from './components/SecurityGuard';
 
 export default function App() {
   const [lang] = useState<Language>('he');
   const [activePlayerTrack, setActivePlayerTrack] = useState<JamendoTrack | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
     try {
@@ -19,6 +21,22 @@ export default function App() {
     }
   });
 
+  // Perform critical initialization before showing the UI
+  useEffect(() => {
+    const init = async () => {
+      // 1. Fetch real songs from GitHub primarily
+      // We wait at most 2 seconds for GitHub to respond or return cached data
+      const timeout = new Promise(resolve => setTimeout(resolve, 2200));
+      const fetchTask = fetchAllRealSongs();
+      
+      await Promise.race([fetchTask, timeout]);
+      
+      // Even if timeout hits, we proceed with whatever we have (cache or partial load)
+      setIsInitializing(false);
+    };
+    init();
+  }, []);
+
   const handleToggleLikeSong = (id: string) => {
     setLikedSongIds((prev) =>
       prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
@@ -28,6 +46,11 @@ export default function App() {
   return (
     <SecurityGuard>
       <div className="min-h-screen bg-[#000000] text-white flex flex-col font-sans selection:bg-white selection:text-black relative">
+        {/* LUXURY SPLASH SCREEN */}
+        <AnimatePresence>
+          {isInitializing && <SplashScreen key="splash" isLoading={isInitializing} />}
+        </AnimatePresence>
+
         <main className="flex-1 p-0 m-0">
           {/* Main SongsView stays mounted to preserve scroll, state, and avoid image/button pop-in */}
           <SongsView

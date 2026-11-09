@@ -97,6 +97,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     };
   });
 
+  const resolvedArtistName = currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist');
+
   const [connectionCodeInput, setConnectionCodeInput] = useState('');
   const [artistNameInput, setArtistNameInput] = useState('');
   const [genreInput, setGenreInput] = useState('ללא סגנון מוזיקלי');
@@ -906,8 +908,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                 onClick={() => setActiveTab('profile')}
                 className="px-3.5 sm:px-4 py-2 rounded-full flex items-center gap-2 text-xs sm:text-sm font-normal text-white border border-white/20 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl cursor-pointer active:scale-95 transition-all"
               >
-                {isHe ? <ArrowRight className="w-4 h-4 text-white" /> : <ArrowLeft className="w-4 h-4 text-white" />}
-                <span>{isHe ? 'חזור לפרופיל האמן' : 'Back to Profile'}</span>
+                <span>{isHe ? `חזור לפרופיל של ${resolvedArtistName}` : `Back to ${resolvedArtistName}`}</span>
               </button>
             ) : (
               <button

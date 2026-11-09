@@ -16,7 +16,7 @@ export interface GitHubRepoStorageConfig {
 export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
-export const DEFAULT_TOKEN = '';
+export const DEFAULT_TOKEN = 'PASTE_YOUR_GITHUB_TOKEN_HERE'; // המשתמש ביקש שהחיבור יהיה בקוד - יש להזין כאן את הטוקן האישי
 
 /**
  * Normalizes user input into full GitHub owner/repo format: "Danielbarber11/Kolot-Music1"
@@ -460,17 +460,12 @@ async function updateMasterTracksIndexOnGitHub(repoFullName: string, tracks: Jam
 }
 
 async function fetchTracksFromSingleRepo(repoFullName: string, token: string): Promise<JamendoTrack[]> {
-  // 1. Try fetching high-speed master index via CDN or raw GitHub
+  // 1. Try fetching high-speed master index via CDN (fastest, potentially cached)
   try {
-    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json?t=${Date.now()}`;
-    const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/main/tracks_index.json?t=${Date.now()}`;
-    
-    let res = await fetch(cdnUrl).catch(() => null);
-    if (!res || !res.ok) {
-      res = await fetch(rawUrl).catch(() => null);
-    }
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json`;
+    const res = await fetch(cdnUrl);
 
-    if (res && res.ok) {
+    if (res.ok) {
       const data: JamendoTrack[] = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         return data.map((t) => ({
@@ -483,10 +478,31 @@ async function fetchTracksFromSingleRepo(repoFullName: string, token: string): P
       }
     }
   } catch (indexErr) {
-    console.warn('tracks_index.json fetch notice:', indexErr);
+    console.warn('CDN tracks_index.json fetch notice:', indexErr);
   }
 
-  // 2. Fallback: Query GitHub API /contents/tracks and fetch JSON files IN PARALLEL
+  // 2. Fallback: Try raw GitHub with cache-busting timestamp (slower but fresh)
+  try {
+    const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/main/tracks_index.json?t=${Date.now()}`;
+    const res = await fetch(rawUrl);
+
+    if (res.ok) {
+      const data: JamendoTrack[] = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map((t) => ({
+          ...t,
+          bgColor: t.bgColor || computeTrackBgColor(t),
+          audioUrl: getStreamingMediaUrl(t.audioUrl),
+          coverUrl: getStreamingMediaUrl(t.coverUrl),
+          artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
+        }));
+      }
+    }
+  } catch (rawErr) {
+    console.warn('Raw tracks_index.json fetch notice:', rawErr);
+  }
+
+  // 3. Last Resort: Query GitHub API /contents/tracks and fetch JSON files IN PARALLEL
   try {
     const listRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/tracks`, {
       headers: getGitHubHeaders(token),

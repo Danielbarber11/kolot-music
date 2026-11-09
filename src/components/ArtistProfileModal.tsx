@@ -61,7 +61,9 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [avatarImgError, setAvatarImgError] = useState(false);
 
-  const effectiveArtistName = artistName || currentTrack?.artistName || (isHe ? 'אמן מוזיקלי' : 'Artist');
+  const cleanQuery = (artistName || currentTrack?.artistName || '').toLowerCase().trim();
+  const artistInfo = allArtists.find(a => (a.name || '').toLowerCase().trim() === cleanQuery);
+  const effectiveArtistName = artistName || currentTrack?.artistName || artistInfo?.name || (isHe ? 'אמן' : 'Artist');
 
   // Merge currentTrack, allTracks, and instant song pool so we never miss tracks for this artist
   const poolBase = Array.isArray(allTracks) ? allTracks : [];
@@ -70,8 +72,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     ...poolBase,
     ...getInstantSongPool(),
   ]);
-
-  const cleanQuery = effectiveArtistName.toLowerCase().trim();
 
   let artistTracks = fullPool.filter((t) => {
     if (deletedTrackIds.includes(t.id)) return false;
@@ -116,7 +116,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const sampleTrack = artistTracks[0] || currentTrack || fullPool[0];
 
-  const artistInfo = allArtists.find(a => (a.name || '').toLowerCase().trim() === cleanQuery);
   const artistBio = artistInfo?.bio || '';
 
   // Dedicated artist avatar with authentic image resolution
