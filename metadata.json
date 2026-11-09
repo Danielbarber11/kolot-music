@@ -1,6 +1,6 @@
 {
-  "name": "WikiArchive AI Quantum - ויקיארכיון",
-  "description": "פלטפורמה חדשנית המחברת בין ויקיפדיה לארכיון האינטרנט Internet Archive עם בוט בינה מלאכותית, ארכיון סרטונים, נגן מדיה וחיבור למכשיר.",
+  "name": "kolot",
+  "description": "kolot music - פלטפורמת מוזיקה מתקדמת להאזנה, יצירה והפצת שירים ואלבומים חופשיים.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
