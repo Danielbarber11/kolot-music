@@ -47,10 +47,33 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   }, [coverUrl]);
 
   const effectiveUrl = getStreamingMediaUrl(coverUrl);
-  const isValidUrl = isAuthenticCover(effectiveUrl);
+  const isValidUrl = isAuthenticCover(coverUrl);
   const gradient = GENRE_GRADIENTS[genre] || GENRE_GRADIENTS['Pop'];
 
-  if (!isValidUrl || hasError) {
+  const [currentSrc, setCurrentSrc] = useState(effectiveUrl);
+
+  React.useEffect(() => {
+    setHasError(false);
+    setCurrentSrc(getStreamingMediaUrl(coverUrl));
+  }, [coverUrl]);
+
+  const handleImgError = () => {
+    // If jsDelivr CDN fails, attempt raw.githubusercontent.com fallback before giving up
+    if (currentSrc && currentSrc.includes('cdn.jsdelivr.net/gh/')) {
+      const match = currentSrc.match(/cdn\.jsdelivr\.net\/gh\/([^/@]+)\/([^/@]+)@([^/]+)\/(.*)/);
+      if (match) {
+        const [, owner, repo, branch, path] = match;
+        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+        if (currentSrc !== rawUrl) {
+          setCurrentSrc(rawUrl);
+          return;
+        }
+      }
+    }
+    setHasError(true);
+  };
+
+  if (!isValidUrl || hasError || !currentSrc) {
     return (
       <div
         className={`relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br ${gradient} flex flex-col items-center justify-center p-4 text-white shadow-inner select-none ${className}`}
@@ -87,9 +110,9 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   return (
     <div className={`relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br ${gradient} ${className}`}>
       <img
-        src={effectiveUrl}
+        src={currentSrc}
         alt={`${trackName} by ${artistName}`}
-        onError={() => setHasError(true)}
+        onError={handleImgError}
         className="w-full h-full object-cover transition-transform duration-300"
         loading={priority ? 'eager' : 'lazy'}
         // @ts-expect-error React 18 / 19 fetchPriority attribute support
