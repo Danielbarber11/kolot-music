@@ -37,6 +37,7 @@ import { AlbumModal } from './AlbumModal';
 import { Logo } from './Logo';
 import { TermsModal } from './TermsModal';
 import { CookieBanner } from './CookieBanner';
+import { DevToolsProtection } from './DevToolsProtection';
 import {
   getArtistTracksFromFirebase,
   getArtistAccountsFromFirebase,
@@ -489,6 +490,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
       className="h-screen overflow-hidden bg-[#000000] text-white font-sans flex flex-col antialiased selection:bg-[#1ed760] selection:text-black"
       dir={isHe ? 'rtl' : 'ltr'}
     >
+      {/* DEVTOOLS SECURITY PROTECTION */}
+      <DevToolsProtection />
+
       {/* MANDATORY TERMS OVERLAY */}
       <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
 

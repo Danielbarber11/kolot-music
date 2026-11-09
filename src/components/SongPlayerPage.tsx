@@ -495,6 +495,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               className="text-xs sm:text-sm font-bold text-white hover:text-white/80 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <span>{track.artistName}</span>
+              {track.featuredArtist && <span className="text-emerald-300 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
               <ArrowUpRight className="w-3.5 h-3.5 text-white" />
             </button>
           </div>
@@ -557,18 +558,35 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 {track.artistName}
               </button>
             </div>
+
+            {track.featuredArtist && (
+              <div>
+                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר אורח:' : 'Featured Artist:'}</span>
+                <span className="font-bold text-emerald-300 text-xs truncate block">{track.featuredArtist}</span>
+              </div>
+            )}
+
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'אלבום / אוסף:' : 'Album:'}</span>
               <span className="font-bold text-white/90 truncate block">{track.albumName || (isHe ? 'סינגל' : 'Single')}</span>
             </div>
+
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סגנון מוזיקלי:' : 'Genre:'}</span>
               <span className="font-bold text-white/90">{track.genre || (isHe ? 'ללא סגנון' : 'General')}</span>
             </div>
+
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שנת הוצאה:' : 'Release Year:'}</span>
               <span className="font-bold text-white/90">{track.publishedDate || new Date().getFullYear().toString()}</span>
             </div>
+
+            {track.writers && (
+              <div className="col-span-2 sm:col-span-3 pt-1 border-t border-white/10">
+                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'כותבים ומלחינים:' : 'Writers & Composers:'}</span>
+                <span className="font-bold text-white/90 text-xs truncate block">{track.writers}</span>
+              </div>
+            )}
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
               <span className="font-bold text-emerald-400 truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>

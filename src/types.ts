@@ -141,6 +141,8 @@ export interface JamendoTrack {
   isAiGenerated?: boolean;
   hasAutoLyrics?: boolean;
   playsCount?: number;
+  featuredArtist?: string;
+  writers?: string;
 }
 
 export interface ArtistProfile {

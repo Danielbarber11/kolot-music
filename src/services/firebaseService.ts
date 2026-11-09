@@ -16,6 +16,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser,
@@ -79,8 +81,22 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
     provider.setCustomParameters({ prompt: 'select_account' });
     const result = await signInWithPopup(auth, provider);
     return result.user;
-  } catch (error) {
-    console.error('Google Sign In Error:', error);
+  } catch (error: any) {
+    console.warn('Google Sign In Popup notice:', error);
+    if (
+      error?.code === 'auth/popup-blocked' ||
+      error?.code === 'auth/popup-closed-by-user' ||
+      error?.code === 'auth/cancelled-popup-request'
+    ) {
+      try {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' });
+        await signInWithRedirect(auth, provider);
+        return auth.currentUser;
+      } catch (redirectErr) {
+        console.error('Redirect sign in error:', redirectErr);
+      }
+    }
     throw error;
   }
 }
@@ -255,6 +271,8 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
       id: track.id,
       name: track.name.slice(0, 200),
       artistName: track.artistName.slice(0, 100),
+      featuredArtist: (track.featuredArtist || '').slice(0, 100),
+      writers: (track.writers || '').slice(0, 500),
       audioUrl: track.audioUrl.startsWith('data:') ? track.audioUrl.slice(0, 500000) : track.audioUrl,
       coverUrl: track.coverUrl ? track.coverUrl.slice(0, 500000) : '',
       albumName: (track.albumName || 'Single').slice(0, 100),
@@ -302,6 +320,8 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           id: data.id || docSnap.id,
           name: data.name,
           artistName: data.artistName,
+          featuredArtist: data.featuredArtist || undefined,
+          writers: data.writers || undefined,
           albumName: data.albumName || 'Single',
           duration: 180,
           audioUrl: data.audioUrl,

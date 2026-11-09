@@ -103,8 +103,11 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [artistBioInput, setArtistBioInput] = useState('');
   const [isPairing, setIsPairing] = useState(false);
 
-  // Track upload inputs & file states
+  // Track upload inputs & metadata states
   const [songTitle, setSongTitle] = useState('');
+  const [performingArtistInput, setPerformingArtistInput] = useState('');
+  const [featuredArtistInput, setFeaturedArtistInput] = useState('');
+  const [writersInput, setWritersInput] = useState('');
   const [audioStreamUrl, setAudioStreamUrl] = useState('');
   const [audioFileName, setAudioFileName] = useState('');
   const [coverArtUrl, setCoverArtUrl] = useState('');
@@ -143,6 +146,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   // Song editing & deletion states
   const [editingTrack, setEditingTrack] = useState<JamendoTrack | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [editPerformingArtist, setEditPerformingArtist] = useState('');
+  const [editFeaturedArtist, setEditFeaturedArtist] = useState('');
+  const [editWriters, setEditWriters] = useState('');
   const [editGenre, setEditGenre] = useState('');
   const [editAlbum, setEditAlbum] = useState('');
   const [editLyrics, setEditLyrics] = useState('');
@@ -171,6 +177,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (!canManageTrack(track)) return;
     setEditingTrack(track);
     setEditTitle(track.name);
+    setEditPerformingArtist(track.artistName || '');
+    setEditFeaturedArtist(track.featuredArtist || '');
+    setEditWriters(track.writers || '');
     setEditGenre(track.genre || 'Pop');
     setEditAlbum(track.albumName || '');
     setEditLyrics(track.lyrics || '');
@@ -185,6 +194,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     const updatedTrack: JamendoTrack = {
       ...editingTrack,
       name: editTitle.trim() || editingTrack.name,
+      artistName: editPerformingArtist.trim() || editingTrack.artistName,
+      featuredArtist: editFeaturedArtist.trim() || undefined,
+      writers: editWriters.trim() || undefined,
       genre: editGenre.trim() || editingTrack.genre,
       albumName: editAlbum.trim() || editingTrack.albumName,
       lyrics: editLyrics.trim() || undefined,
@@ -636,10 +648,14 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     setCurrentArtist(updatedArtist);
     saveArtistAccountToFirebase(updatedArtist).catch(() => {});
 
+    const finalArtistName = performingArtistInput.trim() || currentArtist.name;
+
     const newTrack: JamendoTrack = {
       id: `artist_track_${Date.now()}`,
       name: songTitle.trim(),
-      artistName: currentArtist.name,
+      artistName: finalArtistName,
+      featuredArtist: featuredArtistInput.trim() || undefined,
+      writers: writersInput.trim() || undefined,
       albumName: albumTitle.trim() || (isHe ? 'סינגל עצמאי' : 'Independent Single'),
       duration: 180,
       audioUrl: audioStreamUrl.trim(),
@@ -672,6 +688,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     setIsPublishing(false);
     setPublishSuccess(true);
     setSongTitle('');
+    setPerformingArtistInput('');
+    setFeaturedArtistInput('');
+    setWritersInput('');
     setAudioStreamUrl('');
     setAudioFileName('');
     setCoverArtUrl('');
@@ -1193,6 +1212,38 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                       />
                     </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-white/90 font-bold mb-1">{isHe ? 'שם הזמר / אמן מבצע' : 'Performing Artist'}</label>
+                        <input
+                          type="text"
+                          value={editPerformingArtist}
+                          onChange={(e) => setEditPerformingArtist(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-white/90 font-bold mb-1">{isHe ? 'זמר אורח (Feat.)' : 'Featured Artist'}</label>
+                        <input
+                          type="text"
+                          value={editFeaturedArtist}
+                          onChange={(e) => setEditFeaturedArtist(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'כותבים ומלחינים' : 'Writers & Composers'}</label>
+                      <input
+                        type="text"
+                        value={editWriters}
+                        onChange={(e) => setEditWriters(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
+                      />
+                    </div>
+
                     <div>
                       <label className="block text-white/90 font-bold mb-1">{isHe ? 'ז׳אנר / סגנון מוזיקלי' : 'Genre'}</label>
                       <input
@@ -1382,6 +1433,56 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     <p className="text-[11px] text-neutral-400">
                       {isHe ? 'השם שיוצג בראש הנגן, ברשימות ההשמעה ובדף השיר' : 'Displayed in player and playlists'}
                     </p>
+                  </div>
+                </div>
+
+                {/* 2. ARTIST, FEATURED ARTIST, WRITERS & COMPOSERS */}
+                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* שם הזמר / אמן מבצע */}
+                    <div>
+                      <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
+                        <User className="w-4 h-4 text-emerald-400" />
+                        <span>{isHe ? 'שם הזמר / אמן מבצע' : 'Performing Artist'}</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={performingArtistInput}
+                        onChange={(e) => setPerformingArtistInput(e.target.value)}
+                        placeholder={currentArtist.name || (isHe ? 'שם הזמר המבצע...' : 'Performing artist name...')}
+                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
+                      />
+                    </div>
+
+                    {/* זמר אורח */}
+                    <div>
+                      <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
+                        <Mic2 className="w-4 h-4 text-emerald-400" />
+                        <span>{isHe ? 'זמר אורח (Feat.)' : 'Featured Artist'}</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={featuredArtistInput}
+                        onChange={(e) => setFeaturedArtistInput(e.target.value)}
+                        placeholder={isHe ? 'שם הזמר האורח (אופציונלי)...' : 'Featured artist (optional)...'}
+                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  {/* כותבים ומלחינים */}
+                  <div>
+                    <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
+                      <Edit3 className="w-4 h-4 text-emerald-400" />
+                      <span>{isHe ? 'כותבים ומלחינים' : 'Writers & Composers'}</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={writersInput}
+                      onChange={(e) => setWritersInput(e.target.value)}
+                      placeholder={isHe ? 'מילים: ... | לחן: ... | עיבוד: ...' : 'Writers, composers & arrangers...'}
+                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
+                    />
                   </div>
                 </div>
 

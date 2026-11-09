@@ -89,7 +89,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
           {/* ALBUM HEADER SECTION */}
           <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center sm:items-end gap-6 border-b border-white/10 bg-gradient-to-b from-white/5 to-transparent">
             {/* Album Cover Art (Square 1:1) */}
-            <div className="w-44 h-44 sm:w-52 sm:h-52 shrink-0 rounded-2xl overflow-hidden bg-gradient-to-br from-neutral-800 via-neutral-900 to-black border border-white/15 shadow-[0_12px_35px_rgba(0,0,0,0.6)] relative flex items-center justify-center">
+            <div className="w-44 h-44 sm:w-52 sm:h-52 shrink-0 rounded-2xl overflow-hidden bg-gradient-to-br from-indigo-950 via-purple-900 to-black border border-white/20 shadow-[0_12px_35px_rgba(0,0,0,0.8)] relative flex items-center justify-center">
               {effectiveCover ? (
                 <img
                   src={effectiveCover}
@@ -97,9 +97,17 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                   className="w-full h-full object-cover"
                 />
               ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-tr from-white/10 via-white/5 to-transparent text-white/80 p-4">
-                  <Logo heartOnly={true} className="w-20 h-20 drop-shadow-[0_4px_16px_rgba(255,255,255,0.3)] mb-2" />
-                  <span className="text-[11px] font-bold text-white/70 tracking-widest uppercase">{isHe ? 'אלבום' : 'Album'}</span>
+                <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-purple-800/40 via-indigo-900/60 to-black/90 text-white/90 p-4 text-center select-none relative overflow-hidden">
+                  <div className="absolute inset-0 opacity-20 pointer-events-none">
+                    <div className="absolute inset-2 rounded-full border border-white/40" />
+                    <div className="absolute inset-6 rounded-full border border-white/30" />
+                    <div className="absolute inset-10 rounded-full border border-white/20" />
+                  </div>
+                  <div className="w-16 h-16 rounded-full bg-white/10 backdrop-blur-xl border border-white/25 flex items-center justify-center mb-3 shadow-2xl">
+                    <Disc className="w-9 h-9 text-purple-300" />
+                  </div>
+                  <span className="text-xs font-black text-white truncate max-w-full px-2">{album.title}</span>
+                  <span className="text-[10px] font-bold text-purple-300/80 tracking-widest uppercase mt-0.5">{isHe ? 'אלבום מוזיקלי' : 'Music Album'}</span>
                 </div>
               )}
             </div>
