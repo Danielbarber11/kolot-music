@@ -270,6 +270,31 @@ export async function fetchAllRealSongs(
     console.warn('GitHub tracks fetch warning:', e);
   }
 
+  // If GitHub returned tracks successfully, auto-purge stale local tracks that no longer exist in GitHub repo
+  if (ghTracks.length > 0) {
+    try {
+      const activeGitHubIds = new Set(ghTracks.map((t) => t.id));
+      const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
+      if (savedLocal) {
+        const parsed: JamendoTrack[] = JSON.parse(savedLocal);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
+          localStorage.setItem('kolot_uploaded_tracks', JSON.stringify(cleaned));
+        }
+      }
+      const savedCloud = localStorage.getItem(CLOUD_TRACKS_CACHE_KEY);
+      if (savedCloud) {
+        const parsed: JamendoTrack[] = JSON.parse(savedCloud);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
+          localStorage.setItem(CLOUD_TRACKS_CACHE_KEY, JSON.stringify(cleaned));
+        }
+      }
+    } catch (err) {
+      console.warn('Stale track sync notice:', err);
+    }
+  }
+
   // Merge with priority: Firestore -> GitHub -> Instant Pool
   const combined = deduplicateTracks([...fbTracks, ...ghTracks, ...instantPool]);
 
