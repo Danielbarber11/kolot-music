@@ -24,6 +24,7 @@ import { JamendoTrack, Language, ArtistProfile, Album } from '../types';
 import {
   fetchAllRealSongs,
   getInstantSongPool,
+  getInstantSongPoolAsync,
   fetchLiveAudioFromArchive,
   deduplicateTracks,
   searchModern21stCenturyTracks,
@@ -266,17 +267,19 @@ export const SongsView: React.FC<SongsViewProps> = ({
       setAllTracks(instant);
     }
 
+    // Load indexedDB tracks async as soon as possible
+    getInstantSongPoolAsync().then((tracks: JamendoTrack[]) => {
+      if (tracks.length > 0) {
+        setAllTracks(prev => deduplicateTracks([...tracks, ...prev]));
+      }
+    });
+
     // 2. Fetch remote updates in parallel asynchronously
     Promise.allSettled([
-      getArtistTracksFromFirebase(),
       getArtistAccountsFromFirebase(),
       fetchAllRealSongs(),
       fetchArtistProfilesFromGitHub(),
-    ]).then(([fbTracksRes, fbAccountsRes, allSongsRes, ghProfilesRes]) => {
-      if (fbTracksRes.status === 'fulfilled' && fbTracksRes.value?.length) {
-        setAllTracks((prev) => deduplicateTracks([...fbTracksRes.value, ...prev]));
-      }
-      
+    ]).then(([fbAccountsRes, allSongsRes, ghProfilesRes]) => {
       let combinedArtists: ArtistProfile[] = [];
       if (fbAccountsRes.status === 'fulfilled' && fbAccountsRes.value?.length) {
         combinedArtists = [...fbAccountsRes.value];
@@ -295,7 +298,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       }
 
       if (allSongsRes.status === 'fulfilled' && allSongsRes.value?.length) {
-        setAllTracks((prev) => deduplicateTracks([...allSongsRes.value, ...prev]));
+        setAllTracks(allSongsRes.value);
       }
     });
   }, []);

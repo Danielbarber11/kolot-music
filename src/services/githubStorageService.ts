@@ -424,6 +424,13 @@ export async function uploadTrackToGitHubRepo(
   await commitFileToGitHub(repo, metadataPath, metadataBase64, metaMsg, token);
   await commitFileToGitHub(backupRepo, metadataPath, metadataBase64, metaMsg, token);
 
+  // 4. Update Master Index immediately for ultra-fast CDN loading
+  fetchTracksFromSingleRepo(repo, token).then((updatedTracks) => {
+    if (token && updatedTracks.length > 0) {
+      updateMasterTracksIndexOnGitHub(repo, updatedTracks, token).catch(() => {});
+    }
+  }).catch(() => {});
+
   // Update storage usage counter in local configuration
   const totalTrackBytes = audioBytesEstimate + coverBytesEstimate;
   const updatedConfig = {

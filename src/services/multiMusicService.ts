@@ -1,6 +1,16 @@
 import { JamendoTrack } from '../types';
-import { getArtistTracksFromFirebase, deleteArtistTrackFromFirebase, getArtistAccountsFromFirebase, saveArtistAccountToFirebase } from './firebaseService';
-import { loadTracksFromIndexedDB } from './localTrackStorage';
+import { 
+  getArtistTracksFromFirebase, 
+  deleteArtistTrackFromFirebase, 
+  getArtistAccountsFromFirebase, 
+  saveArtistAccountToFirebase 
+} from './firebaseService';
+import { 
+  loadTracksFromIndexedDB, 
+  getCachedAudioBlob,
+  removeTrackFromStorage,
+  persistTrackToStorage
+} from './localTrackStorage';
 import { 
   fetchTracksFromGitHubRepo, 
   computeTrackBgColor,
@@ -9,6 +19,7 @@ import {
   fetchArtistProfilesFromGitHub,
   urlToBlob
 } from './githubStorageService';
+import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
  * Clean Storage-Only Music Service
@@ -16,41 +27,7 @@ import {
  * Only tracks that are saved/uploaded into the storage repository are loaded and displayed.
  */
 
-export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [
-  {
-    id: 'verified_default_1',
-    name: 'שקיעה כתומה',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1793979341845.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1793979341845.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    playsCount: 1420,
-    isAiGenerated: false,
-  },
-  {
-    id: 'verified_default_2',
-    name: 'הקול של המחר',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794053762741.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794053762741.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    playsCount: 2890,
-    isAiGenerated: true,
-    hasAutoLyrics: true,
-  }
-];
+export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
 
 export const ALL_MUSIC_GENRES = [
   'Pop',
@@ -63,8 +40,6 @@ export const ALL_MUSIC_GENRES = [
   'Blues',
   'Cinematic',
 ];
-
-import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 const CLOUD_TRACKS_CACHE_KEY = 'kolot_cloud_tracks_cache';
 
@@ -244,12 +219,56 @@ export function getSavedRepoTracks(): JamendoTrack[] {
   return [];
 }
 /**
- * Instant song pool returns cached cloud tracks + repo tracks + verified default tracks for 0ms initial load
+ * Resume any uploads that were interrupted
+ */
+export async function resumePendingUploads(): Promise<void> {
+  try {
+    const pendingJson = localStorage.getItem('kolot_pending_uploads');
+    if (!pendingJson) return;
+    
+    const pendingIds: string[] = JSON.parse(pendingJson);
+    if (!Array.isArray(pendingIds) || pendingIds.length === 0) return;
+
+    console.info(`Resuming ${pendingIds.length} interrupted uploads...`);
+    
+    for (const id of pendingIds) {
+      const allCached = await loadTracksFromIndexedDB();
+      const track = allCached.find(t => t.id === id);
+      if (!track) continue;
+
+      const audioBlob = await getCachedAudioBlob(id);
+      const coverBlob = track.coverUrl?.startsWith('data:') ? await urlToBlob(track.coverUrl) : null;
+      
+      const res = await uploadTrackToGitHubRepo(track, audioBlob || undefined, coverBlob || undefined);
+      if (res.success) {
+        // Remove from pending
+        const currentPending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
+        const updated = currentPending.filter((pid: string) => pid !== id);
+        localStorage.setItem('kolot_pending_uploads', JSON.stringify(updated));
+        console.info(`Interrupted upload for ${track.name} recovered successfully.`);
+      }
+    }
+  } catch (err) {
+    console.warn('Interrupted upload recovery notice:', err);
+  }
+}
+
+/**
+ * Instant song pool returns cached cloud tracks + verified default tracks for 0ms initial load
+ */
+export async function getInstantSongPoolAsync(): Promise<JamendoTrack[]> {
+  const cachedCloud = getCachedCloudTracks();
+  const indexedDBTracks = await loadTracksFromIndexedDB();
+  const combined = [...cachedCloud, ...indexedDBTracks, ...VERIFIED_REAL_TRACKS];
+  return deduplicateTracks(combined);
+}
+
+/**
+ * Synchronous version for state init (reads from localStorage only)
  */
 export function getInstantSongPool(): JamendoTrack[] {
   const cachedCloud = getCachedCloudTracks();
-  const savedRepo = getSavedRepoTracks();
-  const combined = [...cachedCloud, ...savedRepo, ...VERIFIED_REAL_TRACKS];
+  const combined = [...cachedCloud, ...VERIFIED_REAL_TRACKS];
   return deduplicateTracks(combined);
 }
 
@@ -356,9 +375,10 @@ export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
   onBatch?: (tracks: JamendoTrack[]) => void
 ): Promise<JamendoTrack[]> {
-  const instantPool = getInstantSongPool();
+  const instantPool = await getInstantSongPoolAsync();
 
-  // Run migration in background without blocking
+  // Run resume and migration in background without blocking
+  resumePendingUploads().catch(() => {});
   migrateFirebaseToGitHub().catch(() => {});
 
   let ghTracks: JamendoTrack[] = [];
@@ -373,28 +393,20 @@ export async function fetchAllRealSongs(
     try {
       const activeGitHubIds = new Set(ghTracks.map((t) => t.id));
       
-      // 1. Purge kolot_uploaded_tracks (files intended for upload)
-      const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
-      if (savedLocal) {
-        const parsed: JamendoTrack[] = JSON.parse(savedLocal);
-        if (Array.isArray(parsed)) {
-          // If a track is an "artist_track" (local-only type) but not in GitHub anymore, delete it.
-          const cleaned = parsed.filter((t) => !t.id?.startsWith('artist_track_') || activeGitHubIds.has(t.id));
-          if (cleaned.length !== parsed.length) {
-            localStorage.setItem('kolot_uploaded_tracks', JSON.stringify(cleaned));
-          }
+      // Sync IndexedDB to match GitHub
+      const indexedDBTracks = await loadTracksFromIndexedDB();
+      for (const t of indexedDBTracks) {
+        // If it's a known github track (has non-blob URL) but not in current fetch, remove from local
+        if (t.audioUrl && !t.audioUrl.startsWith('blob:') && !activeGitHubIds.has(t.id)) {
+          await removeTrackFromStorage(t.id);
         }
       }
       
-      // 2. Refresh the high-speed cloud cache
+      // Refresh the high-speed cloud cache
       saveCachedCloudTracks(ghTracks);
     } catch (err) {
       console.warn('Stale track sync notice:', err);
     }
-  } else if (instantPool.some(t => t.id.startsWith('artist_track_'))) {
-    // If GitHub returns empty but we have local tracks, they might have been deleted from GitHub
-    // We should be careful here, but if the user wants strict GitHub source of truth:
-    // localStorage.removeItem('kolot_uploaded_tracks');
   }
 
   const combined = deduplicateTracks([...ghTracks, ...VERIFIED_REAL_TRACKS]);

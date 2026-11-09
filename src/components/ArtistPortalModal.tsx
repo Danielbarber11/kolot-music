@@ -734,6 +734,13 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
     // 1. Save track to local storage & broadcast to UI immediately (0-lag UX)
     await persistTrackToStorage(newTrack, currentAudioFile || undefined);
+    
+    // Add to pending uploads for reliability
+    try {
+      const pending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
+      localStorage.setItem('kolot_pending_uploads', JSON.stringify([...pending, newTrack.id]));
+    } catch {}
+
     onTrackPublished(newTrack);
 
     setIsPublishing(false);
@@ -763,6 +770,12 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     Promise.allSettled([
       uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined).then((ghRes) => {
         if (ghRes.success) {
+          // Remove from pending
+          try {
+            const pending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
+            localStorage.setItem('kolot_pending_uploads', JSON.stringify(pending.filter((id: string) => id !== newTrack.id)));
+          } catch {}
+
           let updated = false;
           if (ghRes.audioUrl) {
             newTrack.audioUrl = ghRes.audioUrl;
@@ -783,6 +796,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     ]).catch((err) => {
       console.warn('Background cloud sync notice:', err);
     });
+
 
   };
 
