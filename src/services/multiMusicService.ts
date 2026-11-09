@@ -1,7 +1,7 @@
 import { JamendoTrack } from '../types';
 import { getArtistTracksFromFirebase } from './firebaseService';
 import { loadTracksFromIndexedDB } from './localTrackStorage';
-import { fetchTracksFromGitHubRepo } from './githubStorageService';
+import { fetchTracksFromGitHubRepo, computeTrackBgColor } from './githubStorageService';
 
 /**
  * Clean Storage-Only Music Service
@@ -74,29 +74,98 @@ export function sortTracksChronologically(tracks: JamendoTrack[]): JamendoTrack[
 }
 
 /**
- * Deduplicates tracks by ID and intelligently merges updated metadata (newer titles, updated genres, AI markers, plays)
+ * Intelligent helper to score cover art quality
+ */
+function getCoverQualityScore(url?: string): number {
+  if (!url || typeof url !== 'string') return 0;
+  const trimmed = url.trim();
+  if (!trimmed) return 0;
+  if (trimmed.startsWith('data:image/')) return 3;
+  if (trimmed.includes('jsdelivr.net') || trimmed.includes('githubusercontent.com') || trimmed.includes('firestore')) return 4;
+  if (trimmed.startsWith('blob:')) return 2;
+  if (trimmed.includes('unsplash.com') || trimmed.includes('placeholder')) return 1;
+  return 2;
+}
+
+/**
+ * Deduplicates tracks by ID and normalized Artist + Title, intelligently merging updated metadata
+ * (preferring authentic cover art, streaming audio URLs, complete lyrics, and higher play counts).
  */
 export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
   const deletedSet = getDeletedSongIds();
   const trackMap = new Map<string, JamendoTrack>();
+  const idToCanonicalKey = new Map<string, string>();
+  const titleArtistToCanonicalKey = new Map<string, string>();
+
+  const normalize = (str?: string) => (str || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
   for (const t of tracks) {
-    if (!t || !t.id || !t.name || !t.artistName) continue;
-    if (deletedSet.has(t.id)) continue;
+    if (!t || !t.name || !t.name.trim()) continue;
+    if (t.id && deletedSet.has(t.id)) continue;
     if (!t.audioUrl || typeof t.audioUrl !== 'string' || !t.audioUrl.trim()) continue;
 
-    const existing = trackMap.get(t.id);
-    if (!existing) {
-      trackMap.set(t.id, { ...t });
+    const normArtist = normalize(t.artistName || 'אמן לא ידוע');
+    const normName = normalize(t.name);
+    const titleArtistKey = `${normArtist}::${normName}`;
+    const rawIdKey = t.id ? t.id.trim() : titleArtistKey;
+
+    // Find if track already exists by ID or by Title+Artist combination
+    const canonicalKey = idToCanonicalKey.get(rawIdKey) || titleArtistToCanonicalKey.get(titleArtistKey);
+
+    if (!canonicalKey) {
+      // First time encountering this song
+      const key = rawIdKey;
+      trackMap.set(key, { ...t });
+      idToCanonicalKey.set(rawIdKey, key);
+      titleArtistToCanonicalKey.set(titleArtistKey, key);
     } else {
-      // First encountered item in array takes precedence (contains latest updates)
+      const existing = trackMap.get(canonicalKey)!;
+
+      // Determine best cover art
+      const existingCoverScore = getCoverQualityScore(existing.coverUrl);
+      const newCoverScore = getCoverQualityScore(t.coverUrl);
+      const bestCover = newCoverScore > existingCoverScore ? t.coverUrl : existing.coverUrl;
+
+      // Determine best audio URL (prefer CDN / HTTPS over temporary blob)
+      let bestAudio = existing.audioUrl;
+      if (t.audioUrl && !t.audioUrl.startsWith('blob:') && existing.audioUrl?.startsWith('blob:')) {
+        bestAudio = t.audioUrl;
+      } else if (!bestAudio && t.audioUrl) {
+        bestAudio = t.audioUrl;
+      }
+
+      // Determine best artist name
+      const bestArtist = (existing.artistName && existing.artistName !== 'אמן לא ידוע')
+        ? existing.artistName
+        : (t.artistName && t.artistName !== 'אמן לא ידוע' ? t.artistName : existing.artistName || 'אמן לא ידוע');
+
+      // Determine best avatar URL
+      const bestAvatar = (existing.artistAvatarUrl && existing.artistAvatarUrl.trim().length > 0)
+        ? existing.artistAvatarUrl
+        : (t.artistAvatarUrl || bestCover);
+
+      // Merge into canonical track
       const merged: JamendoTrack = {
-        ...t,
         ...existing,
-        audioUrl: existing.audioUrl && !existing.audioUrl.startsWith('blob:') ? existing.audioUrl : (t.audioUrl || existing.audioUrl),
-        coverUrl: existing.coverUrl && !existing.coverUrl.startsWith('blob:') ? existing.coverUrl : (t.coverUrl || existing.coverUrl),
+        ...t,
+        id: existing.id || t.id,
+        name: existing.name || t.name,
+        artistName: bestArtist,
+        coverUrl: bestCover || '',
+        audioUrl: bestAudio,
+        artistAvatarUrl: bestAvatar || '',
+        bgColor: existing.bgColor || t.bgColor || computeTrackBgColor(existing),
+        lyrics: (existing.lyrics && existing.lyrics.trim().length > 0) ? existing.lyrics : t.lyrics,
+        hasAutoLyrics: existing.hasAutoLyrics ?? t.hasAutoLyrics ?? true,
+        genre: existing.genre || t.genre || 'Pop',
+        playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
+        uploadedByUid: existing.uploadedByUid || t.uploadedByUid,
       };
-      trackMap.set(t.id, merged);
+
+      trackMap.set(canonicalKey, merged);
+      if (t.id) {
+        idToCanonicalKey.set(t.id.trim(), canonicalKey);
+      }
     }
   }
 

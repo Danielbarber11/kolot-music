@@ -1,26 +1,52 @@
 import React, { useState, useEffect } from 'react';
 import { Cookie, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Language } from '../types';
+import { Language, ArtistProfile } from '../types';
+import { User as FirebaseUser } from 'firebase/auth';
+import { saveArtistAccountToFirebase } from '../services/firebaseService';
 
 interface CookieBannerProps {
   lang: Language;
+  currentUser?: FirebaseUser | null;
+  artistProfile?: ArtistProfile | null;
 }
 
-export const CookieBanner: React.FC<CookieBannerProps> = ({ lang }) => {
+export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, artistProfile }) => {
   const isHe = lang === 'he';
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    const accepted = localStorage.getItem('kolot_cookie_consent_accepted');
-    if (!accepted) {
+    const localAccepted = localStorage.getItem('kolot_cookie_consent_accepted') === 'true';
+    const termsAccepted = localStorage.getItem('kolot_terms_accepted') === 'true';
+    const hasAccount = !!currentUser || !!artistProfile;
+    const profileAccepted = !!artistProfile?.hasAcceptedTerms;
+
+    // If user has an account or logged in or already accepted, hide banner completely
+    if (localAccepted || termsAccepted || hasAccount || profileAccepted) {
+      setIsVisible(false);
+    } else {
       setIsVisible(true);
     }
-  }, []);
+  }, [currentUser, artistProfile]);
 
-  const handleAccept = () => {
+  const handleAccept = async () => {
     localStorage.setItem('kolot_cookie_consent_accepted', 'true');
+    localStorage.setItem('kolot_terms_accepted', 'true');
     setIsVisible(false);
+
+    if (artistProfile) {
+      const updated: ArtistProfile = {
+        ...artistProfile,
+        hasAcceptedTerms: true,
+        acceptedTermsAt: artistProfile.acceptedTermsAt || new Date().toISOString(),
+      };
+      try {
+        localStorage.setItem('wikiarchive_artist_account', JSON.stringify(updated));
+        await saveArtistAccountToFirebase(updated);
+      } catch (err) {
+        console.warn('Failed to update consent in Firebase account:', err);
+      }
+    }
   };
 
   if (!isVisible) return null;
@@ -57,3 +83,4 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang }) => {
     </AnimatePresence>
   );
 };
+

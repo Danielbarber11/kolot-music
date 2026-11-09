@@ -139,6 +139,7 @@ export interface JamendoTrack {
   customServerUrl?: string;
   bgColor?: string;
   isAiGenerated?: boolean;
+  hasAutoLyrics?: boolean;
   playsCount?: number;
 }
 

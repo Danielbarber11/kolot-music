@@ -187,6 +187,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const handleAcceptTerms = async () => {
     setShowTermsModal(false);
+    localStorage.setItem('kolot_cookie_consent_accepted', 'true');
+    localStorage.setItem('kolot_terms_accepted', 'true');
     if (authUser) {
       const updated: ArtistProfile = {
         id: authUser.uid,
@@ -491,7 +493,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
 
       {/* COOKIE CONSENT BANNER */}
-      <CookieBanner lang={lang} />
+      <CookieBanner lang={lang} currentUser={authUser} artistProfile={activeArtistProfile} />
 
       {/* FLOATING TOP NAVIGATION BAR */}
       <div className="px-3 sm:px-6 pt-2.5 pb-1 shrink-0 z-40">
