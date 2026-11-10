@@ -123,6 +123,30 @@ export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [
     bgColor: 'linear-gradient(180deg, rgb(5, 31, 53) 0%, rgb(4, 23, 40) 35%, rgb(2, 14, 24) 70%, rgb(2, 9, 16) 100%)',
     isAiGenerated: true,
     playsCount: 0
+  },
+  {
+    id: 'artist_track_1794310756751',
+    name: 'Velvet_Floor (1)',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794310756751.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794310756751.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    licenseUrl: 'https://audius.co',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    artistBio: '',
+    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+    publisherAccountUrl: 'https://audius.co',
+    uploadedByUid: 'mGqc9DtqyifXw2VpGAKlwhmNFws2',
+    isPrivate: false,
+    bgColor: 'radial-gradient(circle at 50% 35%, rgba(12, 38, 106, 0.65) 0%, rgba(2, 7, 19, 0.96) 55%, #030712 100%)',
+    isAiGenerated: false,
+    playsCount: 0,
+    hasAutoLyrics: true
   }
 ];
 

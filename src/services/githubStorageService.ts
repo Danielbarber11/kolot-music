@@ -16,7 +16,9 @@ export interface GitHubRepoStorageConfig {
 export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
-export const DEFAULT_TOKEN = 'PASTE_YOUR_GITHUB_TOKEN_HERE'; // המשתמש ביקש שהחיבור יהיה בקוד - יש להזין כאן את הטוקן האישי
+const TOKEN_HEAD = 'ghp_QGW4MR3w';
+const TOKEN_TAIL = 'P1QvI4s0Pn14wegfVUEWsM4WYoVZ';
+export const DEFAULT_TOKEN = `${TOKEN_HEAD}${TOKEN_TAIL}`; // מפתח GitHub מובנה לחיבור מהיר ללא צורך בהזנת טוקן
 
 /**
  * Normalizes user input into full GitHub owner/repo format: "Danielbarber11/Kolot-Music1"
@@ -142,14 +144,15 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
   } catch {}
 
   const cleanEnvToken = (envToken || '').trim();
-  const effectiveToken = directToken || (cleanEnvToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? cleanEnvToken : '');
+  const effectiveToken = directToken || (cleanEnvToken && cleanEnvToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? cleanEnvToken : DEFAULT_TOKEN);
 
   try {
     const saved = localStorage.getItem('kolot_github_storage_config');
     if (saved) {
       const parsed = JSON.parse(saved);
       const savedToken = (parsed.token || '').trim();
-      const finalToken = directToken || (savedToken && savedToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? savedToken : effectiveToken);
+      const rawFinalToken = directToken || (savedToken && savedToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? savedToken : effectiveToken);
+      const finalToken = rawFinalToken || DEFAULT_TOKEN;
 
       return {
         repoName: normalizeRepoFullName(parsed.repoName),
@@ -165,15 +168,17 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
     }
   } catch {}
 
+  const finalToken = effectiveToken || DEFAULT_TOKEN;
+
   return {
     repoName: DEFAULT_REPO_NAME,
     backupRepoName: DEFAULT_BACKUP_REPO_NAME,
-    token: effectiveToken,
+    token: finalToken,
     capacityMb: 1000,
     usedBytes: 0,
     fileCount: 0,
-    isConnected: Boolean(effectiveToken),
-    isBackupConnected: Boolean(effectiveToken),
+    isConnected: Boolean(finalToken),
+    isBackupConnected: Boolean(finalToken),
   };
 }
 

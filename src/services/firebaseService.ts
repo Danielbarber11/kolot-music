@@ -174,6 +174,28 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
+// Handle pending OAuth redirects (Microsoft / Google / Facebook / Yahoo)
+getRedirectResult(auth)
+  .then((result) => {
+    if (result?.user) {
+      console.log('Successfully signed in via OAuth redirect:', result.user);
+      try {
+        localStorage.setItem(
+          'wikiarchive_cached_auth_user',
+          JSON.stringify({
+            uid: result.user.uid,
+            displayName: result.user.displayName,
+            photoURL: result.user.photoURL,
+            email: result.user.email,
+          })
+        );
+      } catch {}
+    }
+  })
+  .catch((err) => {
+    console.warn('OAuth redirect listener notice:', err);
+  });
+
 export function onAuthUserChanged(callback: (user: FirebaseUser | null) => void) {
   return onAuthStateChanged(auth, callback);
 }
