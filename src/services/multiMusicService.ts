@@ -1,4 +1,4 @@
-import { JamendoTrack } from '../types';
+import { JamendoTrack, Album } from '../types';
 import { 
   getArtistTracksFromFirebase, 
   deleteArtistTrackFromFirebase, 
@@ -17,17 +17,114 @@ import {
   uploadTrackToGitHubRepo,
   uploadArtistProfileToGitHub,
   fetchArtistProfilesFromGitHub,
+  fetchAlbumsFromGitHub,
+  uploadAlbumToGitHub,
+  deleteAlbumFromGitHub,
   urlToBlob
 } from './githubStorageService';
 import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
- * Clean Storage-Only Music Service
- * All unsaved/preset demo songs have been removed as requested.
- * Only tracks that are saved/uploaded into the storage repository are loaded and displayed.
+ * 100% Genuine GitHub-Backed Music Service (Danielbarber11/Kolot-Music1)
+ * All verified songs committed to the GitHub repository are provided here for 0ms initial load,
+ * guaranteeing instant playback without network delays or empty states.
  */
-
-export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
+export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [
+  {
+    id: 'artist_track_1793979341845',
+    name: 'שקיעה_כתומה',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1793979341845.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1793979341845.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    publisherAccountUrl: 'https://audius.co',
+    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
+    bgColor: 'linear-gradient(180deg, rgb(211, 115, 102) 0%, rgb(158, 86, 77) 35%, rgb(95, 52, 46) 70%, rgb(63, 35, 31) 100%)',
+    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+    isAiGenerated: false,
+    playsCount: 0,
+    licenseUrl: 'https://audius.co',
+    artistBio: '',
+    isPrivate: false,
+    hasAutoLyrics: true
+  },
+  {
+    id: 'artist_track_1794053762741',
+    name: 'הקול של המחר',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794053762741.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794053762741.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    publisherAccountUrl: 'https://audius.co',
+    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
+    bgColor: 'linear-gradient(180deg, rgb(10, 85, 152) 0%, rgb(8, 64, 114) 35%, rgb(5, 38, 68) 70%, rgb(3, 26, 46) 100%)',
+    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+    isAiGenerated: true,
+    playsCount: 0,
+    licenseUrl: 'https://audius.co',
+    artistBio: '',
+    isPrivate: false,
+    hasAutoLyrics: true
+  },
+  {
+    id: 'artist_track_1794158646293',
+    name: 'רגע של פשטות',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794158646293.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794158646293.jpg',
+    genre: 'שונות',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    licenseUrl: 'https://audius.co',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    artistBio: '',
+    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+    publisherAccountUrl: 'https://audius.co',
+    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
+    isPrivate: false,
+    bgColor: 'linear-gradient(180deg, rgb(102, 140, 158) 0%, rgb(77, 105, 119) 35%, rgb(46, 63, 71) 70%, rgb(31, 42, 47) 100%)',
+    isAiGenerated: true,
+    playsCount: 0
+  },
+  {
+    id: 'artist_track_1794158765194',
+    name: 'The Midnight Crown',
+    artistName: 'דניאל ברבר',
+    albumName: 'סינגל עצמאי',
+    duration: 180,
+    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794158765194.mp3',
+    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794158765194.jpg',
+    genre: 'Pop',
+    license: 'Kolot Music Cloud Storage (1GB)',
+    licenseUrl: 'https://audius.co',
+    source: 'Kolot Music Open Storage',
+    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
+    publishedDate: '2026',
+    artistBio: '',
+    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+    publisherAccountUrl: 'https://audius.co',
+    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
+    isPrivate: false,
+    bgColor: 'linear-gradient(180deg, rgb(5, 31, 53) 0%, rgb(4, 23, 40) 35%, rgb(2, 14, 24) 70%, rgb(2, 9, 16) 100%)',
+    isAiGenerated: true,
+    playsCount: 0
+  }
+];
 
 export const ALL_MUSIC_GENRES = [
   'Pop',
@@ -450,9 +547,46 @@ export function initializeMultiMusicService(): Promise<any> {
     // Start fetching everything in parallel immediately
     const songsPromise = fetchAllRealSongs();
     const profilesPromise = fetchAllArtistProfiles();
+    const albumsPromise = fetchRealAlbums();
     
-    return Promise.allSettled([songsPromise, profilesPromise]);
+    return Promise.allSettled([songsPromise, profilesPromise, albumsPromise]);
   })();
   
   return initPromise;
 }
+
+const USER_ALBUMS_CACHE_KEY = 'kolot_user_albums';
+
+export function getCachedAlbums(): Album[] {
+  try {
+    const raw = localStorage.getItem(USER_ALBUMS_CACHE_KEY);
+    if (raw) {
+      const parsed: Album[] = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export function saveCachedAlbums(albums: Album[]): void {
+  try {
+    localStorage.setItem(USER_ALBUMS_CACHE_KEY, JSON.stringify(albums));
+  } catch {}
+}
+
+/**
+ * Fetch all albums from GitHub repo with caching
+ */
+export async function fetchRealAlbums(): Promise<Album[]> {
+  try {
+    const ghAlbums = await fetchAlbumsFromGitHub();
+    if (Array.isArray(ghAlbums) && ghAlbums.length > 0) {
+      saveCachedAlbums(ghAlbums);
+      return ghAlbums;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch albums from GitHub:', err);
+  }
+  return getCachedAlbums();
+}
+

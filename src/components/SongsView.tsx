@@ -29,6 +29,8 @@ import {
   deduplicateTracks,
   searchModern21stCenturyTracks,
   fetchAllArtistProfiles,
+  fetchRealAlbums,
+  getCachedAlbums,
   checkTermsAcceptedInFirestore,
   saveTermsAcceptedToFirestore,
 } from '../services/multiMusicService';
@@ -237,6 +239,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   // Song Pool
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(getInstantSongPool);
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>([]);
+  const [remoteAlbums, setRemoteAlbums] = useState<Album[]>(getCachedAlbums);
   const [visibleSearchCount] = useState(150);
 
   // Favorites
@@ -279,7 +282,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
       getArtistAccountsFromFirebase(),
       fetchAllRealSongs(),
       fetchArtistProfilesFromGitHub(),
-    ]).then(([fbAccountsRes, allSongsRes, ghProfilesRes]) => {
+      fetchRealAlbums(),
+    ]).then(([fbAccountsRes, allSongsRes, ghProfilesRes, albumsRes]) => {
       let combinedArtists: ArtistProfile[] = [];
       if (fbAccountsRes.status === 'fulfilled' && fbAccountsRes.value?.length) {
         combinedArtists = [...fbAccountsRes.value];
@@ -299,6 +303,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
       if (allSongsRes.status === 'fulfilled' && allSongsRes.value?.length) {
         setAllTracks(allSongsRes.value);
+      }
+
+      if (albumsRes.status === 'fulfilled' && albumsRes.value?.length) {
+        setRemoteAlbums(albumsRes.value);
       }
     });
   }, []);
@@ -450,6 +458,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     const albumMap = new Map<string, Album>();
 
+    remoteAlbums.forEach((a) => {
+      if (a.title && a.id) {
+        albumMap.set(a.title.toLowerCase().trim(), a);
+      }
+    });
+
     storedAlbums.forEach((a) => {
       if (a.title && a.id) {
         albumMap.set(a.title.toLowerCase().trim(), a);
@@ -502,7 +516,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       const lower = (a.title || '').toLowerCase().trim();
       return !invalidAlbumNames.has(lower) && !lower.startsWith('סינגל') && !lower.startsWith('single');
     });
-  }, [allTracks]);
+  }, [allTracks, remoteAlbums]);
 
   // Rhythm sections for Spotify feed
   const newReleasesTracks = React.useMemo(() => {

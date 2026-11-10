@@ -1,4 +1,4 @@
-import { JamendoTrack } from '../types';
+import { JamendoTrack, Album } from '../types';
 
 export interface GitHubRepoStorageConfig {
   repoName: string;
@@ -134,19 +134,32 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
     ((import.meta.env as any)?.KOLOT as string) ||
     DEFAULT_TOKEN;
 
+  let directToken = '';
+  try {
+    directToken =
+      (localStorage.getItem('kolot_github_token') || '').trim() ||
+      (sessionStorage.getItem('kolot_github_token') || '').trim();
+  } catch {}
+
+  const cleanEnvToken = (envToken || '').trim();
+  const effectiveToken = directToken || (cleanEnvToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? cleanEnvToken : '');
+
   try {
     const saved = localStorage.getItem('kolot_github_storage_config');
     if (saved) {
       const parsed = JSON.parse(saved);
+      const savedToken = (parsed.token || '').trim();
+      const finalToken = directToken || (savedToken && savedToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE' ? savedToken : effectiveToken);
+
       return {
         repoName: normalizeRepoFullName(parsed.repoName),
         backupRepoName: normalizeBackupRepoFullName(parsed.backupRepoName),
-        token: parsed.token || envToken,
+        token: finalToken,
         capacityMb: 1000,
         usedBytes: parsed.usedBytes || 0,
         fileCount: parsed.fileCount || 0,
-        isConnected: true,
-        isBackupConnected: true,
+        isConnected: Boolean(finalToken),
+        isBackupConnected: Boolean(finalToken),
         lastSyncStatus: parsed.lastSyncStatus,
       };
     }
@@ -155,13 +168,38 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
   return {
     repoName: DEFAULT_REPO_NAME,
     backupRepoName: DEFAULT_BACKUP_REPO_NAME,
-    token: envToken,
+    token: effectiveToken,
     capacityMb: 1000,
     usedBytes: 0,
     fileCount: 0,
-    isConnected: true,
-    isBackupConnected: true,
+    isConnected: Boolean(effectiveToken),
+    isBackupConnected: Boolean(effectiveToken),
   };
+}
+
+export function saveGitHubToken(token: string): void {
+  const clean = (token || '').trim();
+  try {
+    if (clean && clean !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+      localStorage.setItem('kolot_github_token', clean);
+      sessionStorage.setItem('kolot_github_token', clean);
+    } else {
+      localStorage.removeItem('kolot_github_token');
+      sessionStorage.removeItem('kolot_github_token');
+    }
+  } catch {}
+
+  const current = getGitHubStorageConfig();
+  saveGitHubStorageConfig({
+    ...current,
+    token: clean,
+    isConnected: Boolean(clean),
+  });
+}
+
+export function isGitHubTokenConfigured(): boolean {
+  const config = getGitHubStorageConfig();
+  return Boolean(config.token && config.token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE');
 }
 
 export function saveGitHubStorageConfig(config: GitHubRepoStorageConfig): void {
@@ -169,9 +207,14 @@ export function saveGitHubStorageConfig(config: GitHubRepoStorageConfig): void {
     ...config,
     repoName: normalizeRepoFullName(config.repoName),
     backupRepoName: normalizeBackupRepoFullName(config.backupRepoName),
-    token: config.token || DEFAULT_TOKEN,
+    token: config.token || '',
   };
-  localStorage.setItem('kolot_github_storage_config', JSON.stringify(cleanConfig));
+  try {
+    localStorage.setItem('kolot_github_storage_config', JSON.stringify(cleanConfig));
+    if (cleanConfig.token && cleanConfig.token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+      localStorage.setItem('kolot_github_token', cleanConfig.token);
+    }
+  } catch {}
 }
 
 function getGitHubHeaders(token?: string, includeContentType: boolean = false): Record<string, string> {
@@ -182,40 +225,73 @@ function getGitHubHeaders(token?: string, includeContentType: boolean = false): 
     headers['Content-Type'] = 'application/json';
   }
   const cleanToken = (token || '').trim();
-  if (cleanToken && cleanToken !== 'undefined' && cleanToken !== 'null' && cleanToken !== '') {
+  if (cleanToken && cleanToken !== 'undefined' && cleanToken !== 'null' && cleanToken !== '' && cleanToken !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
     headers['Authorization'] = `token ${cleanToken}`;
   }
   return headers;
 }
 
 /**
- * Test connectivity with GitHub repositories
+ * Test connectivity and write permissions with GitHub repository
  */
 export async function testGitHubConnection(
   repoName: string,
   token: string
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; canWrite: boolean; message: string }> {
   const fullRepo = normalizeRepoFullName(repoName);
+  const cleanToken = (token || '').trim();
+
+  if (!cleanToken || cleanToken === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    return {
+      success: false,
+      canWrite: false,
+      message: 'לא הוזן מפתח גישה (Token) של GitHub. נדרש טוקן עם הרשאת כתיבה כדי להעלות שירים למאגר.',
+    };
+  }
+
   try {
     const res = await fetch(`https://api.github.com/repos/${fullRepo}`, {
-      headers: getGitHubHeaders(token),
+      headers: getGitHubHeaders(cleanToken),
     });
 
     if (res.ok) {
       const data = await res.json();
+      const canWrite = Boolean(data.permissions?.push || data.permissions?.admin);
+      if (canWrite) {
+        return {
+          success: true,
+          canWrite: true,
+          message: `חיבור מוצלח! למפתח הגישה יש הרשאות כתיבה והעלאה מלאות למאגר ${data.full_name || fullRepo}.`,
+        };
+      } else {
+        return {
+          success: true,
+          canWrite: false,
+          message: `חיבור תקין למאגר ${data.full_name || fullRepo}, אך לטוקן אין הרשאת כתיבה (push). יש ליצור טוקן עם הרשאת repo.`,
+        };
+      }
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        return {
+          success: false,
+          canWrite: false,
+          message: 'מפתח הגישה שגוי (401 Bad credentials). אנא ודא שהעתקת את הטוקן המלא מ-GitHub.',
+        };
+      }
       return {
-        success: true,
-        message: `חיבור מוצלח למאגר ${data.full_name || fullRepo} ב-GitHub!`,
+        success: false,
+        canWrite: false,
+        message: errData.message || `שגיאה בחיבור ל-GitHub (${res.status} ${res.statusText})`,
       };
     }
-  } catch (e) {
-    console.warn('GitHub API test warning:', e);
+  } catch (e: any) {
+    return {
+      success: false,
+      canWrite: false,
+      message: `שגיאת רשת בבדיקת החיבור: ${e.message || String(e)}`,
+    };
   }
-
-  return {
-    success: true,
-    message: `מאגר ${fullRepo} מחובר ומוכן לאחסון שירים ותמונות בנפח של 1GB.`,
-  };
 }
 
 export function computeTrackBgColor(track: Partial<JamendoTrack>): string {
@@ -288,19 +364,30 @@ export async function updateTrackColorInGitHubRepo(
 /**
  * Internal commit helper to upload files into a GitHub repository
  */
-async function commitFileToGitHub(
+/**
+ * Internal commit helper to upload files into a GitHub repository
+ */
+export async function commitFileToGitHub(
   repoFullName: string,
   filePath: string,
   base64Content: string,
   commitMessage: string,
   token: string
 ): Promise<{ success: boolean; downloadUrl?: string; error?: string }> {
+  const cleanToken = (token || '').trim();
+  if (!cleanToken || cleanToken === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    return {
+      success: false,
+      error: 'לא מוגדר מפתח גישה (Token) של GitHub. נדרש טוקן בעל הרשאת כתיבה (repo) כדי לשמור קבצים במאגר ' + repoFullName,
+    };
+  }
+
   try {
     // Check if file already exists to obtain SHA
     let sha: string | undefined;
     try {
       const checkRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
-        headers: getGitHubHeaders(token),
+        headers: getGitHubHeaders(cleanToken),
       });
       if (checkRes.ok) {
         const existingData = await checkRes.json();
@@ -310,7 +397,7 @@ async function commitFileToGitHub(
 
     const putRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
       method: 'PUT',
-      headers: getGitHubHeaders(token, true),
+      headers: getGitHubHeaders(cleanToken, true),
       body: JSON.stringify({
         message: commitMessage,
         content: base64Content,
@@ -324,29 +411,42 @@ async function commitFileToGitHub(
       return { success: true, downloadUrl };
     } else {
       const errData = await putRes.json().catch(() => ({}));
-      console.warn(`GitHub commit failed for ${repoFullName}/${filePath}:`, errData);
-      return { success: false, error: errData.message || putRes.statusText };
+      let msg = errData.message || putRes.statusText;
+      if (putRes.status === 401) {
+        msg = 'טוקן GitHub אינו תקין או שפג תוקפו (401 Bad credentials)';
+      } else if (putRes.status === 404) {
+        msg = `מאגר ${repoFullName} לא נמצא או שלטוקן אין הרשאת כתיבה אליו (404 Not Found)`;
+      } else if (putRes.status === 403) {
+        msg = `אין הרשאה לכתיבה למאגר (403 Forbidden): ${errData.message || ''}`;
+      }
+      console.warn(`GitHub commit failed for ${repoFullName}/${filePath}:`, msg);
+      return { success: false, error: msg };
     }
   } catch (err: any) {
     console.warn(`GitHub commit exception for ${repoFullName}/${filePath}:`, err);
-    return { success: false, error: err.message };
+    return { success: false, error: err.message || 'שגיאת רשת בחיבור ל-GitHub' };
   }
 }
 
 /**
- * Upload & Commit track audio file, cover image, and metadata JSON directly into:
- * 1. Primary Repository: Danielbarber11/Kolot-Music1
- * 2. Emergency Backup: Danielbarber11/Kolot-Music2
+ * Upload & Commit track audio file, cover image, and metadata JSON directly into GitHub
  */
 export async function uploadTrackToGitHubRepo(
   track: JamendoTrack,
   audioFile?: File | Blob,
   coverFile?: File | Blob
-): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string }> {
+): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string; error?: string }> {
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = config.token || DEFAULT_TOKEN;
+  const token = (config.token || '').trim();
+
+  if (!token || token === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    return {
+      success: false,
+      error: 'לא מוגדר מפתח גישה של GitHub (Personal Access Token). אנא הזן את הטוקן שלך בהגדרות כדי להעלות שירים למאגר ' + repo,
+    };
+  }
 
   let finalAudioRawUrl = track.audioUrl;
   let finalCoverRawUrl = track.coverUrl;
@@ -364,16 +464,22 @@ export async function uploadTrackToGitHubRepo(
       const audioPath = `audio/${track.id}.${audioExt}`;
       const msg = `Save audio file: ${track.name} (${track.id})`;
 
-      // Primary repo upload
       const primaryAudioRes = await commitFileToGitHub(repo, audioPath, audioBase64, msg, token);
-      if (primaryAudioRes.success) {
-        finalAudioRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${audioPath}`;
+      if (!primaryAudioRes.success) {
+        return {
+          success: false,
+          error: `שגיאה בהעלאת קובץ השמע ל-GitHub: ${primaryAudioRes.error}`,
+        };
       }
+      finalAudioRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${audioPath}`;
 
-      // Backup repo upload (emergency mirror)
-      await commitFileToGitHub(backupRepo, audioPath, audioBase64, msg, token);
-    } catch (audioErr) {
-      console.warn('Failed to upload audio binary to GitHub:', audioErr);
+      // Backup mirror
+      commitFileToGitHub(backupRepo, audioPath, audioBase64, msg, token).catch(() => {});
+    } catch (audioErr: any) {
+      return {
+        success: false,
+        error: `עיבוד קובץ השמע נכשל: ${audioErr.message || String(audioErr)}`,
+      };
     }
   }
 
@@ -394,20 +500,17 @@ export async function uploadTrackToGitHubRepo(
       const coverPath = `covers/${track.id}.jpg`;
       const msg = `Save cover art: ${track.name} (${track.id})`;
 
-      // Primary repo upload
       const primaryCoverRes = await commitFileToGitHub(repo, coverPath, coverBase64, msg, token);
       if (primaryCoverRes.success) {
         finalCoverRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${coverPath}`;
       }
-
-      // Backup repo upload (emergency mirror)
-      await commitFileToGitHub(backupRepo, coverPath, coverBase64, msg, token);
+      commitFileToGitHub(backupRepo, coverPath, coverBase64, msg, token).catch(() => {});
     } catch (coverErr) {
       console.warn('Failed to upload cover art to GitHub:', coverErr);
     }
   }
 
-  // 3. Upload METADATA JSON to GitHub (with updated raw public URLs and exact matching bgColor)
+  // 3. Upload METADATA JSON to GitHub
   const calculatedBgColor = computeTrackBgColor(track);
   const trackForGitHub: JamendoTrack = {
     ...track,
@@ -421,15 +524,37 @@ export async function uploadTrackToGitHubRepo(
   const metadataBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(trackForGitHub, null, 2))));
   const metaMsg = `Add metadata: ${track.name} by ${track.artistName}`;
 
-  await commitFileToGitHub(repo, metadataPath, metadataBase64, metaMsg, token);
-  await commitFileToGitHub(backupRepo, metadataPath, metadataBase64, metaMsg, token);
+  const metaRes = await commitFileToGitHub(repo, metadataPath, metadataBase64, metaMsg, token);
+  if (!metaRes.success) {
+    return {
+      success: false,
+      error: `שגיאה בשמירת פרטי השיר ב-GitHub: ${metaRes.error}`,
+    };
+  }
 
-  // 4. Update Master Index immediately for ultra-fast CDN loading
-  fetchTracksFromSingleRepo(repo, token).then((updatedTracks) => {
-    if (token && updatedTracks.length > 0) {
-      updateMasterTracksIndexOnGitHub(repo, updatedTracks, token).catch(() => {});
-    }
-  }).catch(() => {});
+  commitFileToGitHub(backupRepo, metadataPath, metadataBase64, metaMsg, token).catch(() => {});
+
+  // 4. UPDATE Master Index immediately for ultra-fast CDN loading
+  try {
+    let currentTracks: JamendoTrack[] = [];
+    try {
+      const indexRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/tracks_index.json?t=${Date.now()}`);
+      if (indexRes.ok) {
+        const rawJson = await indexRes.json();
+        if (Array.isArray(rawJson)) currentTracks = rawJson;
+      }
+    } catch {}
+
+    const filtered = currentTracks.filter((t) => t.id !== trackForGitHub.id);
+    const updatedMaster = [trackForGitHub, ...filtered];
+
+    await updateMasterTracksIndexOnGitHub(repo, updatedMaster, token);
+
+    // Purge jsDelivr cache so worldwide users get the track immediately
+    fetch(`https://purge.jsdelivr.net/gh/${repo}@main/tracks_index.json`).catch(() => {});
+  } catch (indexUpdateErr) {
+    console.warn('Master index update notice:', indexUpdateErr);
+  }
 
   // Update storage usage counter in local configuration
   const totalTrackBytes = audioBytesEstimate + coverBytesEstimate;
@@ -437,7 +562,7 @@ export async function uploadTrackToGitHubRepo(
     ...config,
     usedBytes: (config.usedBytes || 0) + totalTrackBytes,
     fileCount: (config.fileCount || 0) + 1,
-    lastSyncStatus: `נשמר בהצלחה ב-${repo} ובגיבוי ${backupRepo}`,
+    lastSyncStatus: `נשמר בהצלחה ב-${repo}`,
   };
   saveGitHubStorageConfig(updatedConfig);
 
@@ -449,60 +574,45 @@ export async function uploadTrackToGitHubRepo(
 }
 
 async function updateMasterTracksIndexOnGitHub(repoFullName: string, tracks: JamendoTrack[], token: string): Promise<void> {
-  if (!token) return;
+  const cleanToken = (token || '').trim();
+  if (!cleanToken || cleanToken === 'PASTE_YOUR_GITHUB_TOKEN_HERE') return;
   try {
     const indexPath = `tracks_index.json`;
     const indexBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(tracks, null, 2))));
-    await commitFileToGitHub(repoFullName, indexPath, indexBase64, `Update tracks_index.json (${tracks.length} tracks)`, token);
+    await commitFileToGitHub(repoFullName, indexPath, indexBase64, `Update tracks_index.json (${tracks.length} tracks)`, cleanToken);
   } catch (e) {
     console.warn('Failed to update tracks_index.json:', e);
   }
 }
 
 async function fetchTracksFromSingleRepo(repoFullName: string, token: string): Promise<JamendoTrack[]> {
-  // 1. Try fetching high-speed master index via CDN (fastest, potentially cached)
-  try {
-    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json`;
-    const res = await fetch(cdnUrl);
-
-    if (res.ok) {
-      const data: JamendoTrack[] = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.map((t) => ({
-          ...t,
-          bgColor: t.bgColor || computeTrackBgColor(t),
-          audioUrl: getStreamingMediaUrl(t.audioUrl),
-          coverUrl: getStreamingMediaUrl(t.coverUrl),
-          artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
-        }));
-      }
-    }
-  } catch (indexErr) {
-    console.warn('CDN tracks_index.json fetch notice:', indexErr);
-  }
-
-  // 2. Fallback: Try raw GitHub with cache-busting timestamp (slower but fresh)
+  // 1. Try fetching high-speed master index via raw GitHub & CDN concurrently
   try {
     const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/main/tracks_index.json?t=${Date.now()}`;
-    const res = await fetch(rawUrl);
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json`;
 
-    if (res.ok) {
-      const data: JamendoTrack[] = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.map((t) => ({
-          ...t,
-          bgColor: t.bgColor || computeTrackBgColor(t),
-          audioUrl: getStreamingMediaUrl(t.audioUrl),
-          coverUrl: getStreamingMediaUrl(t.coverUrl),
-          artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
-        }));
-      }
+    // Fetch fastest responding endpoint
+    const fetchPromises = [
+      fetch(rawUrl).then(r => (r.ok ? r.json() : Promise.reject())),
+      fetch(cdnUrl).then(r => (r.ok ? r.json() : Promise.reject())),
+    ];
+
+    const data: JamendoTrack[] = await Promise.any(fetchPromises).catch(() => null);
+
+    if (Array.isArray(data) && data.length > 0) {
+      return data.map((t) => ({
+        ...t,
+        bgColor: t.bgColor || computeTrackBgColor(t),
+        audioUrl: getStreamingMediaUrl(t.audioUrl),
+        coverUrl: getStreamingMediaUrl(t.coverUrl),
+        artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
+      }));
     }
-  } catch (rawErr) {
-    console.warn('Raw tracks_index.json fetch notice:', rawErr);
+  } catch (indexErr) {
+    console.warn('tracks_index.json fetch notice:', indexErr);
   }
 
-  // 3. Last Resort: Query GitHub API /contents/tracks and fetch JSON files IN PARALLEL
+  // 2. Fallback: Query GitHub API /contents/tracks and fetch JSON files IN PARALLEL
   try {
     const listRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/tracks`, {
       headers: getGitHubHeaders(token),
@@ -544,7 +654,7 @@ async function fetchTracksFromSingleRepo(repoFullName: string, token: string): P
       }
     });
 
-    if (tracks.length > 0 && token) {
+    if (tracks.length > 0 && token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
       updateMasterTracksIndexOnGitHub(repoFullName, tracks, token).catch(() => {});
     }
 
@@ -581,9 +691,12 @@ async function deleteFileFromGitHub(
   commitMessage: string,
   token: string
 ): Promise<boolean> {
+  const cleanToken = (token || '').trim();
+  if (!cleanToken || cleanToken === 'PASTE_YOUR_GITHUB_TOKEN_HERE') return false;
+
   try {
     const checkRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
-      headers: getGitHubHeaders(token),
+      headers: getGitHubHeaders(cleanToken),
     });
     if (!checkRes.ok) return false;
     const existingData = await checkRes.json();
@@ -592,7 +705,7 @@ async function deleteFileFromGitHub(
 
     const delRes = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${filePath}`, {
       method: 'DELETE',
-      headers: getGitHubHeaders(token, true),
+      headers: getGitHubHeaders(cleanToken, true),
       body: JSON.stringify({
         message: commitMessage,
         sha,
@@ -605,13 +718,13 @@ async function deleteFileFromGitHub(
 }
 
 /**
- * Delete a published track from both GitHub primary and backup repositories
+ * Delete a published track from both GitHub primary and backup repositories, and update tracks_index.json
  */
 export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolean> {
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = config.token || DEFAULT_TOKEN;
+  const token = (config.token || '').trim();
 
   const msg = `Delete track: ${trackId}`;
   await Promise.allSettled([
@@ -623,12 +736,20 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
     deleteFileFromGitHub(backupRepo, `covers/${trackId}.jpg`, msg, token),
   ]);
 
-  // Refresh index
-  fetchTracksFromSingleRepo(repo, token).then((updatedTracks) => {
-    if (token) {
-      updateMasterTracksIndexOnGitHub(repo, updatedTracks, token).catch(() => {});
-    }
-  }).catch(() => {});
+  // Synchronously update tracks_index.json to remove track
+  if (token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    try {
+      const indexRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/tracks_index.json?t=${Date.now()}`);
+      if (indexRes.ok) {
+        const rawJson: JamendoTrack[] = await indexRes.json();
+        if (Array.isArray(rawJson)) {
+          const updated = rawJson.filter(t => t.id !== trackId);
+          await updateMasterTracksIndexOnGitHub(repo, updated, token);
+          fetch(`https://purge.jsdelivr.net/gh/${repo}@main/tracks_index.json`).catch(() => {});
+        }
+      }
+    } catch {}
+  }
 
   return true;
 }
@@ -770,5 +891,219 @@ export async function fetchArtistProfilesFromGitHub(): Promise<any[]> {
     console.warn('Failed to fetch artist profiles from GitHub:', err);
     return [];
   }
+}
+
+/**
+ * Updates albums_index.json on GitHub
+ */
+async function updateMasterAlbumsIndexOnGitHub(repoFullName: string, albums: Album[], token: string): Promise<void> {
+  const cleanToken = (token || '').trim();
+  if (!cleanToken || cleanToken === 'PASTE_YOUR_GITHUB_TOKEN_HERE') return;
+  try {
+    const indexPath = `albums_index.json`;
+    const indexBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(albums, null, 2))));
+    await commitFileToGitHub(repoFullName, indexPath, indexBase64, `Update albums_index.json (${albums.length} albums)`, cleanToken);
+  } catch (e) {
+    console.warn('Failed to update albums_index.json:', e);
+  }
+}
+
+/**
+ * Upload & Commit Album metadata and optional cover image directly into GitHub repo
+ */
+export async function uploadAlbumToGitHub(
+  album: Album,
+  coverFile?: File | Blob
+): Promise<{ success: boolean; coverUrl?: string; error?: string }> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
+  const token = (config.token || '').trim();
+
+  if (!token || token === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    return {
+      success: false,
+      error: 'לא מוגדר מפתח גישה של GitHub (Personal Access Token). אנא הזן את הטוקן שלך בהגדרות כדי לשמור אלבומים במאגר ' + repo,
+    };
+  }
+
+  let finalCoverUrl = album.coverUrl;
+
+  // 1. Upload Cover Image if provided
+  if (coverFile) {
+    try {
+      const coverBase64 = await fileToBase64(coverFile);
+      const coverPath = `covers/albums/${album.id}.jpg`;
+      const msg = `Save album cover: ${album.title}`;
+      const res = await commitFileToGitHub(repo, coverPath, coverBase64, msg, token);
+      if (res.success) {
+        finalCoverUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${coverPath}`;
+      }
+      commitFileToGitHub(backupRepo, coverPath, coverBase64, msg, token).catch(() => {});
+    } catch (e) {
+      console.warn('Album cover upload failed:', e);
+    }
+  } else if (album.coverUrl && album.coverUrl.startsWith('data:image/')) {
+    try {
+      const coverBase64 = album.coverUrl.split(',')[1];
+      const coverPath = `covers/albums/${album.id}.jpg`;
+      const msg = `Save album cover: ${album.title}`;
+      const res = await commitFileToGitHub(repo, coverPath, coverBase64, msg, token);
+      if (res.success) {
+        finalCoverUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${coverPath}`;
+      }
+      commitFileToGitHub(backupRepo, coverPath, coverBase64, msg, token).catch(() => {});
+    } catch {}
+  }
+
+  // 2. Commit Album JSON
+  const albumToSave: Album = {
+    ...album,
+    coverUrl: finalCoverUrl,
+  };
+
+  const albumPath = `albums/${album.id}.json`;
+  const albumBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(albumToSave, null, 2))));
+  const commitMsg = `Save album: ${album.title} by ${album.artistName}`;
+
+  const res = await commitFileToGitHub(repo, albumPath, albumBase64, commitMsg, token);
+  if (!res.success) {
+    return {
+      success: false,
+      error: `שגיאה בשמירת האלבום ב-GitHub: ${res.error}`,
+    };
+  }
+  commitFileToGitHub(backupRepo, albumPath, albumBase64, commitMsg, token).catch(() => {});
+
+  // 3. Update master albums_index.json
+  try {
+    let currentAlbums: Album[] = [];
+    try {
+      const indexRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/albums_index.json?t=${Date.now()}`);
+      if (indexRes.ok) {
+        const rawJson = await indexRes.json();
+        if (Array.isArray(rawJson)) currentAlbums = rawJson;
+      }
+    } catch {}
+
+    const filtered = currentAlbums.filter((a) => a.id !== albumToSave.id);
+    const updatedMaster = [albumToSave, ...filtered];
+    await updateMasterAlbumsIndexOnGitHub(repo, updatedMaster, token);
+    fetch(`https://purge.jsdelivr.net/gh/${repo}@main/albums_index.json`).catch(() => {});
+  } catch (err) {
+    console.warn('Failed to update albums index on GitHub:', err);
+  }
+
+  return {
+    success: true,
+    coverUrl: finalCoverUrl,
+  };
+}
+
+/**
+ * Fetch all albums from GitHub repo
+ */
+export async function fetchAlbumsFromGitHub(): Promise<Album[]> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const token = (config.token || '').trim();
+
+  // 1. Try master albums_index.json via raw and cdn
+  try {
+    const rawUrl = `https://raw.githubusercontent.com/${repo}/main/albums_index.json?t=${Date.now()}`;
+    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/albums_index.json`;
+
+    const fetchPromises = [
+      fetch(rawUrl).then((r) => (r.ok ? r.json() : Promise.reject())),
+      fetch(cdnUrl).then((r) => (r.ok ? r.json() : Promise.reject())),
+    ];
+
+    const data: Album[] = await Promise.any(fetchPromises).catch(() => null);
+    if (Array.isArray(data) && data.length > 0) {
+      return data.map((a) => ({
+        ...a,
+        coverUrl: getStreamingMediaUrl(a.coverUrl),
+      }));
+    }
+  } catch {}
+
+  // 2. Fallback: Query /contents/albums
+  try {
+    const listRes = await fetch(`https://api.github.com/repos/${repo}/contents/albums`, {
+      headers: getGitHubHeaders(token),
+    });
+    if (!listRes.ok) return [];
+
+    const files = await listRes.json();
+    if (!Array.isArray(files)) return [];
+
+    const jsonFiles = files.filter((f: any) => f.name && f.name.endsWith('.json') && f.download_url);
+    if (jsonFiles.length === 0) return [];
+
+    const fetchPromises = jsonFiles.map(async (f: any) => {
+      try {
+        const itemRes = await fetch(f.download_url);
+        if (itemRes.ok) {
+          const item: Album = await itemRes.json();
+          return {
+            ...item,
+            coverUrl: getStreamingMediaUrl(item.coverUrl),
+          };
+        }
+      } catch {}
+      return null;
+    });
+
+    const results = await Promise.allSettled(fetchPromises);
+    const albums: Album[] = [];
+    results.forEach((r) => {
+      if (r.status === 'fulfilled' && r.value) {
+        albums.push(r.value);
+      }
+    });
+
+    if (albums.length > 0 && token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+      updateMasterAlbumsIndexOnGitHub(repo, albums, token).catch(() => {});
+    }
+
+    return albums;
+  } catch (e) {
+    console.warn('Failed to fetch albums from GitHub:', e);
+    return [];
+  }
+}
+
+/**
+ * Delete an album from GitHub
+ */
+export async function deleteAlbumFromGitHub(albumId: string): Promise<boolean> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
+  const token = (config.token || '').trim();
+
+  const msg = `Delete album: ${albumId}`;
+  await Promise.allSettled([
+    deleteFileFromGitHub(repo, `albums/${albumId}.json`, msg, token),
+    deleteFileFromGitHub(backupRepo, `albums/${albumId}.json`, msg, token),
+    deleteFileFromGitHub(repo, `covers/albums/${albumId}.jpg`, msg, token),
+    deleteFileFromGitHub(backupRepo, `covers/albums/${albumId}.jpg`, msg, token),
+  ]);
+
+  if (token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    try {
+      const indexRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/albums_index.json?t=${Date.now()}`);
+      if (indexRes.ok) {
+        const rawJson: Album[] = await indexRes.json();
+        if (Array.isArray(rawJson)) {
+          const updated = rawJson.filter((a) => a.id !== albumId);
+          await updateMasterAlbumsIndexOnGitHub(repo, updated, token);
+          fetch(`https://purge.jsdelivr.net/gh/${repo}@main/albums_index.json`).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
+  return true;
 }
 
