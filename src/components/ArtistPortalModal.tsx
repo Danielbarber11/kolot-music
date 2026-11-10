@@ -384,36 +384,57 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       setIsAuthLoading(false);
 
       if (user) {
-        if (!artistNameInput && user.displayName) {
-          setArtistNameInput(user.displayName);
-        }
-
+        // Load user-partitioned profile
+        let localUserArtist: ArtistProfile | null = null;
         try {
-          const remoteArtist = await getArtistAccountByGoogleUid(user.uid);
-          if (remoteArtist) {
-            setCurrentArtist(remoteArtist);
-            localStorage.setItem('wikiarchive_artist_account', JSON.stringify(remoteArtist));
-          } else {
-            const autoPrivateArtist: ArtistProfile = {
-              id: user.uid,
-              name: user.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-              bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
-              avatarUrl: user.photoURL || undefined,
-              joinedDate: new Date().getFullYear().toString(),
-              googleUid: user.uid,
-              googleEmail: user.email || undefined,
-              isConnected: true,
-              hasAcceptedTerms: true,
-              acceptedTermsAt: new Date().toISOString(),
-              isPrivate: true,
-              tracksCount: 0,
-              providerPlatform: 'חשבון גוגל (מצב פרטי)',
-            };
-            setCurrentArtist(autoPrivateArtist);
-            await saveArtistAccountToFirebase(autoPrivateArtist);
+          const userKey = `wikiarchive_artist_account_${user.uid}`;
+          const saved = localStorage.getItem(userKey);
+          if (saved) localUserArtist = JSON.parse(saved);
+        } catch {}
+
+        if (localUserArtist) {
+          setCurrentArtist(localUserArtist);
+          setArtistNameInput(localUserArtist.name || user.displayName || '');
+        } else {
+          try {
+            const remoteArtist = await getArtistAccountByGoogleUid(user.uid);
+            if (remoteArtist) {
+              setCurrentArtist(remoteArtist);
+              setArtistNameInput(remoteArtist.name || user.displayName || '');
+              localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(remoteArtist));
+            } else {
+              const providerId = user.providerData?.[0]?.providerId || '';
+              const cleanProvider = providerId.includes('facebook')
+                ? 'Facebook'
+                : providerId.includes('microsoft')
+                ? 'Microsoft'
+                : providerId.includes('google')
+                ? 'Google'
+                : 'אימייל';
+
+              const autoPrivateArtist: ArtistProfile = {
+                id: 'artist_' + user.uid,
+                name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן חדש' : 'New Artist'),
+                bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
+                avatarUrl: user.photoURL || undefined,
+                joinedDate: new Date().getFullYear().toString(),
+                googleUid: user.uid,
+                googleEmail: user.email || undefined,
+                isConnected: true,
+                hasAcceptedTerms: true,
+                acceptedTermsAt: new Date().toISOString(),
+                isPrivate: false,
+                tracksCount: 0,
+                providerPlatform: `חשבון ${cleanProvider}`,
+              };
+              setCurrentArtist(autoPrivateArtist);
+              setArtistNameInput(autoPrivateArtist.name);
+              localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(autoPrivateArtist));
+              await saveArtistAccountToFirebase(autoPrivateArtist);
+            }
+          } catch (e) {
+            console.warn('Could not fetch artist profile for user:', e);
           }
-        } catch (e) {
-          console.warn('Could not fetch artist profile for user:', e);
         }
       }
     });
@@ -422,12 +443,11 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   }, []);
 
   useEffect(() => {
-    if (currentArtist) {
+    if (currentUser?.uid && currentArtist) {
+      localStorage.setItem(`wikiarchive_artist_account_${currentUser.uid}`, JSON.stringify(currentArtist));
       localStorage.setItem('wikiarchive_artist_account', JSON.stringify(currentArtist));
-    } else {
-      localStorage.removeItem('wikiarchive_artist_account');
     }
-  }, [currentArtist]);
+  }, [currentArtist, currentUser]);
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
@@ -916,9 +936,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
   const myUploadedTracks = allTracks.filter((t) => {
     if (deletedTrackIds.includes(t.id)) return false;
-    if (currentUser?.uid && t.uploadedByUid === currentUser.uid) return true;
-    if (currentArtist?.name && t.artistName?.toLowerCase().trim() === currentArtist.name.toLowerCase().trim()) return true;
-    if (currentUser?.displayName && t.artistName?.toLowerCase().trim() === currentUser.displayName.toLowerCase().trim()) return true;
+    if (!currentUser?.uid) return false;
+    if (t.uploadedByUid === currentUser.uid) return true;
+    if (currentArtist?.googleUid === currentUser.uid && currentArtist?.name && t.artistName?.toLowerCase().trim() === currentArtist.name.toLowerCase().trim()) return true;
     return false;
   });
 

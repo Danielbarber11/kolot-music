@@ -121,33 +121,23 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
 }
 
 export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
+  const provider = new OAuthProvider('microsoft.com');
+  provider.addScope('openid');
+  provider.addScope('email');
+  provider.addScope('profile');
+  provider.setCustomParameters({ prompt: 'select_account' });
+
   try {
-    const provider = new OAuthProvider('microsoft.com');
-    provider.addScope('openid');
-    provider.addScope('email');
-    provider.addScope('profile');
-    provider.setCustomParameters({
-      prompt: 'select_account',
-      tenant: 'common',
-    });
     const result = await signInWithPopup(auth, provider);
     return result.user;
   } catch (error: any) {
-    console.warn('Microsoft Sign In notice:', error);
+    console.warn('Microsoft Sign In popup notice:', error);
     if (
       error?.code === 'auth/popup-blocked' ||
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request'
     ) {
       try {
-        const provider = new OAuthProvider('microsoft.com');
-        provider.addScope('openid');
-        provider.addScope('email');
-        provider.addScope('profile');
-        provider.setCustomParameters({
-          prompt: 'select_account',
-          tenant: 'common',
-        });
         await signInWithRedirect(auth, provider);
         return auth.currentUser;
       } catch (redirectErr) {
