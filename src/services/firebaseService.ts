@@ -28,14 +28,26 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 import { ArtistProfile, JamendoTrack } from '../types';
+
+export const firebaseConfig = Object.assign(
+  {
+    apiKey: "AIzaSyDE5Iw4C8F-YNSwlUGLn3B9pgi6ZpffnQI",
+    authDomain: "soy-lore-461719-i9.firebaseapp.com",
+    projectId: "soy-lore-461719-i9",
+    storageBucket: "soy-lore-461719-i9.firebasestorage.app",
+    messagingSenderId: "1029411846084",
+    appId: "1:1029411846084:web:3d0fa2dca6338a9b981691",
+  },
+  firebaseAppletConfig || {}
+);
 
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 
 // Initialize Firestore
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, (firebaseAppletConfig as any)?.firestoreDatabaseId || '(default)');
 
 // Initialize Auth
 export const auth = getAuth(app);
@@ -114,7 +126,10 @@ export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
     provider.addScope('openid');
     provider.addScope('email');
     provider.addScope('profile');
-    provider.setCustomParameters({ prompt: 'select_account' });
+    provider.setCustomParameters({
+      prompt: 'select_account',
+      tenant: 'common',
+    });
     const result = await signInWithPopup(auth, provider);
     return result.user;
   } catch (error: any) {
@@ -129,7 +144,10 @@ export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
         provider.addScope('openid');
         provider.addScope('email');
         provider.addScope('profile');
-        provider.setCustomParameters({ prompt: 'select_account' });
+        provider.setCustomParameters({
+          prompt: 'select_account',
+          tenant: 'common',
+        });
         await signInWithRedirect(auth, provider);
         return auth.currentUser;
       } catch (redirectErr) {
