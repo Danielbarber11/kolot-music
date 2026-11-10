@@ -432,7 +432,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
               const autoPrivateArtist: ArtistProfile = {
                 id: 'artist_' + user.uid,
                 name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן חדש' : 'New Artist'),
-                bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
+                bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
                 avatarUrl: user.photoURL || undefined,
                 joinedDate: new Date().getFullYear().toString(),
                 googleUid: user.uid,
@@ -483,7 +483,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
           const autoPrivateArtist: ArtistProfile = {
             id: user.uid,
             name: user.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-            bio: isHe ? 'ממתין להעלאת שירים...' : 'Awaiting track upload...',
+            bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
             avatarUrl: user.photoURL || undefined,
             joinedDate: new Date().getFullYear().toString(),
             googleUid: user.uid,

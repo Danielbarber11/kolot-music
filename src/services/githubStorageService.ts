@@ -458,37 +458,31 @@ export async function uploadTrackToGitHubRepo(
   let audioBytesEstimate = 4500000;
   let coverBytesEstimate = 350000;
 
-  // 1. Upload REAL AUDIO file to GitHub
+  // 1 & 2. Upload Audio and Cover files in parallel for lightning speed (< 5s)
+  const uploadPromises: Promise<any>[] = [];
+
   if (audioFile) {
-    try {
-      audioBytesEstimate = audioFile.size;
-      const audioBase64 = await fileToBase64(audioFile);
-      const audioExt = (audioFile instanceof File && audioFile.name.includes('.'))
-        ? audioFile.name.split('.').pop()?.toLowerCase() || 'mp3'
-        : 'mp3';
-      const audioPath = `audio/${track.id}.${audioExt}`;
-      const msg = `Save audio file: ${track.name} (${track.id})`;
+    uploadPromises.push(
+      (async () => {
+        audioBytesEstimate = audioFile.size;
+        const audioBase64 = await fileToBase64(audioFile);
+        const audioExt = (audioFile instanceof File && audioFile.name.includes('.'))
+          ? audioFile.name.split('.').pop()?.toLowerCase() || 'mp3'
+          : 'mp3';
+        const audioPath = `audio/${track.id}.${audioExt}`;
+        const msg = `Save audio file: ${track.name} (${track.id})`;
 
-      const primaryAudioRes = await commitFileToGitHub(repo, audioPath, audioBase64, msg, token);
-      if (!primaryAudioRes.success) {
-        return {
-          success: false,
-          error: `שגיאה בהעלאת קובץ השמע ל-GitHub: ${primaryAudioRes.error}`,
-        };
-      }
-      finalAudioRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${audioPath}`;
-
-      // Backup mirror
-      commitFileToGitHub(backupRepo, audioPath, audioBase64, msg, token).catch(() => {});
-    } catch (audioErr: any) {
-      return {
-        success: false,
-        error: `עיבוד קובץ השמע נכשל: ${audioErr.message || String(audioErr)}`,
-      };
-    }
+        const primaryAudioRes = await commitFileToGitHub(repo, audioPath, audioBase64, msg, token);
+        if (primaryAudioRes.success) {
+          finalAudioRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${audioPath}`;
+          commitFileToGitHub(backupRepo, audioPath, audioBase64, msg, token).catch(() => {});
+        } else {
+          throw new Error(primaryAudioRes.error || 'Failed to upload audio');
+        }
+      })()
+    );
   }
 
-  // 2. Upload REAL COVER IMAGE file to GitHub
   let coverBase64: string | null = null;
   if (coverFile) {
     try {
@@ -501,17 +495,28 @@ export async function uploadTrackToGitHubRepo(
   }
 
   if (coverBase64) {
-    try {
-      const coverPath = `covers/${track.id}.jpg`;
-      const msg = `Save cover art: ${track.name} (${track.id})`;
+    uploadPromises.push(
+      (async () => {
+        const coverPath = `covers/${track.id}.jpg`;
+        const msg = `Save cover art: ${track.name} (${track.id})`;
+        const primaryCoverRes = await commitFileToGitHub(repo, coverPath, coverBase64!, msg, token);
+        if (primaryCoverRes.success) {
+          finalCoverRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${coverPath}`;
+          commitFileToGitHub(backupRepo, coverPath, coverBase64!, msg, token).catch(() => {});
+        }
+      })()
+    );
+  }
 
-      const primaryCoverRes = await commitFileToGitHub(repo, coverPath, coverBase64, msg, token);
-      if (primaryCoverRes.success) {
-        finalCoverRawUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/${coverPath}`;
+  if (uploadPromises.length > 0) {
+    const results = await Promise.allSettled(uploadPromises);
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        return {
+          success: false,
+          error: r.reason?.message || 'שגיאה בהעלאת קבצים ל-GitHub',
+        };
       }
-      commitFileToGitHub(backupRepo, coverPath, coverBase64, msg, token).catch(() => {});
-    } catch (coverErr) {
-      console.warn('Failed to upload cover art to GitHub:', coverErr);
     }
   }
 
