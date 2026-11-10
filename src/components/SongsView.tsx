@@ -176,6 +176,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     const unsub = onAuthUserChanged(async (user) => {
       setAuthUser(user);
       if (user) {
+        setIsAuthModalOpen(false);
         try {
           localStorage.setItem(
             'wikiarchive_cached_auth_user',

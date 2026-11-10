@@ -111,6 +111,9 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
 export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
   try {
     const provider = new OAuthProvider('microsoft.com');
+    provider.addScope('openid');
+    provider.addScope('email');
+    provider.addScope('profile');
     provider.setCustomParameters({ prompt: 'select_account' });
     const result = await signInWithPopup(auth, provider);
     return result.user;
@@ -123,6 +126,10 @@ export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
     ) {
       try {
         const provider = new OAuthProvider('microsoft.com');
+        provider.addScope('openid');
+        provider.addScope('email');
+        provider.addScope('profile');
+        provider.setCustomParameters({ prompt: 'select_account' });
         await signInWithRedirect(auth, provider);
         return auth.currentUser;
       } catch (redirectErr) {

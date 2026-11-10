@@ -138,11 +138,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         onClose();
       }
     } catch (err: any) {
-      if (err?.code === 'auth/operation-not-allowed') {
+      const code = err?.code || '';
+      if (
+        code === 'auth/operation-not-allowed' ||
+        code === 'auth/invalid-credential' ||
+        code === 'auth/configuration-not-found'
+      ) {
         setErrorMessage(
           isHe
-            ? `ספק ${providerName} יחובר בהמשך בלוח הבקרה של Firebase (Authentication > Sign-in method).`
-            : `${providerName} provider is pending activation in the Firebase console.`
+            ? `התחברות דרך ${providerName} מצריכה הפעלה והזנת מפתח אפליקציה (Client ID) בקונסולת Firebase (במסך Authentication > Sign-in method). כעת ניתן להתחבר ישירות דרך גוגל או אימייל וסיסמה.`
+            : `${providerName} authentication requires Client ID configuration in Firebase Console. Please sign in via Google or Email.`
+        );
+      } else if (code === 'auth/account-exists-with-different-credential') {
+        setErrorMessage(
+          isHe
+            ? `קיים כבר חשבון במערכת עם כתובת אימייל זו תחת ספק אחר (גוגל / אימייל וסיסמה). אנא התחבר דרך הספק המקורי.`
+            : `An account already exists with this email address under another provider. Please sign in with your original provider.`
         );
       } else {
         setErrorMessage(translateAuthError(err));
