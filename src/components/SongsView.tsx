@@ -78,6 +78,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(() => {
     try {
+      const cachedUser = localStorage.getItem('wikiarchive_cached_auth_user');
+      if (cachedUser) {
+        const user = JSON.parse(cachedUser);
+        if (user && user.uid) {
+          const userSaved = localStorage.getItem(`wikiarchive_artist_account_${user.uid}`);
+          if (userSaved) return JSON.parse(userSaved);
+        }
+      }
       const saved = localStorage.getItem('wikiarchive_artist_account');
       return saved ? JSON.parse(saved) : null;
     } catch {
@@ -198,15 +206,57 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setShowTermsModal(true);
         }
 
-        // Always try to load profile from GitHub first (source of truth)
-        const profiles = await fetchAllArtistProfiles();
-        const myProfile = profiles.find(p => p.id === user.uid || p.googleUid === user.uid);
-        if (myProfile) {
-          setActiveArtistProfile(myProfile);
-          localStorage.setItem('wikiarchive_artist_account', JSON.stringify(myProfile));
+        // Load or create user-partitioned artist profile
+        const userKey = `wikiarchive_artist_account_${user.uid}`;
+        let userProfile: ArtistProfile | null = null;
+        try {
+          const userSaved = localStorage.getItem(userKey);
+          if (userSaved) userProfile = JSON.parse(userSaved);
+        } catch {}
+
+        if (!userProfile) {
+          const profiles = await fetchAllArtistProfiles();
+          userProfile = profiles.find(p => p.id === user.uid || p.id === `artist_${user.uid}` || p.googleUid === user.uid) || null;
         }
+
+        if (!userProfile) {
+          const providerId = user.providerData?.[0]?.providerId || '';
+          const providerName = providerId.includes('yahoo')
+            ? 'Yahoo'
+            : providerId.includes('facebook')
+            ? 'Facebook'
+            : providerId.includes('microsoft')
+            ? 'Microsoft'
+            : providerId.includes('google')
+            ? 'Google'
+            : 'אימייל';
+
+          userProfile = {
+            id: 'artist_' + user.uid,
+            name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן' : 'Artist'),
+            avatarUrl: user.photoURL || undefined,
+            googleUid: user.uid,
+            googleEmail: user.email || undefined,
+            isConnected: true,
+            hasAcceptedTerms: true,
+            acceptedTermsAt: new Date().toISOString(),
+            isPrivate: false,
+            tracksCount: 0,
+            providerPlatform: `חשבון ${providerName}`,
+            joinedDate: new Date().getFullYear().toString(),
+          };
+          saveArtistAccountToFirebase(userProfile).catch(() => {});
+        }
+
+        setActiveArtistProfile(userProfile);
+        try {
+          localStorage.setItem(userKey, JSON.stringify(userProfile));
+          localStorage.setItem('wikiarchive_artist_account', JSON.stringify(userProfile));
+        } catch {}
       } else {
+        setActiveArtistProfile(null);
         localStorage.removeItem('wikiarchive_cached_auth_user');
+        localStorage.removeItem('wikiarchive_artist_account');
         setShowTermsModal(false);
       }
     });

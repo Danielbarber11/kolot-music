@@ -207,10 +207,16 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   }, [isOpen]);
 
   const canManageTrack = (track: JamendoTrack) => {
-    if (!currentUser) return false;
+    if (!currentUser?.uid) return false;
     if (track.uploadedByUid && track.uploadedByUid === currentUser.uid) return true;
-    if (currentArtist && track.artistName && currentArtist.name?.toLowerCase().trim() === track.artistName?.toLowerCase().trim()) return true;
-    if (currentUser) return true;
+    if (
+      currentArtist?.googleUid === currentUser.uid &&
+      currentArtist?.name &&
+      track.artistName &&
+      currentArtist.name.toLowerCase().trim() === track.artistName.toLowerCase().trim()
+    ) {
+      return true;
+    }
     return false;
   };
 
