@@ -390,19 +390,23 @@ export async function resumePendingUploads(): Promise<void> {
  * Instant song pool returns cached cloud tracks + verified default tracks for 0ms initial load
  */
 export async function getInstantSongPoolAsync(): Promise<JamendoTrack[]> {
-  const cachedCloud = getCachedCloudTracks();
-  const indexedDBTracks = await loadTracksFromIndexedDB();
-  const combined = [...cachedCloud, ...indexedDBTracks, ...VERIFIED_REAL_TRACKS];
-  return deduplicateTracks(combined);
+  const deletedIds = getDeletedSongIds();
+  const cachedCloud = getCachedCloudTracks().filter((t) => !deletedIds.has(t.id));
+  const indexedDBTracks = (await loadTracksFromIndexedDB()).filter((t) => !deletedIds.has(t.id));
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
+  const combined = [...cachedCloud, ...indexedDBTracks, ...verified];
+  return deduplicateTracks(combined).filter((t) => !deletedIds.has(t.id));
 }
 
 /**
  * Synchronous version for state init (reads from localStorage only)
  */
 export function getInstantSongPool(): JamendoTrack[] {
-  const cachedCloud = getCachedCloudTracks();
-  const combined = [...cachedCloud, ...VERIFIED_REAL_TRACKS];
-  return deduplicateTracks(combined);
+  const deletedIds = getDeletedSongIds();
+  const cachedCloud = getCachedCloudTracks().filter((t) => !deletedIds.has(t.id));
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
+  const combined = [...cachedCloud, ...verified];
+  return deduplicateTracks(combined).filter((t) => !deletedIds.has(t.id));
 }
 
 const CLOUD_PROFILES_CACHE_KEY = 'kolot_cloud_profiles_cache';
@@ -542,7 +546,9 @@ export async function fetchAllRealSongs(
     }
   }
 
-  const combined = deduplicateTracks([...ghTracks, ...VERIFIED_REAL_TRACKS]);
+  const deletedIds = getDeletedSongIds();
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
+  const combined = deduplicateTracks([...ghTracks, ...verified]).filter((t) => !deletedIds.has(t.id));
   if (onProgress) onProgress(combined.length);
   if (onBatch) onBatch(combined);
 
