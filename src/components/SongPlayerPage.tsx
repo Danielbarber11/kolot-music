@@ -18,6 +18,11 @@ import {
   ShieldAlert,
   Sparkles,
   Flame,
+  Scan,
+  Check,
+  CloudUpload,
+  RefreshCw,
+  Github,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile } from '../types';
@@ -29,6 +34,12 @@ import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFire
 import { User as FirebaseUser } from 'firebase/auth';
 import { getTrackInstantColor, prewarmTrackColor, useExtractedColor, getFormattedPlayCount } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInGitHubRepo } from '../services/githubStorageService';
+import {
+  scanAndGenerateLyricsOnDevice,
+  persistLyricsToGitHub,
+  TimedLyricLine,
+  TrackLyricsResult,
+} from '../services/lyricsScannerService';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -107,6 +118,95 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       return null;
     }
   });
+
+  // On-Device Lyrics Scanner & Sync State
+  const [lyricsData, setLyricsData] = useState<TrackLyricsResult | null>(null);
+  const [isScanningLyrics, setIsScanningLyrics] = useState(false);
+  const [isSavingLyrics, setIsSavingLyrics] = useState(false);
+  const [lyricsSaveMessage, setLyricsSaveMessage] = useState<string | null>(null);
+  const lyricsContainerRef = useRef<HTMLDivElement>(null);
+
+  // Automatically load or scan on-device lyrics for this song
+  useEffect(() => {
+    let isCancelled = false;
+    scanAndGenerateLyricsOnDevice(track, duration).then((res) => {
+      if (!isCancelled) {
+        setLyricsData(res);
+      }
+    }).catch(() => {});
+    return () => {
+      isCancelled = true;
+    };
+  }, [track.id, track.lyrics]);
+
+  // Compute active lyric line based on playback currentTime
+  const activeLyricIndex = React.useMemo(() => {
+    if (!lyricsData?.lines?.length) return -1;
+    let idx = -1;
+    for (let i = 0; i < lyricsData.lines.length; i++) {
+      if (currentTime >= lyricsData.lines[i].time) {
+        idx = i;
+      } else {
+        break;
+      }
+    }
+    return idx;
+  }, [currentTime, lyricsData]);
+
+  // Auto-scroll active lyric line smoothly
+  useEffect(() => {
+    if (activeLyricIndex >= 0 && lyricsContainerRef.current) {
+      const activeEl = lyricsContainerRef.current.querySelector(`[data-lyric-index="${activeLyricIndex}"]`);
+      if (activeEl) {
+        activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }, [activeLyricIndex]);
+
+  const handleRescanLyrics = async () => {
+    setIsScanningLyrics(true);
+    setLyricsSaveMessage(null);
+    try {
+      try { localStorage.removeItem(`kolot_lyrics_${track.id}`); } catch {}
+      const res = await scanAndGenerateLyricsOnDevice(track, audioRef.current?.duration || duration);
+      setLyricsData(res);
+      setLyricsSaveMessage(isHe ? 'מילות השיר נסרקו וסונכרנו בהצלחה במכשיר! ✨' : 'Lyrics scanned & synced on device! ✨');
+    } finally {
+      setIsScanningLyrics(false);
+      setTimeout(() => setLyricsSaveMessage(null), 3500);
+    }
+  };
+
+  const handleSaveLyricsToGitHub = async () => {
+    if (!lyricsData?.rawLyrics) return;
+    setIsSavingLyrics(true);
+    setLyricsSaveMessage(null);
+    try {
+      const res = await persistLyricsToGitHub(track, lyricsData.rawLyrics);
+      if (res.success) {
+        setLyricsSaveMessage(isHe ? 'נשמר בהצלחה ב-GitHub! זמין כעת לכל המשתמשים בעולם ✓' : 'Saved to GitHub! Available to everyone worldwide ✓');
+        track.lyrics = lyricsData.rawLyrics;
+      } else {
+        setLyricsSaveMessage(res.error || (isHe ? 'שגיאה בשמירה ל-GitHub' : 'Failed to save to GitHub'));
+      }
+    } catch (e: any) {
+      setLyricsSaveMessage(e.message || String(e));
+    } finally {
+      setIsSavingLyrics(false);
+      setTimeout(() => setLyricsSaveMessage(null), 4000);
+    }
+  };
+
+  const handleSeekToLyricLine = (timeSec: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = timeSec;
+      setCurrentTime(timeSec);
+      if (!isPlaying) {
+        audioRef.current.play();
+        setIsPlaying(true);
+      }
+    }
+  };
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
@@ -594,26 +694,107 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* LYRICS / מילות השיר */}
-        <div className="p-6 rounded-3xl bg-white/10 backdrop-blur-2xl border border-white/15 space-y-3 shadow-xl">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
-            <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
-              <FileText className="w-4 h-4 text-emerald-400" />
-              <span>{isHe ? 'מילות השיר' : 'Lyrics'}</span>
-            </h3>
-            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold">
-              {track.lyrics && track.lyrics !== 'מילות השיר נוצרות ומסונכרנות אוטומטית על גבי המכשיר'
-                ? (isHe ? 'מילים מקוריות' : 'Original Lyrics')
-                : (isHe ? 'מופעל אוטומטי' : 'Auto Enabled')}
-            </span>
+        {/* DYNAMIC SYNCHRONIZED LYRICS (100% ON-DEVICE & GITHUB BACKED) */}
+        <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/80 backdrop-blur-2xl border border-white/15 space-y-4 shadow-2xl text-right">
+          {/* Top Bar with Status and Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-3">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+              <h3 className="text-sm font-extrabold text-white">
+                {isHe ? 'מילות השיר • סנכרון חי (קריוקי)' : 'Live Synchronized Lyrics'}
+              </h3>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold">
+                {lyricsData?.source === 'original'
+                  ? (isHe ? 'מילים מקוריות' : 'Original')
+                  : (isHe ? 'סריקה מקומית במכשיר' : 'On-Device')}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Rescan Button */}
+              <button
+                type="button"
+                onClick={handleRescanLyrics}
+                disabled={isScanningLyrics}
+                className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95 text-white text-[11px] font-bold border border-white/15 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                title={isHe ? 'סרוק וצור מילים מחדש על גבי המכשיר' : 'Rescan & generate lyrics on device'}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isScanningLyrics ? 'animate-spin' : ''}`} />
+                <span>{isScanningLyrics ? (isHe ? 'סורק...' : 'Scanning...') : (isHe ? 'סרוק במכשיר' : 'Rescan')}</span>
+              </button>
+
+              {/* Save to GitHub Button */}
+              <button
+                type="button"
+                onClick={handleSaveLyricsToGitHub}
+                disabled={isSavingLyrics || !lyricsData?.rawLyrics}
+                className="px-2.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black text-[11px] font-black transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40 shadow-sm"
+                title={isHe ? 'שמור מילים אלו למאגר GitHub שיופיעו לכל המשתמשים' : 'Save lyrics permanently to GitHub'}
+              >
+                {isSavingLyrics ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-black" />
+                ) : (
+                  <CloudUpload className="w-3.5 h-3.5 text-black" />
+                )}
+                <span>{isSavingLyrics ? (isHe ? 'שומר ב-GitHub...' : 'Saving...') : (isHe ? 'שמור ל-GitHub' : 'Save to GitHub')}</span>
+              </button>
+            </div>
           </div>
-          <p className="text-xs sm:text-sm text-white/90 leading-relaxed whitespace-pre-line font-normal">
-            {track.lyrics && track.lyrics !== 'מילות השיר נוצרות ומסונכרנות אוטומטית על גבי המכשיר'
-              ? track.lyrics
-              : (isHe
-                  ? '✨ מילות השיר מופעלות ומסונכרנות באופן אוטומטי על גבי המכשיר שלך בעת השמעת השיר.'
-                  : '✨ Lyrics are automatically generated and synchronized on your device during playback.')}
-          </p>
+
+          {/* Status Notification Toast */}
+          {lyricsSaveMessage && (
+            <div className="p-3 rounded-2xl bg-white/10 border border-white/20 text-white text-xs flex items-center gap-2 animate-fadeIn">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="font-medium text-xs">{lyricsSaveMessage}</span>
+            </div>
+          )}
+
+          {/* Synchronized Lyrics Scroll Container */}
+          <div
+            ref={lyricsContainerRef}
+            className="max-h-[300px] sm:max-h-[340px] overflow-y-auto pe-2 space-y-2 select-none scroll-smooth"
+            style={{ scrollbarWidth: 'thin' }}
+          >
+            {lyricsData && lyricsData.lines.length > 0 ? (
+              lyricsData.lines.map((line, idx) => {
+                const isActive = idx === activeLyricIndex;
+                const isPast = activeLyricIndex >= 0 && idx < activeLyricIndex;
+
+                return (
+                  <div
+                    key={line.id}
+                    data-lyric-index={idx}
+                    onClick={() => handleSeekToLyricLine(line.time)}
+                    className={`transition-all duration-300 rounded-xl cursor-pointer flex items-center justify-between gap-3 px-3 py-2 ${
+                      isActive
+                        ? 'bg-white/15 text-white font-black text-sm sm:text-base border border-emerald-400/40 shadow-lg scale-[1.01]'
+                        : isPast
+                        ? 'text-white/60 font-medium text-xs sm:text-sm hover:text-white/90 hover:bg-white/5'
+                        : 'text-white/35 font-normal text-xs sm:text-sm hover:text-white/70 hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="leading-relaxed">{line.text}</span>
+                    <span className="text-[10px] font-mono text-white/30 shrink-0">
+                      {Math.floor(line.time / 60)}:{String(Math.floor(line.time % 60)).padStart(2, '0')}
+                    </span>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="py-8 text-center space-y-3">
+                <RefreshCw className="w-6 h-6 text-emerald-400 animate-spin mx-auto" />
+                <p className="text-xs text-neutral-400">
+                  {isHe ? 'סורק ומסנכרן את מילות השיר על גבי המכשיר...' : 'Scanning & syncing lyrics on device...'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Helper caption */}
+          <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-white/40">
+            <span>{isHe ? '💡 לחץ על כל שורה כדי לקפוץ אליה בשיר' : '💡 Click any line to jump to that moment'}</span>
+            <span>{isHe ? '100% חינם ללא הגבלה על המכשיר' : '100% Free on-device'}</span>
+          </div>
         </div>
       </div>
 

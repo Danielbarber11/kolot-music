@@ -15,8 +15,14 @@ import {
 import {
   getAuth,
   GoogleAuthProvider,
+  OAuthProvider,
+  FacebookAuthProvider,
   signInWithPopup,
   signInWithRedirect,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendPasswordResetEmail,
   getRedirectResult,
   signOut,
   onAuthStateChanged,
@@ -72,7 +78,8 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 
 // -------------------------------------------------------------
-// GOOGLE AUTHENTICATION HELPERS
+// MULTI-PROVIDER AUTHENTICATION HELPERS
+// (Google, Microsoft, Email/Password, Facebook, Yahoo)
 // -------------------------------------------------------------
 
 export async function loginWithGoogle(): Promise<FirebaseUser | null> {
@@ -99,6 +106,64 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
     }
     throw error;
   }
+}
+
+export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
+  try {
+    const provider = new OAuthProvider('microsoft.com');
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (error: any) {
+    console.warn('Microsoft Sign In notice:', error);
+    if (
+      error?.code === 'auth/popup-blocked' ||
+      error?.code === 'auth/popup-closed-by-user' ||
+      error?.code === 'auth/cancelled-popup-request'
+    ) {
+      try {
+        const provider = new OAuthProvider('microsoft.com');
+        await signInWithRedirect(auth, provider);
+        return auth.currentUser;
+      } catch (redirectErr) {
+        console.error('Microsoft redirect error:', redirectErr);
+      }
+    }
+    throw error;
+  }
+}
+
+export async function loginWithEmailPassword(email: string, pass: string): Promise<FirebaseUser | null> {
+  const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
+  return result.user;
+}
+
+export async function registerWithEmailPassword(
+  email: string,
+  pass: string,
+  displayName?: string
+): Promise<FirebaseUser | null> {
+  const result = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+  if (displayName && result.user) {
+    await updateProfile(result.user, { displayName });
+  }
+  return result.user;
+}
+
+export async function loginWithFacebook(): Promise<FirebaseUser | null> {
+  const provider = new FacebookAuthProvider();
+  const result = await signInWithPopup(auth, provider);
+  return result.user;
+}
+
+export async function loginWithYahoo(): Promise<FirebaseUser | null> {
+  const provider = new OAuthProvider('yahoo.com');
+  const result = await signInWithPopup(auth, provider);
+  return result.user;
+}
+
+export async function resetAccountPassword(email: string): Promise<void> {
+  await sendPasswordResetEmail(auth, email.trim());
 }
 
 export async function logoutUser(): Promise<void> {
