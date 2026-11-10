@@ -41,6 +41,7 @@ import {
   logoutUser,
   onAuthUserChanged,
   getArtistAccountByGoogleUid,
+  getEffectiveUserAvatar,
 } from '../services/firebaseService';
 import {
   uploadTrackToGitHubRepo,
@@ -207,8 +208,27 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   }, [isOpen]);
 
   const canManageTrack = (track: JamendoTrack) => {
-    if (!currentUser?.uid) return false;
-    if (track.uploadedByUid && track.uploadedByUid === currentUser.uid) return true;
+    if (!currentUser) return false;
+    const userEmail = currentUser.email?.toLowerCase().trim() || '';
+    const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
+
+    // 1. Direct match by uploadedByEmail
+    if (track.uploadedByEmail && userEmail && track.uploadedByEmail.toLowerCase().trim() === userEmail) {
+      return true;
+    }
+
+    // 2. Direct match by uploadedByUid
+    if (track.uploadedByUid && currentUser.uid && track.uploadedByUid === currentUser.uid) {
+      return true;
+    }
+
+    // 3. Unassigned songs or main admin email (danielbarber1246@gmail.com) automatically own unassigned songs
+    if (isMainAdmin) {
+      if (!track.uploadedByEmail && !track.uploadedByUid) return true;
+      if (track.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
+    }
+
+    // 4. Match by artist profile name
     if (
       currentArtist?.googleUid === currentUser.uid &&
       currentArtist?.name &&
@@ -217,6 +237,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     ) {
       return true;
     }
+
     return false;
   };
 
@@ -866,9 +887,10 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
       lyrics: lyricsInput.trim() || (isHe ? 'מילות השיר נוצרות ומסונכרנות אוטומטית על גבי המכשיר' : 'Lyrics auto-generated on device'),
       artistBio: currentArtist.bio,
-      artistAvatarUrl: currentArtist.avatarUrl || currentUser?.photoURL || 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
+      artistAvatarUrl: getEffectiveUserAvatar(currentUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       uploadedByUid: currentUser?.uid || 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
+      uploadedByEmail: currentUser?.email?.toLowerCase().trim() || 'danielbarber1246@gmail.com',
       isPrivate: false,
       customServerUrl: customServerUrlInput.trim() || undefined,
       bgColor: cachedBgColor,
@@ -943,11 +965,26 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const myUploadedTracks = allTracks.filter((t) => {
     if (deletedTrackIds.includes(t.id)) return false;
     if (!currentUser) return false;
+    const userEmail = currentUser.email?.toLowerCase().trim() || '';
+    const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
 
-    // 1. Direct match by uploadedByUid
-    if (t.uploadedByUid && t.uploadedByUid === currentUser.uid) return true;
+    // 1. Direct match by uploadedByEmail
+    if (t.uploadedByEmail && userEmail && t.uploadedByEmail.toLowerCase().trim() === userEmail) {
+      return true;
+    }
 
-    // 2. Match by artist name if track artistName matches current artist profile or user display name
+    // 2. Direct match by uploadedByUid
+    if (t.uploadedByUid && t.uploadedByUid === currentUser.uid) {
+      return true;
+    }
+
+    // 3. Unassigned legacy songs automatically belong to main admin email (danielbarber1246@gmail.com)
+    if (isMainAdmin) {
+      if (!t.uploadedByEmail && !t.uploadedByUid) return true;
+      if (t.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
+    }
+
+    // 4. Match by artist name if track artistName matches current artist profile or user display name
     const normArtist = (currentArtist?.name || currentUser.displayName || '').toLowerCase().trim();
     const normTrackArtist = (t.artistName || '').toLowerCase().trim();
     if (normArtist && normTrackArtist && (normTrackArtist === normArtist || normTrackArtist.includes(normArtist) || normArtist.includes(normTrackArtist))) {
@@ -958,7 +995,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   });
 
   const sampleTrack = myUploadedTracks[0] || allTracks[0];
-  const activeAvatar = currentArtist.avatarUrl || currentUser?.photoURL || undefined;
+  const activeAvatar = getEffectiveUserAvatar(currentUser, currentArtist);
   const extractedArtistColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
   const themeColor = extractedArtistColor || (sampleTrack ? getTrackInstantColor(sampleTrack) : { r: 99, g: 102, b: 241 });
 
@@ -1104,22 +1141,25 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
               <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
                   <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#070b14] bg-slate-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
-                    {currentArtist.avatarUrl || currentUser?.photoURL ? (
-                      <img
-                        src={currentArtist.avatarUrl || currentUser?.photoURL || ''}
-                        alt={currentArtist.name}
-                        className="w-full h-full rounded-full object-cover"
-                      />
-                    ) : (
-                      <div
-                        className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-inner select-none"
-                        style={{
-                          background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
-                        }}
-                      >
-                        {currentArtist.name?.[0] || 'A'}
-                      </div>
-                    )}
+                    {(() => {
+                      const avatar = getEffectiveUserAvatar(currentUser, currentArtist);
+                      return avatar ? (
+                        <img
+                          src={avatar}
+                          alt={currentArtist.name}
+                          className="w-full h-full rounded-full object-cover"
+                        />
+                      ) : (
+                        <div
+                          className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-inner select-none"
+                          style={{
+                            background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
+                          }}
+                        >
+                          {currentArtist.name?.[0] || 'A'}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 

@@ -211,6 +211,39 @@ getRedirectResult(auth)
     console.warn('OAuth redirect listener notice:', err);
   });
 
+export function getEffectiveUserAvatar(
+  user: FirebaseUser | null,
+  profile?: ArtistProfile | null
+): string | undefined {
+  if (!user) return profile?.avatarUrl;
+  const primaryProvider = user.providerData?.[0];
+  const providerId = primaryProvider?.providerId || '';
+
+  // Provider-specific photo from providerData (Facebook, Yahoo, Microsoft, Google, etc.)
+  if (primaryProvider?.photoURL) {
+    return primaryProvider.photoURL;
+  }
+
+  // If logged in via Google, top-level user.photoURL is valid
+  if (providerId.includes('google') && user.photoURL) {
+    return user.photoURL;
+  }
+
+  // If custom avatar set on profile (e.g. uploaded file or GitHub avatar)
+  if (profile?.avatarUrl) {
+    // If it's a Google picture URL, only return it if current login is Google
+    if (profile.avatarUrl.includes('googleusercontent.com')) {
+      if (providerId.includes('google')) {
+        return profile.avatarUrl;
+      }
+      return undefined;
+    }
+    return profile.avatarUrl;
+  }
+
+  return undefined;
+}
+
 export function onAuthUserChanged(callback: (user: FirebaseUser | null) => void) {
   return onAuthStateChanged(auth, callback);
 }
@@ -382,6 +415,7 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
       lyrics: (track.lyrics || '').slice(0, 8000),
       bgColor: track.bgColor || '',
       uploadedByUid: track.uploadedByUid || '',
+      uploadedByEmail: track.uploadedByEmail || '',
       artistAvatarUrl: track.artistAvatarUrl || '',
       publisherAccountUrl: (track.publisherAccountUrl || track.licenseUrl || 'https://audius.co').slice(0, 500),
       createdAt: track.publishedDate || new Date().toISOString().split('T')[0],
@@ -436,6 +470,7 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           publishedDate: data.createdAt || '2024',
           publisherAccountUrl: data.publisherAccountUrl || 'https://audius.co',
           uploadedByUid: data.uploadedByUid || undefined,
+          uploadedByEmail: data.uploadedByEmail || undefined,
           bgColor: data.bgColor || undefined,
           artistAvatarUrl: data.artistAvatarUrl || undefined,
           isAiGenerated: !!data.isAiGenerated,

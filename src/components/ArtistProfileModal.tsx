@@ -152,22 +152,31 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const avatarUrl = rawAvatarUrl ? getStreamingMediaUrl(rawAvatarUrl) : undefined;
   const themeColor = useExtractedColor(avatarUrl || sampleTrack?.coverUrl, sampleTrack?.genre || 'Pop') || { r: 16, g: 185, b: 129 };
 
-  // Permission check: only track uploader or owner of the artist profile can delete
   const canDeleteTrack = (track: JamendoTrack) => {
     if (!onRemoveTrack) return false;
     try {
       const authRaw = localStorage.getItem('wikiarchive_cached_auth_user');
       const authUser = authRaw ? JSON.parse(authRaw) : null;
-      if (!authUser || !authUser.uid) return false;
+      if (!authUser) return false;
 
-      // Track uploaded by user
+      const userEmail = authUser.email?.toLowerCase().trim() || '';
+      const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
+
+      // Main admin email (danielbarber1246@gmail.com) can manage unassigned songs or their own songs
+      if (isMainAdmin) {
+        if (!track.uploadedByEmail && !track.uploadedByUid) return true;
+        if (track.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
+      }
+
+      // Track uploaded by user email or uid
+      if (track.uploadedByEmail && userEmail && track.uploadedByEmail.toLowerCase().trim() === userEmail) return true;
       if (track.uploadedByUid && track.uploadedByUid === authUser.uid) return true;
 
       // Or user owns artist profile
       const artistRaw = localStorage.getItem('kolot_artist_account_v1') || localStorage.getItem('wikiarchive_artist_account');
       if (artistRaw) {
         const artist = JSON.parse(artistRaw);
-        if (artist.uid === authUser.uid && (
+        if ((artist.uid === authUser.uid || artist.googleUid === authUser.uid) && (
           artist.name?.toLowerCase().trim() === cleanQuery ||
           artist.name?.toLowerCase().trim() === (track.artistName || '').toLowerCase().trim()
         )) {

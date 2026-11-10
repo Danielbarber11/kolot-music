@@ -135,6 +135,7 @@ export interface JamendoTrack {
   artistAvatarUrl?: string;
   publisherAccountUrl?: string;
   uploadedByUid?: string;
+  uploadedByEmail?: string;
   isPrivate?: boolean;
   customServerUrl?: string;
   bgColor?: string;
