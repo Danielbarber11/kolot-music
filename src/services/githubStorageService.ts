@@ -1112,3 +1112,52 @@ export async function deleteAlbumFromGitHub(albumId: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Increments track play/view count and commits updated JSON to GitHub
+ */
+export async function incrementTrackPlaysInGitHub(track: JamendoTrack): Promise<number> {
+  const config = getGitHubStorageConfig();
+  const repo = normalizeRepoFullName(config.repoName);
+  const token = (config.token || '').trim();
+  const currentPlays = (track.playsCount || 0) + 1;
+  const updatedTrack: JamendoTrack = {
+    ...track,
+    playsCount: currentPlays,
+  };
+
+  if (token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
+    try {
+      const metadataPath = `tracks/${track.id}.json`;
+      const metadataBase64 = btoa(unescape(encodeURIComponent(JSON.stringify(updatedTrack, null, 2))));
+      await commitFileToGitHub(repo, metadataPath, metadataBase64, `Increment plays for ${track.name} to ${currentPlays}`, token);
+
+      const indexRes = await fetch(`https://raw.githubusercontent.com/${repo}/main/tracks_index.json?t=${Date.now()}`);
+      if (indexRes.ok) {
+        const rawJson: JamendoTrack[] = await indexRes.json();
+        if (Array.isArray(rawJson)) {
+          const updatedIndex = rawJson.map((t) => (t.id === track.id ? { ...t, playsCount: currentPlays } : t));
+          await updateMasterTracksIndexOnGitHub(repo, updatedIndex, token);
+          fetch(`https://purge.jsdelivr.net/gh/${repo}@main/tracks_index.json`).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('GitHub play increment notice:', e);
+    }
+  }
+
+  try {
+    const cached = localStorage.getItem('kolot_cloud_tracks_cache');
+    if (cached) {
+      const list: JamendoTrack[] = JSON.parse(cached);
+      const idx = list.findIndex(t => t.id === track.id);
+      if (idx >= 0) {
+        list[idx].playsCount = currentPlays;
+        localStorage.setItem('kolot_cloud_tracks_cache', JSON.stringify(list));
+      }
+    }
+  } catch {}
+
+  return currentPlays;
+}
+
+

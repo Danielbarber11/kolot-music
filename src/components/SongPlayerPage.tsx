@@ -33,7 +33,7 @@ import { ReportSongModal } from './ReportSongModal';
 import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFirebase } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { getTrackInstantColor, prewarmTrackColor, useExtractedColor, getFormattedPlayCount } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInGitHubRepo } from '../services/githubStorageService';
+import { getStreamingMediaUrl, updateTrackColorInGitHubRepo, incrementTrackPlaysInGitHub } from '../services/githubStorageService';
 import {
   scanAndGenerateLyricsOnDevice,
   persistLyricsToGitHub,
@@ -208,6 +208,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
+  const [currentPlaysCount, setCurrentPlaysCount] = useState<number>(track.playsCount || 0);
+
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
       setAuthUser(user);
@@ -218,6 +220,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     if (track.id) {
       incrementTrackPlaysInFirebase(track.id).catch(() => {});
+      incrementTrackPlaysInGitHub(track).then((newCount) => {
+        if (newCount > 0) setCurrentPlaysCount(newCount);
+      }).catch(() => {});
     }
   }, [track.id]);
 
@@ -598,6 +603,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               {track.featuredArtist && <span className="text-emerald-300 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
               <ArrowUpRight className="w-3.5 h-3.5 text-white" />
             </button>
+          </div>
+
+          <div className="pt-1">
+            <span className="px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[11px] font-bold text-white/90 inline-flex items-center gap-1.5 shadow-sm">
+              <span>👁️</span>
+              <span>{(currentPlaysCount || 0).toLocaleString()} {isHe ? 'צפיות והאזנות' : 'plays'}</span>
+            </span>
           </div>
         </div>
       </div>
