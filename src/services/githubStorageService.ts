@@ -732,14 +732,25 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
   const token = (config.token || '').trim();
 
   const msg = `Delete track: ${trackId}`;
-  await Promise.allSettled([
+  const audioExtensions = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac'];
+  const coverExtensions = ['jpg', 'png', 'jpeg', 'webp'];
+
+  const promises: Promise<any>[] = [
     deleteFileFromGitHub(repo, `tracks/${trackId}.json`, msg, token),
     deleteFileFromGitHub(backupRepo, `tracks/${trackId}.json`, msg, token),
-    deleteFileFromGitHub(repo, `audio/${trackId}.mp3`, msg, token),
-    deleteFileFromGitHub(backupRepo, `audio/${trackId}.mp3`, msg, token),
-    deleteFileFromGitHub(repo, `covers/${trackId}.jpg`, msg, token),
-    deleteFileFromGitHub(backupRepo, `covers/${trackId}.jpg`, msg, token),
-  ]);
+  ];
+
+  audioExtensions.forEach((ext) => {
+    promises.push(deleteFileFromGitHub(repo, `audio/${trackId}.${ext}`, msg, token));
+    promises.push(deleteFileFromGitHub(backupRepo, `audio/${trackId}.${ext}`, msg, token));
+  });
+
+  coverExtensions.forEach((ext) => {
+    promises.push(deleteFileFromGitHub(repo, `covers/${trackId}.${ext}`, msg, token));
+    promises.push(deleteFileFromGitHub(backupRepo, `covers/${trackId}.${ext}`, msg, token));
+  });
+
+  await Promise.allSettled(promises);
 
   // Synchronously update tracks_index.json to remove track
   if (token && token !== 'PASTE_YOUR_GITHUB_TOKEN_HERE') {

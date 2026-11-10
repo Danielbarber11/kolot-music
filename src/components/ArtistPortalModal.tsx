@@ -222,20 +222,10 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       return true;
     }
 
-    // 3. Unassigned songs or main admin email (danielbarber1246@gmail.com) automatically own unassigned songs
+    // 3. Unassigned songs or main admin email (danielbarber1246@gmail.com) automatically own unassigned/admin songs
     if (isMainAdmin) {
       if (!track.uploadedByEmail && !track.uploadedByUid) return true;
       if (track.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
-    }
-
-    // 4. Match by artist profile name
-    if (
-      currentArtist?.googleUid === currentUser.uid &&
-      currentArtist?.name &&
-      track.artistName &&
-      currentArtist.name.toLowerCase().trim() === track.artistName.toLowerCase().trim()
-    ) {
-      return true;
     }
 
     return false;
@@ -982,13 +972,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (isMainAdmin) {
       if (!t.uploadedByEmail && !t.uploadedByUid) return true;
       if (t.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
-    }
-
-    // 4. Match by artist name if track artistName matches current artist profile or user display name
-    const normArtist = (currentArtist?.name || currentUser.displayName || '').toLowerCase().trim();
-    const normTrackArtist = (t.artistName || '').toLowerCase().trim();
-    if (normArtist && normTrackArtist && (normTrackArtist === normArtist || normTrackArtist.includes(normArtist) || normArtist.includes(normTrackArtist))) {
-      return true;
     }
 
     return false;
