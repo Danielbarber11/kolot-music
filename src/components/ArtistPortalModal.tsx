@@ -936,9 +936,18 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
   const myUploadedTracks = allTracks.filter((t) => {
     if (deletedTrackIds.includes(t.id)) return false;
-    if (!currentUser?.uid) return false;
-    if (t.uploadedByUid === currentUser.uid) return true;
-    if (currentArtist?.googleUid === currentUser.uid && currentArtist?.name && t.artistName?.toLowerCase().trim() === currentArtist.name.toLowerCase().trim()) return true;
+    if (!currentUser) return false;
+
+    // 1. Direct match by uploadedByUid
+    if (t.uploadedByUid && t.uploadedByUid === currentUser.uid) return true;
+
+    // 2. Match by artist name if track artistName matches current artist profile or user display name
+    const normArtist = (currentArtist?.name || currentUser.displayName || '').toLowerCase().trim();
+    const normTrackArtist = (t.artistName || '').toLowerCase().trim();
+    if (normArtist && normTrackArtist && (normTrackArtist === normArtist || normTrackArtist.includes(normArtist) || normArtist.includes(normTrackArtist))) {
+      return true;
+    }
+
     return false;
   });
 

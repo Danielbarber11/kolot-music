@@ -25,6 +25,8 @@ import {
 } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 
+import { Logo } from './Logo';
+
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -190,7 +192,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
           transition={{ duration: 0.2 }}
-          className="relative w-full max-w-md rounded-3xl bg-neutral-950/95 border border-white/15 p-6 sm:p-8 shadow-2xl space-y-5 text-white"
+          className="relative w-full max-w-md rounded-[32px] bg-neutral-950/95 border border-white/20 p-6 sm:p-8 shadow-2xl space-y-6 text-white"
         >
           {/* Top Close Button */}
           <button
@@ -201,36 +203,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <X className="w-4 h-4" />
           </button>
 
-          {/* Header Title & Branding */}
-          <div className="space-y-1.5 text-center pt-1">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-bold text-neutral-300">
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{isHe ? 'KOLOT MUSIC • כניסה מאובטחת' : 'KOLOT MUSIC • Secure Auth'}</span>
+          {/* Header Title & Branding with Company Logo */}
+          <div className="space-y-3 text-center pt-2">
+            <div className="flex items-center justify-center">
+              <Logo className="h-9 w-auto" />
             </div>
-            <h2 className="text-2xl font-black tracking-tight text-white">
+            <h2 className="text-xl font-bold tracking-tight text-white">
               {mode === 'login'
                 ? (isHe ? 'כניסה לחשבון' : 'Sign In')
                 : (isHe ? 'יצירת חשבון חדש' : 'Create Account')}
             </h2>
-            <p className="text-xs text-neutral-400">
-              {mode === 'login'
-                ? (isHe ? 'התחבר לשמירת שירים מועדפים, יצירת אלבומים ופרופיל אמן.' : 'Sign in to access favorites, albums, and artist studio.')
-                : (isHe ? 'הצטרף לפלטפורמת המוזיקה העצמאית של קולות.' : 'Join Kolot Open Music Platform.')}
-            </p>
           </div>
 
-          {/* Mode Switch Tabs (כניסה / הרשמה) */}
-          <div className="grid grid-cols-2 p-1 rounded-2xl bg-white/[0.06] border border-white/10 text-xs font-black">
+          {/* Pill Capsule Switcher (אליפסה עם 2 לחצני אליפסה) */}
+          <div className="p-1 rounded-full bg-white/10 border border-white/20 backdrop-blur-md flex items-center justify-between gap-1 shadow-inner select-none">
             <button
               type="button"
               onClick={() => {
                 setMode('login');
                 setErrorMessage(null);
               }}
-              className={`py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              className={`flex-1 py-2.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                 mode === 'login'
-                  ? 'bg-white text-black shadow-md'
-                  : 'text-neutral-400 hover:text-white'
+                  ? 'bg-white text-black shadow-lg scale-[1.01]'
+                  : 'text-white/70 hover:text-white'
               }`}
             >
               <span>{isHe ? 'כניסה' : 'Sign In'}</span>
@@ -241,10 +237,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 setMode('register');
                 setErrorMessage(null);
               }}
-              className={`py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              className={`flex-1 py-2.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                 mode === 'register'
-                  ? 'bg-emerald-500 text-black shadow-md'
-                  : 'text-neutral-400 hover:text-white'
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-400 text-black shadow-lg scale-[1.01]'
+                  : 'text-white/70 hover:text-white'
               }`}
             >
               <span>{isHe ? 'הרשמה' : 'Sign Up'}</span>
@@ -266,15 +262,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Email / Password Form */}
+          {/* Email / Password Form with Pill Inputs */}
           <form onSubmit={handleEmailAuth} className="space-y-3.5">
             {mode === 'register' && (
               <div>
-                <label className="block text-[11px] font-bold text-neutral-300 mb-1">
+                <label className="block text-[11px] font-bold text-neutral-300 mb-1 ps-3">
                   {isHe ? 'שם מלא או שם במה (אופציונלי)' : 'Display / Stage Name'}
                 </label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 start-0 ps-3.5 flex items-center pointer-events-none text-neutral-500">
+                  <div className="absolute inset-y-0 start-0 ps-4 flex items-center pointer-events-none text-neutral-400">
                     <User className="w-4 h-4" />
                   </div>
                   <input
@@ -282,18 +278,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                     placeholder={isHe ? 'דניאל ברבר' : 'Daniel Barber'}
-                    className="w-full ps-10 pe-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 text-white text-xs font-medium focus:outline-none focus:border-emerald-400 placeholder-neutral-600 transition-colors"
+                    className="w-full ps-11 pe-4 py-3.5 rounded-full bg-neutral-900 border border-neutral-700 text-white text-xs font-normal focus:outline-none focus:border-emerald-400 placeholder-neutral-500 transition-colors"
                   />
                 </div>
               </div>
             )}
 
             <div>
-              <label className="block text-[11px] font-bold text-neutral-300 mb-1">
+              <label className="block text-[11px] font-bold text-neutral-300 mb-1 ps-3">
                 {isHe ? 'כתובת אימייל *' : 'Email Address *'}
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 start-0 ps-3.5 flex items-center pointer-events-none text-neutral-500">
+                <div className="absolute inset-y-0 start-0 ps-4 flex items-center pointer-events-none text-neutral-400">
                   <Mail className="w-4 h-4" />
                 </div>
                 <input
@@ -302,13 +298,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="your-email@example.com"
-                  className="w-full ps-10 pe-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 text-white font-sans text-xs font-medium focus:outline-none focus:border-emerald-400 placeholder-neutral-600 transition-colors"
+                  className="w-full ps-11 pe-4 py-3.5 rounded-full bg-neutral-900 border border-neutral-700 text-white font-sans text-xs font-normal focus:outline-none focus:border-emerald-400 placeholder-neutral-500 transition-colors"
                 />
               </div>
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center justify-between mb-1 px-3">
                 <label className="block text-[11px] font-bold text-neutral-300">
                   {isHe ? 'סיסמה (לפחות 6 תווים) *' : 'Password (min. 6 chars) *'}
                 </label>
@@ -326,7 +322,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 )}
               </div>
               <div className="relative">
-                <div className="absolute inset-y-0 start-0 ps-3.5 flex items-center pointer-events-none text-neutral-500">
+                <div className="absolute inset-y-0 start-0 ps-4 flex items-center pointer-events-none text-neutral-400">
                   <Lock className="w-4 h-4" />
                 </div>
                 <input
@@ -335,18 +331,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full ps-10 pe-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 text-white font-sans text-xs font-medium focus:outline-none focus:border-emerald-400 placeholder-neutral-600 transition-colors"
+                  className="w-full ps-11 pe-4 py-3.5 rounded-full bg-neutral-900 border border-neutral-700 text-white font-sans text-xs font-normal focus:outline-none focus:border-emerald-400 placeholder-neutral-500 transition-colors"
                 />
               </div>
             </div>
 
             {mode === 'register' && (
               <div>
-                <label className="block text-[11px] font-bold text-neutral-300 mb-1">
+                <label className="block text-[11px] font-bold text-neutral-300 mb-1 ps-3">
                   {isHe ? 'אימות סיסמה *' : 'Confirm Password *'}
                 </label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 start-0 ps-3.5 flex items-center pointer-events-none text-neutral-500">
+                  <div className="absolute inset-y-0 start-0 ps-4 flex items-center pointer-events-none text-neutral-400">
                     <KeyRound className="w-4 h-4" />
                   </div>
                   <input
@@ -355,7 +351,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full ps-10 pe-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 text-white font-sans text-xs font-medium focus:outline-none focus:border-emerald-400 placeholder-neutral-600 transition-colors"
+                    className="w-full ps-11 pe-4 py-3.5 rounded-full bg-neutral-900 border border-neutral-700 text-white font-sans text-xs font-normal focus:outline-none focus:border-emerald-400 placeholder-neutral-500 transition-colors"
                   />
                 </div>
               </div>
@@ -364,10 +360,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <button
               type="submit"
               disabled={isLoading || !email.trim() || !password}
-              className={`w-full py-3.5 rounded-xl font-black text-xs transition-all cursor-pointer flex items-center justify-center gap-2 shadow-xl active:scale-95 disabled:opacity-40 ${
+              className={`w-full py-3.5 rounded-full font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-2 shadow-xl active:scale-95 disabled:opacity-40 ${
                 mode === 'login'
                   ? 'bg-white hover:bg-neutral-200 text-black'
-                  : 'bg-emerald-500 hover:bg-emerald-400 text-black'
+                  : 'bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-black'
               }`}
             >
               {isLoading ? (
@@ -389,19 +385,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="relative flex py-1 items-center">
             <div className="flex-grow border-t border-white/10" />
             <span className="flex-shrink mx-3 text-[11px] text-neutral-400 font-bold uppercase tracking-wider">
-              {isHe ? 'או המשך באמצעות' : 'Or continue with'}
+              {isHe ? 'או התחבר באמצעות' : 'Or continue with'}
             </span>
             <div className="flex-grow border-t border-white/10" />
           </div>
 
-          {/* Social Provider Grid */}
+          {/* Social Provider Grid with Pill Buttons */}
           <div className="grid grid-cols-2 gap-2.5">
             {/* 1. GOOGLE */}
             <button
               type="button"
               onClick={() => handleSocialLogin('Google', loginWithGoogle)}
               disabled={loadingProvider !== null}
-              className="py-3 px-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
+              className="py-3 px-4 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
             >
               {loadingProvider === 'Google' ? (
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
@@ -421,7 +417,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="button"
               onClick={() => handleSocialLogin('Microsoft', loginWithMicrosoft)}
               disabled={loadingProvider !== null}
-              className="py-3 px-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
+              className="py-3 px-4 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
             >
               {loadingProvider === 'Microsoft' ? (
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
@@ -436,13 +432,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <span>Microsoft</span>
             </button>
 
-            {/* 3. FACEBOOK (READY HOOK) */}
+            {/* 3. FACEBOOK */}
             <button
               type="button"
               onClick={() => handleSocialLogin('Facebook', loginWithFacebook)}
               disabled={loadingProvider !== null}
-              className="py-3 px-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
-              title={isHe ? 'חיבור Facebook (יופעל בהמשך בלוח הבקרה)' : 'Facebook login'}
+              className="py-3 px-4 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
+              title={isHe ? 'חיבור Facebook' : 'Facebook login'}
             >
               {loadingProvider === 'Facebook' ? (
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
@@ -454,13 +450,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <span>Facebook</span>
             </button>
 
-            {/* 4. YAHOO (READY HOOK) */}
+            {/* 4. YAHOO */}
             <button
               type="button"
               onClick={() => handleSocialLogin('Yahoo', loginWithYahoo)}
               disabled={loadingProvider !== null}
-              className="py-3 px-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
-              title={isHe ? 'חיבור Yahoo (יופעל בהמשך בלוח הבקרה)' : 'Yahoo login'}
+              className="py-3 px-4 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-40 shadow-sm"
+              title={isHe ? 'חיבור Yahoo' : 'Yahoo login'}
             >
               {loadingProvider === 'Yahoo' ? (
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
