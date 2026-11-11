@@ -65,6 +65,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   // REAL User Uploaded Tracks count
   const uploadedTracksCount = allTracks.filter((t) => t.id.startsWith('artist_track_') || t.uploadedByUid).length;
 
+  const [configError, setConfigError] = useState<string | null>(null);
+  useEffect(() => {
+    // Quick probe to check R2 config
+    fetch('/api/storage/list?prefix=test')
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) setConfigError(data.error);
+      })
+      .catch(() => setConfigError('שגיאת תקשורת עם שרת האחסון'));
+  }, []);
+
   useEffect(() => {
     getTrackReportsFromFirebase().then((fbReports) => {
       const savedLocal = localStorage.getItem('kolot_track_reports');
@@ -178,6 +189,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             {/* TAB 1: CLOUD STORAGE STATUS */}
             {activeTab === 'storage' && (
               <div className="space-y-6">
+                {configError && (
+                  <div className="p-4 rounded-2xl bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-bold text-center animate-pulse">
+                    ⚠️ שגיאת הגדרת אחסון: {configError}
+                    <br />
+                    <span className="text-[10px] opacity-80 mt-1 block">
+                      יש לוודא שהגדרת את כל 5 המשתנים: ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT, BUCKET_NAME, PUBLIC_URL
+                    </span>
+                  </div>
+                )}
                 <div className="p-5 rounded-3xl bg-gradient-to-r from-emerald-950/80 via-slate-900 to-slate-900 border border-emerald-500/40 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">

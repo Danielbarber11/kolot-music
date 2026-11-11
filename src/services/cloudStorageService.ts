@@ -9,6 +9,26 @@ export interface CloudStorageConfig {
 }
 
 /**
+ * Helper for safe JSON fetching with descriptive errors
+ */
+async function safeJson(res: Response, context: string): Promise<any> {
+  const text = await res.text();
+  if (!res.ok) {
+    let errDetail = text;
+    try {
+      const parsed = JSON.parse(text);
+      errDetail = parsed.error || parsed.message || text;
+    } catch {}
+    throw new Error(`${context}: ${errDetail}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${context}: תגובת השרת אינה בפורמט JSON תקין`);
+  }
+}
+
+/**
  * Normalizes media URL
  */
 export function getStreamingMediaUrl(url?: string): string {
@@ -89,7 +109,7 @@ export async function uploadTrackToCloudStorage(
         method: 'POST',
         body: audioFormData
       });
-      const audioData = await audioRes.json();
+      const audioData = await safeJson(audioRes, 'העלאת קובץ שמע נכשלה');
       if (audioData.success) {
         audioUrl = audioData.url;
       }
@@ -109,7 +129,7 @@ export async function uploadTrackToCloudStorage(
         method: 'POST',
         body: coverFormData
       });
-      const coverData = await coverRes.json();
+      const coverData = await safeJson(coverRes, 'העלאת תמונת עטיפה נכשלה');
       if (coverData.success) {
         coverUrl = coverData.url;
       }
@@ -132,7 +152,7 @@ export async function uploadTrackToCloudStorage(
       })
     });
 
-    const metaData = await metaRes.json();
+    await safeJson(metaRes, 'שמירת מטא-דאטה נכשלה');
 
     // 4. Update Index
     const tracks = await fetchTracksFromCloudStorage();
@@ -153,7 +173,6 @@ export async function uploadTrackToCloudStorage(
       coverUrl,
     };
   } catch (err: any) {
-    console.error('Cloud upload error:', err);
     return { success: false, error: err.message || 'שגיאה בהעלאה לענן' };
   }
 }
@@ -161,12 +180,12 @@ export async function uploadTrackToCloudStorage(
 export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
   try {
     const res = await fetch('/api/storage/list?prefix=tracks_index.json');
-    const data = await res.json();
+    const data = await safeJson(res, 'טעינת רשימת שירים נכשלה');
     if (data.success && data.files.length > 0) {
       const indexUrl = data.files[0].url;
       const indexRes = await fetch(indexUrl);
       if (indexRes.ok) {
-        return await indexRes.json();
+        return await safeJson(indexRes, 'עיבוד רשימת שירים נכשל');
       }
     }
   } catch (err) {
@@ -209,7 +228,7 @@ export async function uploadArtistProfileToCloud(artist: any, avatarFile?: File 
       formData.append('file', avatarFile);
       formData.append('path', `avatars/${artist.id}.jpg`);
       const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
-      const data = await res.json();
+      const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
       if (data.success) avatarUrl = data.url;
     }
 
@@ -232,14 +251,14 @@ export async function uploadArtistProfileToCloud(artist: any, avatarFile?: File 
 export async function fetchArtistProfilesFromCloud(): Promise<any[]> {
   try {
     const res = await fetch('/api/storage/list?prefix=profiles/');
-    const data = await res.json();
+    const data = await safeJson(res, 'טעינת פרופילי אמנים נכשלה');
     if (data.success && data.files) {
       const profileFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
       const profiles = await Promise.all(
         profileFiles.map(async (f: any) => {
           try {
             const profileRes = await fetch(f.url);
-            if (profileRes.ok) return await profileRes.json();
+            if (profileRes.ok) return await safeJson(profileRes, 'עיבוד פרופיל אמן נכשל');
           } catch {}
           return null;
         })
@@ -347,7 +366,7 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
       formData.append('path', `covers/albums/${album.id}.${ext}`);
 
       const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
-      const data = await res.json();
+      const data = await safeJson(res, 'העלאת תמונת אלבום נכשלה');
       if (data.success) coverUrl = data.url;
     }
     const albumToSave = { ...album, coverUrl };
@@ -373,14 +392,14 @@ export async function deleteAlbumFromCloud(albumId: string) {
 export async function fetchAlbumsFromCloud(): Promise<Album[]> {
   try {
     const res = await fetch('/api/storage/list?prefix=albums/');
-    const data = await res.json();
+    const data = await safeJson(res, 'טעינת רשימת אלבומים נכשלה');
     if (data.success && data.files) {
       const albumFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
       const albums = await Promise.all(
         albumFiles.map(async (f: any) => {
           try {
             const albumRes = await fetch(f.url);
-            if (albumRes.ok) return await albumRes.json();
+            if (albumRes.ok) return await safeJson(albumRes, 'עיבוד נתוני אלבום נכשל');
           } catch {}
           return null;
         })

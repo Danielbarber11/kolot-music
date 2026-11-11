@@ -404,7 +404,17 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     }
 
     if (!BUCKET_NAME) {
-      return res.status(500).json({ error: 'R2 storage not configured on server' });
+      return res.status(500).json({ 
+        success: false, 
+        error: 'R2 storage not configured on server (Missing R2_BUCKET_NAME)' 
+      });
+    }
+
+    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
+      return res.status(500).json({ 
+        success: false, 
+        error: 'R2 credentials or endpoint missing in server environment' 
+      });
     }
 
     let body: Buffer | string = '';
@@ -437,7 +447,11 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     });
   } catch (err: any) {
     console.error('R2 Upload Error:', err);
-    return res.status(500).json({ error: 'Failed to upload to R2', details: err?.message });
+    return res.status(500).json({ 
+      success: false,
+      error: `Failed to upload to R2: ${err?.message || 'Unknown error'}`,
+      details: err?.stack || String(err)
+    });
   }
 });
 
@@ -447,7 +461,10 @@ app.get('/api/storage/list', async (req, res) => {
     const { prefix } = req.query;
 
     if (!BUCKET_NAME) {
-      return res.status(500).json({ error: 'R2 storage not configured' });
+      return res.status(500).json({ 
+        success: false,
+        error: 'R2 storage not configured (Missing R2_BUCKET_NAME)' 
+      });
     }
 
     const command = new ListObjectsV2Command({
@@ -467,7 +484,10 @@ app.get('/api/storage/list', async (req, res) => {
     });
   } catch (err: any) {
     console.error('R2 List Error:', err);
-    return res.status(500).json({ error: 'Failed to list R2 files', details: err?.message });
+    return res.status(500).json({ 
+      success: false,
+      error: `Failed to list R2 files: ${err?.message || 'Unknown error'}` 
+    });
   }
 });
 
@@ -480,6 +500,13 @@ app.delete('/api/storage/delete', async (req, res) => {
       return res.status(400).json({ error: 'Missing path' });
     }
 
+    if (!BUCKET_NAME) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'R2 storage not configured (Missing R2_BUCKET_NAME)' 
+      });
+    }
+
     const command = new DeleteObjectCommand({
       Bucket: BUCKET_NAME,
       Key: filePath,
@@ -489,7 +516,10 @@ app.delete('/api/storage/delete', async (req, res) => {
     return res.json({ success: true });
   } catch (err: any) {
     console.error('R2 Delete Error:', err);
-    return res.status(500).json({ error: 'Failed to delete R2 file', details: err?.message });
+    return res.status(500).json({ 
+      success: false,
+      error: `Failed to delete R2 file: ${err?.message || 'Unknown error'}` 
+    });
   }
 });
 
@@ -502,12 +532,18 @@ app.get('/api/storage/raw/*', async (req, res) => {
     // Simple redirect or proxy from R2
     // For now, let's just assume we want to use the public URL or error out
     if (!PUBLIC_URL) {
-      return res.status(500).send('Public URL not configured');
+      return res.status(500).json({ 
+        success: false,
+        error: 'Public URL not configured (Missing R2_PUBLIC_URL)' 
+      });
     }
 
     return res.redirect(`${PUBLIC_URL}/${filePath}`);
-  } catch (err) {
-    return res.status(500).send('Error fetching file');
+  } catch (err: any) {
+    return res.status(500).json({ 
+      success: false,
+      error: `Error proxying file: ${err?.message || 'Unknown error'}` 
+    });
   }
 });
 
