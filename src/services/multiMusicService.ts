@@ -15,7 +15,6 @@ import {
   fetchTracksFromGitHubRepo, 
   computeTrackBgColor,
   uploadTrackToGitHubRepo,
-  uploadArtistProfileToGitHub,
   fetchArtistProfilesFromGitHub,
   fetchAlbumsFromGitHub,
   uploadAlbumToGitHub,
@@ -25,134 +24,10 @@ import {
 import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
- * 100% Genuine GitHub-Backed Music Service (Danielbarber11/Kolot-Music1)
- * All verified songs committed to the GitHub repository are provided here for 0ms initial load,
- * guaranteeing instant playback without network delays or empty states.
+ * Genuine GitHub-Backed Music Service (Danielbarber11/Kolot-Music1)
+ * Tracks are loaded dynamically from GitHub / Firebase with no ghost/dummy tracks hardcoded.
  */
-export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [
-  {
-    id: 'artist_track_1793979341845',
-    name: 'שקיעה_כתומה',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1793979341845.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1793979341845.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    publisherAccountUrl: 'https://audius.co',
-    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
-    uploadedByEmail: 'danielbarber1246@gmail.com',
-    bgColor: 'linear-gradient(180deg, rgb(211, 115, 102) 0%, rgb(158, 86, 77) 35%, rgb(95, 52, 46) 70%, rgb(63, 35, 31) 100%)',
-    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
-    isAiGenerated: false,
-    playsCount: 0,
-    licenseUrl: 'https://audius.co',
-    artistBio: '',
-    isPrivate: false,
-    hasAutoLyrics: true
-  },
-  {
-    id: 'artist_track_1794053762741',
-    name: 'הקול של המחר',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794053762741.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794053762741.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    publisherAccountUrl: 'https://audius.co',
-    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
-    uploadedByEmail: 'danielbarber1246@gmail.com',
-    bgColor: 'linear-gradient(180deg, rgb(10, 85, 152) 0%, rgb(8, 64, 114) 35%, rgb(5, 38, 68) 70%, rgb(3, 26, 46) 100%)',
-    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
-    isAiGenerated: true,
-    playsCount: 0,
-    licenseUrl: 'https://audius.co',
-    artistBio: '',
-    isPrivate: false,
-    hasAutoLyrics: true
-  },
-  {
-    id: 'artist_track_1794158646293',
-    name: 'רגע של פשטות',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794158646293.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794158646293.jpg',
-    genre: 'שונות',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    licenseUrl: 'https://audius.co',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    artistBio: '',
-    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
-    publisherAccountUrl: 'https://audius.co',
-    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
-    uploadedByEmail: 'danielbarber1246@gmail.com',
-    isPrivate: false,
-    bgColor: 'linear-gradient(180deg, rgb(102, 140, 158) 0%, rgb(77, 105, 119) 35%, rgb(46, 63, 71) 70%, rgb(31, 42, 47) 100%)',
-    isAiGenerated: true,
-    playsCount: 0
-  },
-  {
-    id: 'artist_track_1794158765194',
-    name: 'The Midnight Crown',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794158765194.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794158765194.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    licenseUrl: 'https://audius.co',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    artistBio: '',
-    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
-    publisherAccountUrl: 'https://audius.co',
-    uploadedByUid: 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
-    uploadedByEmail: 'danielbarber1246@gmail.com',
-    isPrivate: false,
-    bgColor: 'linear-gradient(180deg, rgb(5, 31, 53) 0%, rgb(4, 23, 40) 35%, rgb(2, 14, 24) 70%, rgb(2, 9, 16) 100%)',
-    isAiGenerated: true,
-    playsCount: 0
-  },
-  {
-    id: 'artist_track_1794310756751',
-    name: 'Velvet_Floor (1)',
-    artistName: 'דניאל ברבר',
-    albumName: 'סינגל עצמאי',
-    duration: 180,
-    audioUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/audio/artist_track_1794310756751.mp3',
-    coverUrl: 'https://cdn.jsdelivr.net/gh/Danielbarber11/Kolot-Music1@main/covers/artist_track_1794310756751.jpg',
-    genre: 'Pop',
-    license: 'Kolot Music Cloud Storage (1GB)',
-    licenseUrl: 'https://audius.co',
-    source: 'Kolot Music Open Storage',
-    legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-    publishedDate: '2026',
-    artistBio: '',
-    artistAvatarUrl: 'https://lh3.googleusercontent.com/a/ACg8ocLPoMwkQYsr2-L12X219YqVXHXoWVjyGfokKmVGS3OPvKd5Uw=s96-c',
-    publisherAccountUrl: 'https://audius.co',
-    uploadedByUid: 'mGqc9DtqyifXw2VpGAKlwhmNFws2',
-    isPrivate: false,
-    bgColor: 'radial-gradient(circle at 50% 35%, rgba(12, 38, 106, 0.65) 0%, rgba(2, 7, 19, 0.96) 55%, #030712 100%)',
-    isAiGenerated: false,
-    playsCount: 0,
-    hasAutoLyrics: true
-  }
-];
+export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
 
 export const ALL_MUSIC_GENRES = [
   'Pop',
@@ -413,9 +288,18 @@ const CLOUD_PROFILES_CACHE_KEY = 'kolot_cloud_profiles_cache';
 
 export async function fetchAllArtistProfiles(): Promise<any[]> {
   try {
+    const fbAccounts = await getArtistAccountsFromFirebase();
+    if (Array.isArray(fbAccounts) && fbAccounts.length > 0) {
+      localStorage.setItem(CLOUD_PROFILES_CACHE_KEY, JSON.stringify(fbAccounts));
+      return fbAccounts;
+    }
+  } catch (err) {
+    console.warn('Firebase profiles fetch error:', err);
+  }
+
+  try {
     const ghProfiles = await fetchArtistProfilesFromGitHub();
-    if (Array.isArray(ghProfiles)) {
-      // Force local cache to strictly match GitHub
+    if (Array.isArray(ghProfiles) && ghProfiles.length > 0) {
       localStorage.setItem(CLOUD_PROFILES_CACHE_KEY, JSON.stringify(ghProfiles));
       return ghProfiles;
     }
@@ -486,18 +370,6 @@ export async function migrateFirebaseToGitHub(): Promise<void> {
           console.info(`Migrated track: ${track.name}. Deleting from Firebase...`);
           await deleteArtistTrackFromFirebase(track.id);
         }
-      }
-    }
-
-    // 2. Migrate Artist Profiles
-    const fbAccounts = await getArtistAccountsFromFirebase();
-    if (fbAccounts.length > 0) {
-      for (const artist of fbAccounts) {
-        // Skip migration if it's a bare auth record
-        if (!artist.avatarUrl && !artist.bio && artist.tracksCount === 0) continue;
-        
-        const avatarBlob = artist.avatarUrl ? await urlToBlob(artist.avatarUrl) : null;
-        await uploadArtistProfileToGitHub(artist, avatarBlob || undefined);
       }
     }
   } catch (err) {

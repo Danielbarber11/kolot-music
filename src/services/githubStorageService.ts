@@ -558,10 +558,14 @@ export async function uploadTrackToGitHubRepo(
     const filtered = currentTracks.filter((t) => t.id !== trackForGitHub.id);
     const updatedMaster = [trackForGitHub, ...filtered];
 
-    await updateMasterTracksIndexOnGitHub(repo, updatedMaster, token);
+    await Promise.allSettled([
+      updateMasterTracksIndexOnGitHub(repo, updatedMaster, token),
+      updateMasterTracksIndexOnGitHub(backupRepo, updatedMaster, token),
+    ]);
 
     // Purge jsDelivr cache so worldwide users get the track immediately
     fetch(`https://purge.jsdelivr.net/gh/${repo}@main/tracks_index.json`).catch(() => {});
+    fetch(`https://purge.jsdelivr.net/gh/${backupRepo}@main/tracks_index.json`).catch(() => {});
   } catch (indexUpdateErr) {
     console.warn('Master index update notice:', indexUpdateErr);
   }
@@ -765,8 +769,12 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
         const rawJson: JamendoTrack[] = await indexRes.json();
         if (Array.isArray(rawJson)) {
           const updated = rawJson.filter(t => t.id !== trackId);
-          await updateMasterTracksIndexOnGitHub(repo, updated, token);
+          await Promise.allSettled([
+            updateMasterTracksIndexOnGitHub(repo, updated, token),
+            updateMasterTracksIndexOnGitHub(backupRepo, updated, token),
+          ]);
           fetch(`https://purge.jsdelivr.net/gh/${repo}@main/tracks_index.json`).catch(() => {});
+          fetch(`https://purge.jsdelivr.net/gh/${backupRepo}@main/tracks_index.json`).catch(() => {});
         }
       }
     } catch {}
@@ -1009,8 +1017,12 @@ export async function uploadAlbumToGitHub(
 
     const filtered = currentAlbums.filter((a) => a.id !== albumToSave.id);
     const updatedMaster = [albumToSave, ...filtered];
-    await updateMasterAlbumsIndexOnGitHub(repo, updatedMaster, token);
+    await Promise.allSettled([
+      updateMasterAlbumsIndexOnGitHub(repo, updatedMaster, token),
+      updateMasterAlbumsIndexOnGitHub(backupRepo, updatedMaster, token),
+    ]);
     fetch(`https://purge.jsdelivr.net/gh/${repo}@main/albums_index.json`).catch(() => {});
+    fetch(`https://purge.jsdelivr.net/gh/${backupRepo}@main/albums_index.json`).catch(() => {});
   } catch (err) {
     console.warn('Failed to update albums index on GitHub:', err);
   }
@@ -1118,8 +1130,12 @@ export async function deleteAlbumFromGitHub(albumId: string): Promise<boolean> {
         const rawJson: Album[] = await indexRes.json();
         if (Array.isArray(rawJson)) {
           const updated = rawJson.filter((a) => a.id !== albumId);
-          await updateMasterAlbumsIndexOnGitHub(repo, updated, token);
+          await Promise.allSettled([
+            updateMasterAlbumsIndexOnGitHub(repo, updated, token),
+            updateMasterAlbumsIndexOnGitHub(backupRepo, updated, token),
+          ]);
           fetch(`https://purge.jsdelivr.net/gh/${repo}@main/albums_index.json`).catch(() => {});
+          fetch(`https://purge.jsdelivr.net/gh/${backupRepo}@main/albums_index.json`).catch(() => {});
         }
       }
     } catch {}

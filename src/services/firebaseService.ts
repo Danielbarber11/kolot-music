@@ -26,6 +26,8 @@ import {
   getRedirectResult,
   signOut,
   onAuthStateChanged,
+  browserLocalPersistence,
+  setPersistence,
   User as FirebaseUser,
 } from 'firebase/auth';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
@@ -49,8 +51,9 @@ const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 // Initialize Firestore
 export const db = getFirestore(app, (firebaseAppletConfig as any)?.firestoreDatabaseId || '(default)');
 
-// Initialize Auth
+// Initialize Auth with permanent browser local persistence
 export const auth = getAuth(app);
+setPersistence(auth, browserLocalPersistence).catch(() => {});
 
 export enum OperationType {
   CREATE = 'create',
