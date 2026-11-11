@@ -876,32 +876,31 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'שומר בסיס נתונים ואחסון ענן...' : 'Saving to Firebase & storage...');
+      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות ב-GitHub (Danielbarber11/Kolot-Music1)...' : 'Saving directly to GitHub...');
 
-      // 1. Save to Firebase Firestore & Local Storage FIRST so track is 100% saved & playable NO MATTER WHAT
-      await Promise.allSettled([
-        persistTrackToStorage(newTrack, currentAudioFile || undefined),
-        saveArtistTrackToFirebase(newTrack),
-      ]);
+      // 1. UPLOAD DIRECTLY & GENUINELY TO GITHUB (Primary authoritative storage)
+      const ghRes = await uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
 
-      // Broadcast immediately to App UI so track is live on page
-      onTrackPublished(newTrack);
-
-      // 2. Perform background GitHub sync without blocking or failing publish if GitHub network varies
-      try {
-        setPublishProgressStep(isHe ? 'מסנכרן גיבוי ענן כפול...' : 'Syncing cloud backup...');
-        const ghRes = await uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
-        if (ghRes.success) {
-          if (ghRes.audioUrl) newTrack.audioUrl = ghRes.audioUrl;
-          if (ghRes.coverUrl) newTrack.coverUrl = ghRes.coverUrl;
-          persistTrackToStorage(newTrack).catch(() => {});
-          saveArtistTrackToFirebase(newTrack).catch(() => {});
-        }
-      } catch (ghErr) {
-        console.warn('GitHub background sync notice (gracefully preserved in Firebase & LocalStorage):', ghErr);
+      if (!ghRes.success) {
+        setIsPublishing(false);
+        setPublishErrorMessage(ghRes.error || (isHe ? 'שגיאה בשמירת השיר ב-GitHub. אנא נסה שוב.' : 'Failed to publish track to GitHub.'));
+        return;
       }
 
-      setPublishProgressStep(isHe ? 'השיר פורסם בהצלחה ב-Firebase וזמין כעת לכל המשתמשים!' : 'Track successfully published!');
+      if (ghRes.audioUrl) {
+        newTrack.audioUrl = ghRes.audioUrl;
+      }
+      if (ghRes.coverUrl) {
+        newTrack.coverUrl = ghRes.coverUrl;
+      }
+
+      // 2. Save metadata to Firebase Firestore for cross-device authentication and queries
+      saveArtistTrackToFirebase(newTrack).catch(() => {});
+
+      // 3. Broadcast genuine GitHub CDN track to UI & Player
+      onTrackPublished(newTrack);
+
+      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה ב-GitHub וזמין לכל המכשירים!' : 'Track successfully saved to GitHub!');
       setPublishSuccess(true);
 
       // Reset form
@@ -926,17 +925,11 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         setIsPublishing(false);
         setPublishProgressStep('');
         setActiveTab('profile');
-      }, 1500);
+      }, 1200);
     } catch (publishErr: any) {
-      console.error('Publishing exception handled:', publishErr);
-      // Even on exception, if track was saved to Firebase, mark success
-      setPublishSuccess(true);
-      setTimeout(() => {
-        setPublishSuccess(false);
-        setIsPublishing(false);
-        setPublishProgressStep('');
-        setActiveTab('profile');
-      }, 1500);
+      console.error('Publishing error:', publishErr);
+      setIsPublishing(false);
+      setPublishErrorMessage(publishErr.message || (isHe ? 'שגיאה בשמירה ל-GitHub. נסה שוב.' : 'Failed to publish.'));
     }
   };
 
