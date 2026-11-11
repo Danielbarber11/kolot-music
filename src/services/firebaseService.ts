@@ -33,17 +33,14 @@ import {
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 import { ArtistProfile, JamendoTrack } from '../types';
 
-export const firebaseConfig = Object.assign(
-  {
-    apiKey: "AIzaSyDE5Iw4C8F-YNSwlUGLn3B9pgi6ZpffnQI",
-    authDomain: "soy-lore-461719-i9.firebaseapp.com",
-    projectId: "soy-lore-461719-i9",
-    storageBucket: "soy-lore-461719-i9.firebasestorage.app",
-    messagingSenderId: "1029411846084",
-    appId: "1:1029411846084:web:3d0fa2dca6338a9b981691",
-  },
-  firebaseAppletConfig || {}
-);
+export const firebaseConfig = {
+  apiKey: (import.meta.env?.VITE_FIREBASE_API_KEY as string) || (firebaseAppletConfig as any)?.apiKey || "AIzaSyDE5Iw4C8F-YNSwlUGLn3B9pgi6ZpffnQI",
+  authDomain: (import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN as string) || (firebaseAppletConfig as any)?.authDomain || "soy-lore-461719-i9.firebaseapp.com",
+  projectId: (import.meta.env?.VITE_FIREBASE_PROJECT_ID as string) || (firebaseAppletConfig as any)?.projectId || "soy-lore-461719-i9",
+  storageBucket: (import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET as string) || (firebaseAppletConfig as any)?.storageBucket || "soy-lore-461719-i9.firebasestorage.app",
+  messagingSenderId: (import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (firebaseAppletConfig as any)?.messagingSenderId || "1029411846084",
+  appId: (import.meta.env?.VITE_FIREBASE_APP_ID as string) || (firebaseAppletConfig as any)?.appId || "1:1029411846084:web:3d0fa2dca6338a9b981691",
+};
 
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];

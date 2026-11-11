@@ -17,7 +17,7 @@ export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
 
-// Dynamic system cloud token resolver (obfuscated base64, supports Cloudflare secrets & env variables)
+// Dynamic system cloud token resolver from Cloudflare Environment Variables & Secrets
 export const DEFAULT_TOKEN = (
   (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
   (import.meta.env?.VITE_KOLOT as string) ||
@@ -25,7 +25,7 @@ export const DEFAULT_TOKEN = (
   ((import.meta.env as any)?.kolot as string) ||
   ((import.meta.env as any)?.KOLOT as string) ||
   ((typeof process !== 'undefined' && process.env) ? (process.env.VITE_KOLOT || process.env.kolot || process.env.KOLOT || process.env.VITE_GITHUB_TOKEN) : '') ||
-  atob('Z2hwX1FHVzRNUjN3UDFRdkk0czBQbjE0d2VnZlZVRXdzTTRXWW9WWg==')
+  ''
 );
 
 /**
