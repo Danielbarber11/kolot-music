@@ -17,11 +17,14 @@ export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
 
-// Dynamic system cloud token resolver (obfuscated base64, no plain text token in source code)
+// Dynamic system cloud token resolver (obfuscated base64, supports Cloudflare secrets & env variables)
 export const DEFAULT_TOKEN = (
-  import.meta.env?.VITE_GITHUB_TOKEN ||
-  import.meta.env?.VITE_KOLOT ||
-  (import.meta.env as any)?.KOLOT ||
+  (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
+  (import.meta.env?.VITE_KOLOT as string) ||
+  ((import.meta.env as any)?.VITE_kolot as string) ||
+  ((import.meta.env as any)?.kolot as string) ||
+  ((import.meta.env as any)?.KOLOT as string) ||
+  ((typeof process !== 'undefined' && process.env) ? (process.env.VITE_KOLOT || process.env.kolot || process.env.KOLOT || process.env.VITE_GITHUB_TOKEN) : '') ||
   atob('Z2hwX1FHVzRNUjN3UDFRdkk0czBQbjE0d2VnZlZVRXdzTTRXWW9WWg==')
 );
 
@@ -138,6 +141,8 @@ export function getGitHubStorageConfig(): GitHubRepoStorageConfig {
   const envToken =
     (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
     (import.meta.env?.VITE_KOLOT as string) ||
+    ((import.meta.env as any)?.VITE_kolot as string) ||
+    ((import.meta.env as any)?.kolot as string) ||
     ((import.meta.env as any)?.KOLOT as string) ||
     DEFAULT_TOKEN;
 
