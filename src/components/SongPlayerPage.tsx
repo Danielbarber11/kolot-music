@@ -14,6 +14,9 @@ import {
   User,
   ShieldAlert,
   Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Mic,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile } from '../types';
@@ -25,6 +28,7 @@ import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFire
 import { User as FirebaseUser } from 'firebase/auth';
 import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInGitHubRepo, incrementTrackPlaysInGitHub } from '../services/githubStorageService';
+import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -91,10 +95,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [duration, setDuration] = useState(track.duration || 180);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+
+  const syncedLyrics = React.useMemo(() => generateSynchronizedLyrics(track), [track]);
+  const activeLineIndex = syncedLyrics.lines.findIndex(
+    (line) => currentTime >= line.startTime && currentTime <= line.endTime
+  );
   const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(() => {
     try {
       const saved = localStorage.getItem('wikiarchive_artist_account');
@@ -589,6 +599,98 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               <span className="font-bold text-emerald-400 truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
             </div>
           </div>
+        </div>
+
+        {/* COLLAPSIBLE LYRICS & KARAOKE CARD */}
+        <div className="p-4 sm:p-5 rounded-3xl bg-neutral-950/80 backdrop-blur-2xl border border-white/15 space-y-3 shadow-2xl transition-all">
+          <button
+            type="button"
+            onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
+            className="w-full flex items-center justify-between text-right cursor-pointer select-none group"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20">
+                <Mic className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                  <span>{isHe ? 'מילות השיר • סנכרון בלייב' : 'Song Lyrics • Live Sync'}</span>
+                </h3>
+                {!isLyricsExpanded && (
+                  <p className="text-xs text-white/70 truncate max-w-[220px] sm:max-w-[300px] pt-0.5">
+                    {syncedLyrics.previewText}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-1 rounded-full bg-white/10 text-white/90 text-[10px] font-bold border border-white/15">
+                {isLyricsExpanded ? (isHe ? 'סגור' : 'Collapse') : (isHe ? 'פתח מילים' : 'Expand')}
+              </span>
+              {isLyricsExpanded ? (
+                <ChevronUp className="w-5 h-5 text-white/80 group-hover:text-white" />
+              ) : (
+                <ChevronDown className="w-5 h-5 text-white/80 group-hover:text-white" />
+              )}
+            </div>
+          </button>
+
+          {/* EXPANDED SCROLLABLE LYRICS CONTAINER */}
+          <AnimatePresence>
+            {isLyricsExpanded && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.22 }}
+                className="pt-3 border-t border-white/10 space-y-3"
+              >
+                <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-3 select-none custom-scrollbar scroll-smooth">
+                  {syncedLyrics.lines.map((line, lIdx) => {
+                    const isLineActive = lIdx === activeLineIndex;
+
+                    return (
+                      <div
+                        key={line.id}
+                        onClick={() => {
+                          if (audioRef.current) {
+                            audioRef.current.currentTime = line.startTime;
+                            setCurrentTime(line.startTime);
+                          }
+                        }}
+                        className={`p-2.5 rounded-2xl transition-all cursor-pointer flex flex-wrap items-center gap-1.5 leading-relaxed ${
+                          isLineActive
+                            ? 'bg-white/10 border border-white/20 shadow-lg'
+                            : 'hover:bg-white/5'
+                        }`}
+                      >
+                        {line.words.map((w, wIdx) => {
+                          const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
+
+                          return (
+                            <span
+                              key={wIdx}
+                              className={`text-xs sm:text-sm transition-all duration-150 ${
+                                isWordActive
+                                  ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
+                                  : 'text-white font-medium hover:text-emerald-300'
+                              }`}
+                            >
+                              {w.text}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-white/50 text-center">
+                  {isHe ? '💡 לחץ על כל שורה כדי לקפוץ אליה בשיר' : '💡 Click any line to jump to that moment'}
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

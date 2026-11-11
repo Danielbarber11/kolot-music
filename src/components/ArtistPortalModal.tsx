@@ -2468,7 +2468,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     disabled={isAuthLoading}
                     className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-white hover:bg-neutral-200 active:scale-95 text-black font-black text-xs shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
                   >
-                    <span>{isHe ? 'התחבר עם Google' : 'Sign in with Google'}</span>
+                    <span>{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
                   </button>
                 )}
               </div>

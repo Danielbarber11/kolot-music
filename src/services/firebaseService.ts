@@ -106,18 +106,10 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
   } catch (error: any) {
     console.warn('Google Sign In Popup notice:', error);
     if (
-      error?.code === 'auth/popup-blocked' ||
       error?.code === 'auth/popup-closed-by-user' ||
       error?.code === 'auth/cancelled-popup-request'
     ) {
-      try {
-        const provider = new GoogleAuthProvider();
-        provider.setCustomParameters({ prompt: 'select_account' });
-        await signInWithRedirect(auth, provider);
-        return auth.currentUser;
-      } catch (redirectErr) {
-        console.error('Redirect sign in error:', redirectErr);
-      }
+      return null;
     }
     throw error;
   }
