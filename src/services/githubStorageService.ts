@@ -17,7 +17,7 @@ export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
 
-// Dynamic system cloud token resolver from Cloudflare Environment Variables & Secrets
+// Dynamic cloud token resolver
 export const DEFAULT_TOKEN = (
   (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
   (import.meta.env?.VITE_KOLOT as string) ||
