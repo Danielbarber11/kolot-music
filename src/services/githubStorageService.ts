@@ -14,27 +14,11 @@ export interface GitHubRepoStorageConfig {
 }
 
 export const DEFAULT_OWNER = 'Danielbarber11';
-export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
-export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
+export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music2';
+export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 
-const SYSTEM_GITHUB_PAT = [
-  'ghp',
-  '_',
-  'Q15rf7Lqu',
-  '6BYaoXcFi',
-  'C6sLUG8oao',
-  'HK3dR3jE'
-].join('');
-
-// Dynamic cloud token resolver with verified system credentials
-export const DEFAULT_TOKEN = (
-  (import.meta.env?.VITE_GITHUB_TOKEN as string) ||
-  (import.meta.env?.VITE_KOLOT as string) ||
-  ((import.meta.env as any)?.VITE_kolot as string) ||
-  ((import.meta.env as any)?.kolot as string) ||
-  ((import.meta.env as any)?.KOLOT as string) ||
-  SYSTEM_GITHUB_PAT
-);
+// Cloud token resolver (GitHub removed per user request)
+export const DEFAULT_TOKEN = '';
 
 /**
  * Normalizes user input into full GitHub owner/repo format: "Danielbarber11/Kolot-Music1"
