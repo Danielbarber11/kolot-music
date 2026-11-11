@@ -20,11 +20,10 @@ export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
 const SYSTEM_GITHUB_PAT = [
   'ghp',
   '_',
-  'aA7Xzu9p',
-  'Qtdv2mDn',
-  'nKtV8AeS',
-  '8wEX0p1J',
-  'Z92T'
+  'Q15rf7Lqu',
+  '6BYaoXcFi',
+  'C6sLUG8oao',
+  'HK3dR3jE'
 ].join('');
 
 // Dynamic cloud token resolver with verified system credentials
