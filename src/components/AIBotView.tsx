@@ -4,13 +4,7 @@ import {
   Sparkles,
   Bot,
   User,
-  Play,
-  Film,
-  BookOpen,
-  Code,
-  Music,
   ExternalLink,
-  Star,
   RotateCcw,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -48,21 +42,19 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
       id: 'welcome',
       role: 'assistant',
       text: isHe
-        ? `שלום! אני **WikiArchive AI** - עוזר הבינה המלאכותית הפועל באמצעות **Perchance AI** ו-**Pollinations.ai** ומחובר ישירות ל-8 מאגרי מידע פתוחים:
-**ויקיפדיה • Internet Archive • Gutenberg • Open Library • MusicBrainz • ארכיון המוזיקה • Openverse • GitHub**
+        ? `שלום! אני **Kolot AI** - עוזר הבינה המלאכותית הפועל באמצעות **Perchance AI** ו-**Pollinations.ai** ומחובר ישירות ל-7 מאגרי מידע פתוחים:
+**ויקיפדיה • Internet Archive • Gutenberg • Open Library • MusicBrainz • ארכיון המוזיקה • Openverse**
 
-שאל אותי על כל נושא, היסטוריה, קוד, ספרות, מדע או מוזיקה - ואענה לך בלייב עם אפשרות להקראה קולית!`
-        : `Welcome! I am **WikiArchive AI** - powered by **Perchance AI** & **Pollinations.ai** across 8 open knowledge repositories! Ask me anything!`,
+שאל אותי על כל נושא, היסטוריה, ספרות, מדע או מוזיקה - ואענה לך בלייב עם אפשרות להקראה קולית!`
+        : `Welcome! I am **Kolot AI** - powered by **Perchance AI** & **Pollinations.ai** across 7 open knowledge repositories! Ask me anything!`,
       timestamp: new Date(),
       suggestedQuestions: isHe
         ? [
-            'פרויקטי React ו-TypeScript ב-GitHub',
             'ספרי Sherlock Holmes ב-Gutenberg',
             'מסע בחלל ונחיתה על הירח 1969',
             'מוזיקת אמביאנט וג’אז ב-Jamendo',
           ]
         : [
-            'Top React repositories on GitHub',
             'Sherlock Holmes ebooks in Gutenberg',
             'Apollo 11 Moon Landing Video Archive',
             'Ambient music in Jamendo',
@@ -93,7 +85,7 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
     setInputQuery('');
     setLoading(true);
 
-    setCurrentStep(isHe ? '🔍 סורק בויקיפדיה, GitHub ו-Internet Archive...' : '🔍 Searching Wikipedia, GitHub & Archive...');
+    setCurrentStep(isHe ? '🔍 סורק בויקיפדיה ו-Internet Archive...' : '🔍 Searching Wikipedia & Archive...');
     await new Promise((r) => setTimeout(r, 600));
 
     setCurrentStep(isHe ? '🧠 מסנתז תשובה...' : '🧠 Synthesizing AI response...');
@@ -110,7 +102,6 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
         archiveItems: result.archiveItems,
         gutenbergBooks: result.gutenbergBooks,
         jamendoTracks: result.jamendoTracks,
-        githubRepos: result.githubRepos,
         suggestedQuestions: result.suggestedQuestions,
       };
 
@@ -148,7 +139,7 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
               </span>
             </h2>
             <p className="text-xs text-slate-500 font-medium">
-              {isHe ? 'תשובות חכמות ודיבוב קולי בזמן אמת מחובר ל-8 מאגרי מידע פתוחים' : 'Powered by Perchance AI with live audio voiceover'}
+              {isHe ? 'תשובות חכמות ודיבוב קולי בזמן אמת מחובר ל-7 מאגרי מידע פתוחים' : 'Powered by Perchance AI with live audio voiceover'}
             </p>
           </div>
         </div>
@@ -200,29 +191,6 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
                     <span className="text-[10px] text-purple-600 font-mono font-bold bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200/60">
                       🎲 Perchance AI
                     </span>
-                  </div>
-                )}
-
-                {/* Attachments inside Bot Answer */}
-                {msg.githubRepos && msg.githubRepos.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-slate-200/80">
-                    <h4 className="text-xs font-bold text-purple-700 mb-2 flex items-center gap-1.5">
-                      <Code className="w-4 h-4 text-purple-600" />
-                      <span>{isHe ? 'פרויקטי קוד ב-GitHub:' : 'GitHub Repos:'}</span>
-                    </h4>
-                    <div className="space-y-2">
-                      {msg.githubRepos.map((repo) => (
-                        <div key={repo.id} className="bg-slate-50 border border-slate-200 p-2.5 rounded-2xl flex items-center justify-between">
-                          <div className="min-w-0 pr-2">
-                            <span className="font-bold text-xs text-slate-900 block truncate">{repo.fullName}</span>
-                            <span className="text-[11px] text-slate-500 truncate block">{repo.description}</span>
-                          </div>
-                          <a href={repo.htmlUrl} target="_blank" rel="noreferrer" className="p-1.5 bg-slate-200 text-slate-800 rounded-xl">
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
 
@@ -292,3 +260,4 @@ export const AIBotView: React.FC<AIBotViewProps> = ({
     </div>
   );
 };
+

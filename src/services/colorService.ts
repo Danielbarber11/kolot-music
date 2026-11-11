@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { JamendoTrack } from '../types';
 import { isAuthenticCover } from '../components/TrackCoverArt';
-import { getStreamingMediaUrl } from './githubStorageService';
+import { getStreamingMediaUrl } from './cloudStorageService';
 
 // Global cache for sampled cover art RGB colors so songs open with the exact color instantly
 export const globalTrackColorCache = new Map<string, { r: number; g: number; b: number }>();

@@ -2,12 +2,33 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Configure Multer for memory storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+});
+
+// Initialize R2 S3 Client
+const r2Client = new S3Client({
+  region: 'auto',
+  endpoint: process.env.R2_ENDPOINT || '',
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+  },
+});
+
+const BUCKET_NAME = process.env.R2_BUCKET_NAME || '';
+const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '25mb' }));
@@ -304,7 +325,6 @@ app.post('/api/ai/synthesize', async (req, res) => {
       musicBrainzResults,
       jamendoResults,
       openverseResults,
-      githubResults,
       language = 'he',
     } = req.body;
 
@@ -334,22 +354,16 @@ app.post('/api/ai/synthesize', async (req, res) => {
       .map((g: any) => `[Project Gutenberg] ${g.title} by ${g.authors?.map((a: any) => a.name).join(', ')}`)
       .join('\n');
 
-    const githubCtx = (githubResults || [])
-      .slice(0, 2)
-      .map((gh: any) => `[GitHub Repo] ${gh.fullName} (${gh.stars} stars): ${gh.description}`)
-      .join('\n');
-
-    const systemInstruction = `You are "WikiArchive Quantum Engine" - an elite Apple-style AI Knowledge Synthesis Agent unifying 8 global open repositories: Wikipedia, Internet Archive, Project Gutenberg, Open Library, MusicBrainz, Jamendo Music, Openverse, and GitHub.
+    const systemInstruction = `You are "WikiArchive Quantum Engine" - an elite Apple-style AI Knowledge Synthesis Agent unifying 7 global open repositories: Wikipedia, Internet Archive, Project Gutenberg, Open Library, MusicBrainz, Jamendo Music, and Openverse.
 Respond in ${language === 'he' ? 'Hebrew' : 'English'}.
-Structure response with clean markdown headings, key bullet points, highlighted media/books/code repositories, and an authoritative concluding insight.`;
+Structure response with clean markdown headings, key bullet points, highlighted media/books, and an authoritative concluding insight.`;
 
     const contents = `User Query: "${prompt}"
 
-Available Context across 8 repositories:
+Available Context across 7 repositories:
 ${wikiCtx ? `WIKIPEDIA:\n${wikiCtx}\n` : ''}
 ${archiveCtx ? `INTERNET ARCHIVE:\n${archiveCtx}\n` : ''}
-${gutenbergCtx ? `PROJECT GUTENBERG:\n${gutenbergCtx}\n` : ''}
-${githubCtx ? `GITHUB REPOSITORIES:\n${githubCtx}\n` : ''}`;
+${gutenbergCtx ? `PROJECT GUTENBERG:\n${gutenbergCtx}\n` : ''}`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
@@ -369,6 +383,131 @@ ${githubCtx ? `GITHUB REPOSITORIES:\n${githubCtx}\n` : ''}`;
       error: 'AI synthesis failed',
       details: err?.message || String(err),
     });
+  }
+});
+
+// --- Cloudflare R2 Storage Endpoints ---
+
+// 1. Upload File (Audio/Image/JSON)
+app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), async (req: any, res) => {
+  try {
+    const { path: filePath } = req.body;
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const file = files?.file?.[0];
+
+    if (!file && !req.body.content) {
+      return res.status(400).json({ error: 'No file or content provided' });
+    }
+
+    if (!filePath) {
+      return res.status(400).json({ error: 'No path provided' });
+    }
+
+    if (!BUCKET_NAME) {
+      return res.status(500).json({ error: 'R2 storage not configured on server' });
+    }
+
+    let body: Buffer | string = '';
+    let contentType = 'application/octet-stream';
+
+    if (file) {
+      body = file.buffer;
+      contentType = file.mimetype;
+    } else if (req.body.content) {
+      // Handle JSON/Text uploads
+      body = req.body.content;
+      contentType = req.body.contentType || 'application/json';
+    }
+
+    const command = new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: filePath,
+      Body: body,
+      ContentType: contentType,
+    });
+
+    await r2Client.send(command);
+
+    const url = PUBLIC_URL ? `${PUBLIC_URL}/${filePath}` : `/api/storage/raw/${filePath}`;
+
+    return res.json({
+      success: true,
+      url,
+      path: filePath,
+    });
+  } catch (err: any) {
+    console.error('R2 Upload Error:', err);
+    return res.status(500).json({ error: 'Failed to upload to R2', details: err?.message });
+  }
+});
+
+// 2. List Files (for index management)
+app.get('/api/storage/list', async (req, res) => {
+  try {
+    const { prefix } = req.query;
+
+    if (!BUCKET_NAME) {
+      return res.status(500).json({ error: 'R2 storage not configured' });
+    }
+
+    const command = new ListObjectsV2Command({
+      Bucket: BUCKET_NAME,
+      Prefix: prefix as string,
+    });
+
+    const data = await r2Client.send(command);
+    return res.json({
+      success: true,
+      files: data.Contents?.map(item => ({
+        key: item.Key,
+        size: item.Size,
+        lastModified: item.LastModified,
+        url: PUBLIC_URL ? `${PUBLIC_URL}/${item.Key}` : `/api/storage/raw/${item.Key}`,
+      })) || [],
+    });
+  } catch (err: any) {
+    console.error('R2 List Error:', err);
+    return res.status(500).json({ error: 'Failed to list R2 files', details: err?.message });
+  }
+});
+
+// 3. Delete File
+app.delete('/api/storage/delete', async (req, res) => {
+  try {
+    const { path: filePath } = req.query;
+
+    if (!filePath || typeof filePath !== 'string') {
+      return res.status(400).json({ error: 'Missing path' });
+    }
+
+    const command = new DeleteObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: filePath,
+    });
+
+    await r2Client.send(command);
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error('R2 Delete Error:', err);
+    return res.status(500).json({ error: 'Failed to delete R2 file', details: err?.message });
+  }
+});
+
+// 4. Raw Proxy (if no public URL)
+app.get('/api/storage/raw/*', async (req, res) => {
+  try {
+    const filePath = (req.params as any)[0];
+    if (!filePath) return res.status(400).send('Missing path');
+
+    // Simple redirect or proxy from R2
+    // For now, let's just assume we want to use the public URL or error out
+    if (!PUBLIC_URL) {
+      return res.status(500).send('Public URL not configured');
+    }
+
+    return res.redirect(`${PUBLIC_URL}/${filePath}`);
+  } catch (err) {
+    return res.status(500).send('Error fetching file');
   }
 });
 
@@ -964,6 +1103,6 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 app.listen(PORT, () => {
-  console.log(`WikiArchive Quantum Server running on http://localhost:${PORT}`);
+  console.log(`Kolot Music Server running on http://localhost:${PORT}`);
 });
 

@@ -27,7 +27,7 @@ import { ReportSongModal } from './ReportSongModal';
 import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFirebase } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInGitHubRepo, incrementTrackPlaysInGitHub } from '../services/githubStorageService';
+import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud } from '../services/cloudStorageService';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
@@ -124,7 +124,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     if (track.id) {
       incrementTrackPlaysInFirebase(track.id).catch(() => {});
-      incrementTrackPlaysInGitHub(track).catch(() => {});
+      incrementTrackPlaysInCloud(track).catch(() => {});
     }
   }, [track.id]);
 
@@ -259,7 +259,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     if (track.id) {
       track.bgColor = activeBgColor;
-      updateTrackColorInGitHubRepo(track.id, activeBgColor, track).catch(() => {});
+      updateTrackColorInCloud(track.id, activeBgColor, track).catch(() => {});
       saveArtistTrackToFirebase(track).catch(() => {});
     }
   }, [track.id, activeBgColor]);

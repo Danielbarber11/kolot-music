@@ -24,8 +24,8 @@ export default function App() {
   // Perform critical initialization before showing the UI
   useEffect(() => {
     const init = async () => {
-      // 1. Fetch real songs from GitHub primarily
-      // We wait at most 2 seconds for GitHub to respond or return cached data
+      // 1. Fetch real songs from Secure Cloud primarily
+      // We wait at most 2 seconds for server to respond or return cached data
       const timeout = new Promise(resolve => setTimeout(resolve, 2200));
       const fetchTask = fetchAllRealSongs();
       

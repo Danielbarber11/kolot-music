@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX, SkipForward, SkipBack, X, Music, ExternalLink, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, ArchiveItem, Language } from '../types';
-import { getStreamingMediaUrl } from '../services/githubStorageService';
+import { getStreamingMediaUrl } from '../services/cloudStorageService';
 
 interface AudioPlayerBarProps {
   currentTrack: JamendoTrack | ArchiveItem | null;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Music, Play } from 'lucide-react';
-import { getStreamingMediaUrl } from '../services/githubStorageService';
+import { getStreamingMediaUrl } from '../services/cloudStorageService';
 
 interface TrackCoverArtProps {
   coverUrl?: string;
@@ -58,18 +58,6 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   }, [coverUrl]);
 
   const handleImgError = () => {
-    // If jsDelivr CDN fails, attempt raw.githubusercontent.com fallback before giving up
-    if (currentSrc && currentSrc.includes('cdn.jsdelivr.net/gh/')) {
-      const match = currentSrc.match(/cdn\.jsdelivr\.net\/gh\/([^/@]+)\/([^/@]+)@([^/]+)\/(.*)/);
-      if (match) {
-        const [, owner, repo, branch, path] = match;
-        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-        if (currentSrc !== rawUrl) {
-          setCurrentSrc(rawUrl);
-          return;
-        }
-      }
-    }
     setHasError(true);
   };
 

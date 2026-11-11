@@ -86,7 +86,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
 
       {/* Version Tag */}
       <div className="absolute bottom-10 text-[10px] text-white/20 font-mono tracking-widest uppercase">
-        GitHub Storage Engine v4.0
+        Cloud Storage Engine v4.0
       </div>
     </motion.div>
   );

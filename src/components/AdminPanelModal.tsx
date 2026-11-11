@@ -6,24 +6,18 @@ import {
   Music,
   CheckCircle2,
   Trash2,
-  Github,
   RefreshCw,
   Eye,
   BarChart3,
-  Check,
   HardDrive,
-  Plus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, ArtistProfile, Language } from '../types';
 import { getTrackReportsFromFirebase, dismissTrackReportInFirebase } from '../services/firebaseService';
 import {
-  getGitHubStorageConfig,
-  saveGitHubStorageConfig,
+  getCloudStorageConfig,
   calculateRealStorageUsage,
-  normalizeRepoFullName,
-  testGitHubConnection,
-} from '../services/githubStorageService';
+} from '../services/cloudStorageService';
 
 import { TrackCoverArt } from './TrackCoverArt';
 
@@ -47,7 +41,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   if (!isOpen) return null;
   const isHe = lang === 'he';
 
-  const [activeTab, setActiveTab] = useState<'github' | 'songs' | 'stats' | 'reports'>('github');
+  const [activeTab, setActiveTab] = useState<'storage' | 'songs' | 'stats' | 'reports'>('storage');
   const [reports, setReports] = useState<TrackReport[]>([]);
   const [displayedTracks, setDisplayedTracks] = useState<JamendoTrack[]>(allTracks);
 
@@ -55,22 +49,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     setDisplayedTracks(allTracks);
   }, [allTracks]);
 
-  // GitHub Storage Config
-  const [githubConfig, setGithubConfig] = useState(getGitHubStorageConfig);
-  const [repoInput, setRepoInput] = useState(() => {
-    const raw = githubConfig.repoName || 'Kolot Music1';
-    return raw.replace(/Kolot MusicKolot Music/gi, 'Kolot Music1').trim();
-  });
-  const [tokenInput, setTokenInput] = useState(githubConfig.token || '');
-  const [extraRepos, setExtraRepos] = useState<string[]>(['Kolot Music2 (גיבוי)']);
-  const [newExtraRepoName, setNewExtraRepoName] = useState('');
-  const [isSyncingGithub, setIsSyncingGithub] = useState(false);
-  const [syncSuccess, setSyncSuccess] = useState(false);
-
+  // Cloud Storage Config (Simplified for R2)
+  const [cloudConfig] = useState(getCloudStorageConfig);
+  
   // REAL Live Storage calculation based on actual uploaded tracks
   const realStorageStats = calculateRealStorageUsage(allTracks);
-  const realUsedMb = Math.round((githubConfig.usedBytes + realStorageStats.usedBytes) / (1024 * 1024));
-  const usedPercent = Math.min(100, Math.round((realUsedMb / githubConfig.capacityMb) * 100));
+  const realUsedMb = Math.round((cloudConfig.usedBytes + realStorageStats.usedBytes) / (1024 * 1024));
+  const usedPercent = Math.min(100, Math.round((realUsedMb / cloudConfig.capacityMb) * 100));
 
   // REAL Active Published Profiles count
   const publishedArtistsCount = artistProfiles.filter(
@@ -101,36 +86,6 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     await dismissTrackReportInFirebase(reportId);
   };
 
-  const handleSyncGithub = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSyncingGithub(true);
-
-    const cleanName = normalizeRepoFullName(repoInput);
-    const updated = {
-      ...githubConfig,
-      repoName: cleanName,
-      token: tokenInput.trim(),
-      isConnected: true,
-    };
-    setGithubConfig(updated);
-    saveGitHubStorageConfig(updated);
-
-    await testGitHubConnection(cleanName, tokenInput.trim());
-
-    setIsSyncingGithub(false);
-    setSyncSuccess(true);
-    setTimeout(() => setSyncSuccess(false), 2500);
-  };
-
-  const handleAddExtraRepo = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newExtraRepoName.trim()) return;
-    setExtraRepos((prev) => [...prev, newExtraRepoName.trim()]);
-    setNewExtraRepoName('');
-  };
-
-  const cleanRepoDisplayName = normalizeRepoFullName(githubConfig.repoName);
-
   return (
     <AnimatePresence>
       <div className="fixed inset-0 z-[140] flex items-center justify-center p-3 sm:p-6 bg-slate-950/90 backdrop-blur-3xl animate-fadeIn" dir={isHe ? 'rtl' : 'ltr'}>
@@ -138,23 +93,23 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
           initial={{ opacity: 0, scale: 0.94, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 20 }}
-          className="relative w-full max-w-4xl bg-[#0b0f19] border border-amber-500/30 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
+          className="relative w-full max-w-4xl bg-[#0b0f19] border border-emerald-500/30 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
         >
           {/* ADMIN HEADER */}
           <div className="p-5 border-b border-white/10 flex items-center justify-between bg-slate-900/90">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                <ShieldAlert className="w-6 h-6 text-amber-400 animate-pulse" />
+              <div className="p-2.5 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <ShieldAlert className="w-6 h-6 text-emerald-400 animate-pulse" />
               </div>
               <div>
-                <h3 className="text-base font-extrabold text-amber-200 flex items-center gap-2">
+                <h3 className="text-base font-extrabold text-emerald-200 flex items-center gap-2">
                   <span>{isHe ? '⚡ פאנל מנהל מערכת • Kolot Music' : '⚡ System Admin Panel'}</span>
                   <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black border border-emerald-500/30">
-                    {isHe ? 'שרת אחסון פעיל' : 'Storage Active'}
+                    {isHe ? 'אחסון ענן פעיל' : 'Cloud Storage Active'}
                   </span>
                 </h3>
                 <p className="text-[11px] text-white/60">
-                  {isHe ? 'שרת אחסון שירים ציבורי (קיבולת 1GB)' : 'Public cloud song storage (1GB capacity)'}
+                  {isHe ? 'ניהול אחסון ומדיה מאובטח ב-Cloudflare R2' : 'Secure R2 storage and media management'}
                 </p>
               </div>
             </div>
@@ -170,15 +125,15 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
           {/* SUB TABS */}
           <div className="flex items-center gap-2 p-2 bg-slate-900 border-b border-white/10 text-xs font-bold overflow-x-auto custom-scrollbar">
             <button
-              onClick={() => setActiveTab('github')}
+              onClick={() => setActiveTab('storage')}
               className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                activeTab === 'github'
-                  ? 'bg-purple-600 text-white shadow-md font-extrabold'
+                activeTab === 'storage'
+                  ? 'bg-emerald-600 text-white shadow-md font-extrabold'
                   : 'text-white/70 hover:text-white hover:bg-white/10'
               }`}
             >
-              <Github className="w-4 h-4" />
-              <span>{isHe ? 'אחסון שירים (1GB)' : 'GitHub Storage'}</span>
+              <HardDrive className="w-4 h-4" />
+              <span>{isHe ? 'מצב אחסון ענן' : 'Cloud Storage'}</span>
             </button>
 
             <button
@@ -220,163 +175,66 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
           {/* MAIN CONTENT */}
           <div className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-6 custom-scrollbar">
-            {/* TAB 1: GITHUB REPO STORAGE */}
-            {activeTab === 'github' && (
+            {/* TAB 1: CLOUD STORAGE STATUS */}
+            {activeTab === 'storage' && (
               <div className="space-y-6">
-                <div className="p-5 rounded-3xl bg-gradient-to-r from-purple-950/80 via-slate-900 to-slate-900 border border-purple-500/40 space-y-4 shadow-2xl">
+                <div className="p-5 rounded-3xl bg-gradient-to-r from-emerald-950/80 via-slate-900 to-slate-900 border border-emerald-500/40 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="p-3 rounded-2xl bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                        <HardDrive className="w-6 h-6 text-purple-400" />
+                      <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <HardDrive className="w-6 h-6 text-emerald-400" />
                       </div>
                       <div>
                         <h4 className="font-extrabold text-base text-white flex items-center gap-2">
-                          <span>{isHe ? 'שרת אחסון שירים ציבורי' : 'Public Song Storage'}</span>
+                          <span>{isHe ? 'שרת אחסון ענן (Cloudflare R2)' : 'Cloud Storage (R2)'}</span>
                           <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                             <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
                           </span>
                         </h4>
                         <p className="text-xs text-white/60 mt-0.5">
-                          {isHe ? 'כל השירים והתמונות המועלים נשמרים במאגר ציבורי זה' : 'Uploaded songs hosted in this public GitHub repo'}
+                          {isHe ? 'כל השירים והמדיה מאוחסנים בשרת מאובטח ומהיר' : 'All media stored on secure high-speed R2 server'}
                         </p>
                       </div>
                     </div>
 
                     <div className="text-right">
-                      <span className="text-xs text-purple-300 font-bold block">{isHe ? 'קיבולת מאגר:' : 'Repo Capacity:'}</span>
-                      <span className="text-lg font-black text-white font-mono">1 GB ({githubConfig.capacityMb} MB)</span>
+                      <span className="text-xs text-emerald-300 font-bold block">{isHe ? 'קיבולת אחסון:' : 'Storage Capacity:'}</span>
+                      <span className="text-lg font-black text-white font-mono">10 GB</span>
                     </div>
                   </div>
 
-                  {/* STORAGE PROGRESS BAR - CALCULATED FROM REAL UPLOADS */}
+                  {/* STORAGE PROGRESS BAR */}
                   <div className="space-y-1.5 pt-2">
                     <div className="flex items-center justify-between text-xs font-mono font-bold">
                       <span className="text-white/90">
                         {isHe
-                          ? `אחסון בשימוש בפועל: ${realUsedMb} MB מתוך 1,000 MB (${uploadedTracksCount} שירים שהועלו)`
-                          : `Real Used: ${realUsedMb} MB / 1,000 MB (${uploadedTracksCount} uploaded tracks)`}
+                          ? `אחסון בשימוש: ${realUsedMb} MB מתוך 10,240 MB (${uploadedTracksCount} שירים)`
+                          : `Used: ${realUsedMb} MB / 10,240 MB (${uploadedTracksCount} tracks)`}
                       </span>
-                      <span className="text-purple-300 font-extrabold">{usedPercent}% תפוס</span>
+                      <span className="text-emerald-300 font-extrabold">{usedPercent}%</span>
                     </div>
                     <div className="w-full h-3.5 rounded-full bg-black/60 p-0.5 border border-white/10 relative overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-purple-500 via-indigo-500 to-emerald-400 transition-all duration-500"
-                        style={{ width: `${Math.max(usedPercent, 2)}%` }}
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-600 via-teal-500 to-emerald-400 transition-all duration-500"
+                        style={{ width: `${Math.max(usedPercent, 1)}%` }}
                       />
                     </div>
-                    <p className="text-[10px] text-white/50">
-                      {isHe
-                        ? `פנוי לאחסון נוסף: ${1000 - realUsedMb} MB פנויים להעלאת שירים ותמונות`
-                        : `Free space: ${1000 - realUsedMb} MB available`}
-                    </p>
                   </div>
                 </div>
 
-                {/* GITHUB REPO FORM */}
-                <form onSubmit={handleSyncGithub} className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-4 text-xs">
-                  <h4 className="font-extrabold text-amber-300 border-b border-white/10 pb-2">
-                    {isHe ? 'הגדרות חיבור למאגר GitHub:' : 'GitHub Repository Settings:'}
-                  </h4>
-
-                  {syncSuccess && (
-                    <div className="p-3.5 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-bold flex items-center gap-2 animate-fadeIn">
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'החיבור למאגר GitHub נבדק ונשמר בהצלחה!' : 'GitHub repo connection verified!'}</span>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-white/90 font-bold mb-1">
-                      {isHe ? 'שם המאגר ב-GitHub (אחסון שירים ותמונות עד 1GB):' : 'GitHub Repository Name:'}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={repoInput}
-                      onChange={(e) => setRepoInput(e.target.value)}
-                      placeholder="שרת אחסון שירים"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/10 border border-white/20 text-white font-mono text-xs focus:outline-none focus:border-purple-400"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/90 font-bold mb-1">
-                      {isHe ? 'מפתח גישה GitHub Personal Access Token:' : 'GitHub Access Token:'}
-                    </label>
-                    <input
-                      type="password"
-                      value={tokenInput}
-                      onChange={(e) => setTokenInput(e.target.value)}
-                      placeholder="ghp_..."
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/10 border border-white/20 text-white font-mono text-xs focus:outline-none focus:border-purple-400"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isSyncingGithub}
-                    className="w-full py-3.5 rounded-2xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs transition-all shadow-xl cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    {isSyncingGithub ? (
-                      <span className="flex items-center gap-2 animate-pulse">
-                        <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                        <span>{isHe ? 'בודק חיבור למאגר ב-GitHub...' : 'Verifying GitHub Connection...'}</span>
-                      </span>
-                    ) : (
-                      <>
-                        <Github className="w-4 h-4" />
-                        <span>{isHe ? 'שמור ובדוק חיבור למאגר עכשיו' : 'Verify & Save Connection'}</span>
-                      </>
-                    )}
-                  </button>
-                </form>
-
-                {/* ADD EXTRA REPOS */}
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3 text-xs">
-                  <h4 className="font-extrabold text-white flex items-center gap-2">
-                    <Plus className="w-4 h-4 text-emerald-400" />
-                    <span>{isHe ? 'הוספת מאגרי אחסון נוספים ב-GitHub (כאשר המאגר הראשון יתמלא):' : 'Additional Storage Repositories:'}</span>
-                  </h4>
-
-                  <form onSubmit={handleAddExtraRepo} className="flex gap-2">
-                    <input
-                      type="text"
-                      value={newExtraRepoName}
-                      onChange={(e) => setNewExtraRepoName(e.target.value)}
-                      placeholder="Kolot Music2"
-                      className="flex-1 px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white text-xs font-mono"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!newExtraRepoName.trim()}
-                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl cursor-pointer disabled:opacity-50"
-                    >
-                      {isHe ? 'הוסף מאגר' : 'Add Repo'}
-                    </button>
-                  </form>
-
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    <span className="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-mono text-[11px] flex items-center gap-1.5 font-bold">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Kolot Music1 (אחסון ראשי)</span>
-                    </span>
-                    <span className="px-3 py-1 rounded-full bg-purple-500/20 border border-purple-500/40 text-purple-300 font-mono text-[11px] flex items-center gap-1.5 font-bold">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />
-                      <span>Kolot Music2 (מאגר גיבוי חירום מחובר)</span>
-                    </span>
-                    {extraRepos.map((repo, i) => (
-                      <span key={i} className="px-3 py-1 rounded-full bg-slate-800 border border-white/15 text-white/80 font-mono text-[11px] flex items-center gap-1.5">
-                        <HardDrive className="w-3 h-3 text-purple-400" />
-                        <span>{repo}</span>
-                      </span>
-                    ))}
-                  </div>
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs space-y-2">
+                  <h4 className="font-extrabold text-amber-300">{isHe ? 'מידע על האחסון:' : 'Storage Information:'}</h4>
+                  <ul className="list-disc list-inside text-white/70 space-y-1 text-[11px]">
+                    <li>{isHe ? 'האחסון מבוסס על שירות Cloudflare R2 לאבטחה ומהירות מקסימלית.' : 'Storage powered by Cloudflare R2 for maximum speed and security.'}</li>
+                    <li>{isHe ? 'החיבור מנוהל בצד השרת ושומר על מפתחות הגישה פרטיים.' : 'Connections are handled server-side to keep access keys private.'}</li>
+                    <li>{isHe ? 'אין צורך בהגדרות ידניות של אחסון חיצוני.' : 'No manual external storage settings required.'}</li>
+                  </ul>
                 </div>
               </div>
             )}
 
-            {/* TAB 2: SONG MANAGEMENT (מחיקת שירים על ידי מנהל) */}
+            {/* TAB 2: SONG MANAGEMENT */}
             {activeTab === 'songs' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
@@ -470,7 +328,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       <Eye className="w-5 h-5 text-purple-400" />
                     </div>
                     <div className="text-3xl font-black text-white font-mono">{uploadedTracksCount}</div>
-                    <p className="text-[10px] text-white/50">{isHe ? 'מאוחסנים בשרת האחסון הציבורי' : 'Stored in public storage'}</p>
+                    <p className="text-[10px] text-white/50">{isHe ? 'מאוחסנים בשרת האחסון הציבורי' : 'Stored in cloud storage'}</p>
                   </div>
                 </div>
 
@@ -478,14 +336,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   <h4 className="font-extrabold text-amber-300">{isHe ? 'אבטחה ואחסון:' : 'Security & Database:'}</h4>
                   <p className="text-white/80 leading-relaxed text-[11px]">
                     {isHe
-                      ? 'נתוני המשתמשים, החשבונות והדיווחים נשמרים ב-Firebase Firestore (פרטי). השירים והמדיה הציבורית נשמרים במאגר הציבורי ב-GitHub.'
-                      : 'Private credentials & reports stored in Firebase. Public songs hosted on GitHub.'}
+                      ? 'נתוני המשתמשים, החשבונות והדיווחים נשמרים ב-Firebase Firestore (פרטי). השירים והמדיה הציבורית נשמרים בשרת מאובטח ב-Cloudflare R2.'
+                      : 'Private credentials & reports stored in Firebase. Public songs hosted on Cloudflare R2.'}
                   </p>
                 </div>
               </div>
             )}
 
-            {/* TAB 3: REPORTS */}
+            {/* TAB 4: REPORTS */}
             {activeTab === 'reports' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
@@ -554,3 +412,4 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     </AnimatePresence>
   );
 };
+

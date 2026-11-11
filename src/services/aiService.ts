@@ -6,7 +6,6 @@ import {
   MusicBrainzRelease,
   JamendoTrack,
   OpenverseImage,
-  GitHubRepo,
   Language,
   EngineMode,
 } from '../types';
@@ -18,7 +17,6 @@ import { searchOpenLibrary } from './openLibraryService';
 import { searchMusicBrainz } from './musicBrainzService';
 import { searchJamendoTracks } from './jamendoService';
 import { searchOpenverseImages } from './openverseService';
-import { searchGitHubRepos } from './githubService';
 import { sendPollinationsChat } from './pollinationsService';
 
 export interface AISynthesizeResult {
@@ -30,7 +28,6 @@ export interface AISynthesizeResult {
   musicBrainzReleases: MusicBrainzRelease[];
   jamendoTracks: JamendoTrack[];
   openverseImages: OpenverseImage[];
-  githubRepos: GitHubRepo[];
   suggestedQuestions: string[];
 }
 
@@ -50,7 +47,6 @@ export async function askWikiArchiveBot(
     musicBrainzReleases,
     jamendoTracks,
     openverseImages,
-    githubRepos,
   ] = await Promise.all([
     searchWikipedia(prompt, lang, 3),
     searchInternetArchive(prompt, 'all', 4),
@@ -59,7 +55,6 @@ export async function askWikiArchiveBot(
     searchMusicBrainz(prompt, 3),
     searchJamendoTracks(prompt, 3),
     searchOpenverseImages(prompt, 3),
-    searchGitHubRepos(prompt, 3),
   ]);
 
   // Construct context for Pollinations.ai API
@@ -99,7 +94,6 @@ Context from open archives: ${contextBrief}`;
         musicBrainzReleases,
         jamendoTracks,
         openverseImages,
-        githubRepos,
         suggestedQuestions: generateSuggestedQuestions(prompt, wikiItems, lang),
       };
     }
@@ -117,7 +111,6 @@ Context from open archives: ${contextBrief}`;
     musicBrainzReleases,
     jamendoTracks,
     openverseImages,
-    githubRepos,
     lang
   );
 
@@ -130,7 +123,6 @@ Context from open archives: ${contextBrief}`;
     musicBrainzReleases,
     jamendoTracks,
     openverseImages,
-    githubRepos,
     suggestedQuestions: generateSuggestedQuestions(prompt, wikiItems, lang),
   };
 }
@@ -144,7 +136,6 @@ function generateMultiPlatformClientRAG(
   mb: MusicBrainzRelease[],
   jamendo: JamendoTrack[],
   _openverse: OpenverseImage[],
-  github: GitHubRepo[],
   lang: Language
 ): string {
   const isHe = lang === 'he';
@@ -164,7 +155,7 @@ function generateMultiPlatformClientRAG(
   if (gutenberg.length > 0 || openLibrary.length > 0) {
     text += isHe ? `**📚 ספרות ומסמכים (Project Gutenberg & Open Library):**\n` : `**📚 Literature & Catalog:**\n`;
     if (gutenberg[0]) text += `- Gutenberg: *${gutenberg[0].title}* (הורדות: ${gutenberg[0].downloadCount})\n`;
-    if (openLibrary[0]) text += `- Open Library: *${openLibrary[0].title}* (${openLibrary[0].authorNames.join(', ') || 'סופר ne'})\n`;
+    if (openLibrary[0]) text += `- Open Library: *${openLibrary[0].title}* (${openLibrary[0].authorNames.join(', ') || 'סופר'})\n`;
     text += `\n`;
   }
 
@@ -173,11 +164,6 @@ function generateMultiPlatformClientRAG(
     if (jamendo[0]) text += `- Direct Audio Stream: *${jamendo[0].name}* - ${jamendo[0].artistName}\n`;
     if (mb[0]) text += `- MusicBrainz: *${mb[0].title}* (${mb[0].artistName})\n`;
     text += `\n`;
-  }
-
-  if (github.length > 0) {
-    text += isHe ? `**💻 פרויקטים בקוד פתוח (GitHub):**\n` : `**💻 GitHub Open Source Projects:**\n`;
-    text += `- [${github[0].fullName}](${github[0].htmlUrl}) ⭐ ${github[0].stars.toLocaleString()} stars — ${github[0].description}\n\n`;
   }
 
   text += isHe
@@ -194,7 +180,7 @@ function generateSuggestedQuestions(prompt: string, wiki: WikiItem[], lang: Lang
   if (isHe) {
     return [
       `מה המשמעות ההיסטורית של ${topic}?`,
-      `הראה לי פרויקטי קוד ומחקר על ${topic}`,
+      `הראה לי מחקרים חדשים על ${topic}`,
       `ספר לי עובדות מרתקות על ${topic}`,
       `מהם המקורות והספרים המומלצים בנושא ${topic}?`,
     ];
@@ -207,3 +193,4 @@ function generateSuggestedQuestions(prompt: string, wiki: WikiItem[], lang: Lang
     ];
   }
 }
+

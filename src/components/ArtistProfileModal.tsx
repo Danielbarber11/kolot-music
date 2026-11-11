@@ -15,7 +15,7 @@ import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { useExtractedColor, getTrackInstantColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner } from '../services/multiMusicService';
-import { getStreamingMediaUrl, deleteTrackFromGitHubRepo } from '../services/githubStorageService';
+import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { deleteArtistTrackFromFirebase } from '../services/firebaseService';
@@ -214,7 +214,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     await Promise.allSettled([
       removeTrackFromStorage(trackId),
       deleteArtistTrackFromFirebase(trackId),
-      deleteTrackFromGitHubRepo(trackId),
+      deleteTrackFromCloud(trackId),
     ]);
   };
 

@@ -44,7 +44,6 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
             <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Jamendo CC Music API</li>
             <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Radio Browser API</li>
             <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Project Gutenberg & OpenLibrary</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● GitHub Open Source Search API</li>
           </ul>
         </div>
 
@@ -54,7 +53,7 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
             <span>פניות בנושאי תוכן וזכויות: <b>contact@wikiarchive-open.org</b></span>
           </div>
 
-          <span className="text-[11px] font-mono text-slate-400">Client-Side Architecture (GitHub Pages Ready)</span>
+          <span className="text-[11px] font-mono text-slate-400">Cloud-Native Architecture (R2 Ready)</span>
         </div>
       </div>
     </div>

@@ -10,7 +10,6 @@ export type MediaType =
   | 'musicbrainz' 
   | 'jamendo' 
   | 'openverse' 
-  | 'github' 
   | 'wiki' 
   | 'archive';
 
@@ -184,21 +183,6 @@ export interface OpenverseImage {
   source: string;
 }
 
-export interface GitHubRepo {
-  id: number;
-  name: string;
-  fullName: string;
-  owner: { login: string; avatarUrl: string; htmlUrl: string };
-  description: string;
-  stars: number;
-  forks: number;
-  openIssues: number;
-  language?: string;
-  htmlUrl: string;
-  updatedAt: string;
-  topics?: string[];
-}
-
 export interface BotMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -211,14 +195,13 @@ export interface BotMessage {
   musicBrainzReleases?: MusicBrainzRelease[];
   jamendoTracks?: JamendoTrack[];
   openverseImages?: OpenverseImage[];
-  githubRepos?: GitHubRepo[];
   suggestedQuestions?: string[];
   mediaAttachment?: JamendoTrack | ArchiveItem;
 }
 
 export interface BookmarkItem {
   id: string;
-  type: 'wiki' | 'archive' | 'gutenberg' | 'openlibrary' | 'jamendo' | 'openverse' | 'github' | 'bot_answer';
+  type: 'wiki' | 'archive' | 'gutenberg' | 'openlibrary' | 'jamendo' | 'openverse' | 'bot_answer';
   title: string;
   summary: string;
   url: string;
@@ -243,3 +226,4 @@ export interface KnowledgeNode {
 
 export type Language = 'he' | 'en';
 export type EngineMode = 'server' | 'client_offline';
+

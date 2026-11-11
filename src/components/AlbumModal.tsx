@@ -3,7 +3,7 @@ import { X, Play, Heart, Disc, Music, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album } from '../types';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getStreamingMediaUrl } from '../services/githubStorageService';
+import { getStreamingMediaUrl } from '../services/cloudStorageService';
 
 import { Logo } from './Logo';
 

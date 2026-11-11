@@ -18,7 +18,6 @@ import {
   Play,
   Disc,
   FolderPlus,
-  Github,
   Trash2,
   RefreshCw,
   Pencil,
@@ -44,17 +43,12 @@ import {
   getEffectiveUserAvatar,
 } from '../services/firebaseService';
 import {
-  uploadTrackToGitHubRepo,
-  deleteTrackFromGitHubRepo,
-  uploadAlbumToGitHub,
-  fetchAlbumsFromGitHub,
-  deleteAlbumFromGitHub,
-  getGitHubStorageConfig,
-  saveGitHubToken,
-  testGitHubConnection,
-  isGitHubTokenConfigured,
-  DEFAULT_REPO_NAME,
-} from '../services/githubStorageService';
+  uploadTrackToCloud,
+  deleteTrackFromCloud,
+  uploadAlbumToCloud as uploadAlbumToCloud,
+  deleteAlbumFromCloud as deleteAlbumFromCloud,
+  getCloudStorageConfig,
+} from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, useExtractedColor, globalTrackColorCache } from '../services/colorService';
@@ -135,21 +129,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [publishProgressStep, setPublishProgressStep] = useState<string>('');
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
 
-  // GitHub Storage Token & Status
-  const [gitHubTokenInput, setGitHubTokenInput] = useState<string>(() => {
-    return getGitHubStorageConfig().token || '';
-  });
-  const [isGitHubConnected, setIsGitHubConnected] = useState<boolean>(() => {
-    return isGitHubTokenConfigured();
-  });
-  const [showGitHubTokenModal, setShowGitHubTokenModal] = useState<boolean>(false);
-  const [isTestingGitHub, setIsTestingGitHub] = useState<boolean>(false);
-  const [gitHubConnectionStatus, setGitHubConnectionStatus] = useState<{
-    tested: boolean;
-    success: boolean;
-    canWrite: boolean;
-    message: string;
-  } | null>(null);
+  // Cloud Storage Status
+  const [cloudConfig] = useState(getCloudStorageConfig);
+  const [isCloudConnected] = useState<boolean>(true);
 
   // Album creation extra states
   const [isSavingAlbum, setIsSavingAlbum] = useState<boolean>(false);
@@ -288,9 +270,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     }
 
     try {
-      await uploadTrackToGitHubRepo(updatedTrack);
+      await uploadTrackToCloud(updatedTrack);
     } catch (err) {
-      console.warn('GitHub edit sync notice:', err);
+      console.warn('Cloud edit sync notice:', err);
     }
 
     onTrackPublished(updatedTrack);
@@ -324,7 +306,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     await Promise.allSettled([
       removeTrackFromStorage(trackId),
       deleteArtistTrackFromFirebase(trackId),
-      deleteTrackFromGitHubRepo(trackId),
+      deleteTrackFromCloud(trackId),
     ]);
   };
 
@@ -598,8 +580,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (editingAlbum?.id === albumId) {
       handleCancelEditAlbum();
     }
-    deleteAlbumFromGitHub(albumId).catch((err) => {
-      console.warn('Failed to delete album from GitHub:', err);
+    deleteAlbumFromCloud(albumId).catch((err) => {
+      console.warn('Failed to delete album from cloud:', err);
     });
   };
 
@@ -632,9 +614,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         };
       }
 
-      const res = await uploadAlbumToGitHub(album, rawAlbumCoverFile || undefined);
+      const res = await uploadAlbumToCloud(album, rawAlbumCoverFile || undefined);
       if (!res.success) {
-        setAlbumErrorMessage(res.error || (isHe ? 'שגיאה בשמירת האלבום ב-GitHub. אנא ודא שהטוקן תקין.' : 'Failed to save album to GitHub.'));
+        setAlbumErrorMessage(res.error || (isHe ? 'שגיאה בשמירת האלבום בענן.' : 'Failed to save album to cloud.'));
         setIsSavingAlbum(false);
         return;
       }
@@ -709,55 +691,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       setIsPairing(false);
     }
   };
-
-  const handleTestGitHubConnection = async () => {
-    const cleanToken = gitHubTokenInput.trim();
-    if (!cleanToken) {
-      setGitHubConnectionStatus({
-        tested: true,
-        success: false,
-        canWrite: false,
-        message: isHe ? 'אנא הזן מפתח גישה (Personal Access Token) של GitHub לבדיקה.' : 'Please enter a GitHub Token to test.',
-      });
-      return;
-    }
-
-    setIsTestingGitHub(true);
-    setGitHubConnectionStatus(null);
-
-    try {
-      const res = await testGitHubConnection(DEFAULT_REPO_NAME, cleanToken);
-      setGitHubConnectionStatus({
-        tested: true,
-        success: res.success,
-        canWrite: res.canWrite,
-        message: res.message,
-      });
-
-      if (res.canWrite) {
-        saveGitHubToken(cleanToken);
-        setIsGitHubConnected(true);
-      }
-    } catch (err: any) {
-      setGitHubConnectionStatus({
-        tested: true,
-        success: false,
-        canWrite: false,
-        message: err.message || String(err),
-      });
-    } finally {
-      setIsTestingGitHub(false);
-    }
-  };
-
-  const handleSaveGitHubTokenExplicit = () => {
-    const cleanToken = gitHubTokenInput.trim();
-    saveGitHubToken(cleanToken);
-    setIsGitHubConnected(Boolean(cleanToken));
-    setPublishSuccess(true);
-    setTimeout(() => setPublishSuccess(false), 2000);
-  };
-
 
   const handleAudioFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -850,7 +783,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       audioUrl: audioStreamUrl.trim(),
       coverUrl: coverArtUrl.trim(),
       genre: effectiveGenre,
-      license: 'Kolot Music Cloud Storage (1GB)',
+      license: 'Kolot Music Cloud Storage (10GB)',
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       source: 'Kolot Cloud Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
@@ -876,31 +809,31 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות ב-GitHub (Danielbarber11/Kolot-Music1)...' : 'Saving directly to GitHub...');
+      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות בענן המאובטח...' : 'Saving directly to cloud storage...');
 
-      // 1. UPLOAD DIRECTLY & GENUINELY TO GITHUB (Primary authoritative storage)
-      const ghRes = await uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
+      // 1. UPLOAD DIRECTLY TO CLOUD (R2 via server proxy)
+      const cloudRes = await uploadTrackToCloud(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
 
-      if (!ghRes.success) {
+      if (!cloudRes.success) {
         setIsPublishing(false);
-        setPublishErrorMessage(ghRes.error || (isHe ? 'שגיאה בשמירת השיר ב-GitHub. אנא נסה שוב.' : 'Failed to publish track to GitHub.'));
+        setPublishErrorMessage(cloudRes.error || (isHe ? 'שגיאה בשמירת השיר בענן. אנא נסה שוב.' : 'Failed to publish track to cloud.'));
         return;
       }
 
-      if (ghRes.audioUrl) {
-        newTrack.audioUrl = ghRes.audioUrl;
+      if (cloudRes.audioUrl) {
+        newTrack.audioUrl = cloudRes.audioUrl;
       }
-      if (ghRes.coverUrl) {
-        newTrack.coverUrl = ghRes.coverUrl;
+      if (cloudRes.coverUrl) {
+        newTrack.coverUrl = cloudRes.coverUrl;
       }
 
-      // 2. Save metadata to Firebase Firestore for cross-device authentication and queries
+      // 2. Save metadata to Firebase Firestore
       saveArtistTrackToFirebase(newTrack).catch(() => {});
 
-      // 3. Broadcast genuine GitHub CDN track to UI & Player
+      // 3. Broadcast track to UI
       onTrackPublished(newTrack);
 
-      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה ב-GitHub וזמין לכל המכשירים!' : 'Track successfully saved to GitHub!');
+      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה וזמין לכל המכשירים!' : 'Track successfully saved to cloud!');
       setPublishSuccess(true);
 
       // Reset form
@@ -929,7 +862,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     } catch (publishErr: any) {
       console.error('Publishing error:', publishErr);
       setIsPublishing(false);
-      setPublishErrorMessage(publishErr.message || (isHe ? 'שגיאה בשמירה ל-GitHub. נסה שוב.' : 'Failed to publish.'));
+      setPublishErrorMessage(publishErr.message || (isHe ? 'שגיאה בשמירה. נסה שוב.' : 'Failed to publish.'));
     }
   };
 
@@ -1948,38 +1881,17 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
                 {/* Live Error Notification */}
                 {publishErrorMessage && (
-                  <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs space-y-3">
-                    <div className="flex items-center gap-2 font-bold text-rose-300">
-                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                      <span>{publishErrorMessage}</span>
-                    </div>
-
-                    <div className="pt-2 border-t border-rose-500/20 space-y-2">
-                      <p className="text-[11px] text-neutral-300 font-medium">
-                        {isHe ? 'הדבק את הטוקן החדש כדי לחבר את אחסון הענן באופן מיידי בדפדפן:' : 'Paste your new token to connect instantly:'}
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="password"
-                          value={gitHubTokenInput}
-                          onChange={(e) => {
-                            setGitHubTokenInput(e.target.value);
-                            saveGitHubToken(e.target.value);
-                          }}
-                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                          className="flex-1 px-3 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            saveGitHubToken(gitHubTokenInput);
-                            setPublishErrorMessage(null);
-                          }}
-                          className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs cursor-pointer shadow-md shrink-0"
-                        >
-                          {isHe ? 'שמור ונסה שוב' : 'Save & Retry'}
-                        </button>
-                      </div>
+                  <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+                    <div>
+                      <p className="font-bold text-rose-300 mb-1">{isHe ? 'שגיאה בפרסום' : 'Publishing Error'}</p>
+                      <p className="leading-relaxed">{publishErrorMessage}</p>
+                      <button 
+                        onClick={() => setPublishErrorMessage(null)}
+                        className="mt-2 text-rose-300 font-bold hover:underline cursor-pointer"
+                      >
+                        {isHe ? 'סגור הודעה' : 'Dismiss'}
+                      </button>
                     </div>
                   </div>
                 )}
@@ -2234,19 +2146,10 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                 </div>
 
                 {albumErrorMessage && (
-                  <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                       <span>{albumErrorMessage}</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowGitHubTokenModal(true)}
-                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold border border-white/20 cursor-pointer"
-                    >
-                      {isHe ? 'הגדר טוקן' : 'Set Token'}
-                    </button>
-                  </div>
                 )}
 
                 <div className="flex items-center gap-3 pt-2">
@@ -2526,7 +2429,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     <div className="space-y-1 text-center sm:text-right">
                       <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
                       <p className="text-[10px] text-neutral-400">{isHe ? 'תמונה זו תוצג בעמוד האמן שלך ובחיפושים.' : 'This photo will be shown on your profile and search results.'}</p>
-                      <p className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר ב-GitHub Storage' : 'Stored on GitHub'}</p>
+                      <p className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר באחסון ענן מאובטח' : 'Stored in Secure Cloud'}</p>
                     </div>
                   </div>
 
@@ -2725,131 +2628,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
             }}
           />
         )}
-        {/* GITHUB TOKEN SETUP MODAL OVERLAY */}
-        <AnimatePresence>
-          {showGitHubTokenModal && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[200] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
-              dir={isHe ? 'rtl' : 'ltr'}
-            >
-              <motion.div
-                initial={{ scale: 0.95, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.95, opacity: 0 }}
-                className="bg-neutral-950 border border-emerald-500/30 rounded-3xl p-6 sm:p-7 max-w-lg w-full shadow-2xl space-y-5 relative"
-              >
-                <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center">
-                      <Github className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-black text-white">
-                        {isHe ? 'חיבור מאגר GitHub • Kolot-Music1' : 'GitHub Storage • Kolot-Music1'}
-                      </h3>
-                      <p className="text-[10px] text-emerald-400 font-mono">
-                        {DEFAULT_REPO_NAME}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowGitHubTokenModal(false)}
-                    className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
 
-                <p className="text-xs text-neutral-300 leading-relaxed">
-                  {isHe
-                    ? 'כדי לשמור שירים, אלבומים ועטיפות ישירות במאגר הציבורי של קולות ולהבטיח שהם נשמרים לתמיד ומופצים בעולם, נדרש מפתח גישה אישי של GitHub (Personal Access Token) עם הרשאת כתיבה (repo).'
-                    : 'A GitHub Personal Access Token with repo scope is required to commit tracks and albums directly into the public repository.'}
-                </p>
-
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-white font-extrabold text-xs mb-1.5 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Key className="w-3.5 h-3.5 text-amber-400" />
-                        <span>{isHe ? 'מפתח גישה של GitHub (PAT)' : 'GitHub Token'}</span>
-                      </span>
-                      <a
-                        href="https://github.com/settings/tokens/new?scopes=repo&description=Kolot+Music+Publisher"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-emerald-400 hover:underline"
-                      >
-                        {isHe ? 'יצירת טוקן חדש ב-GitHub ↗' : 'Create Token ↗'}
-                      </a>
-                    </label>
-                    <input
-                      type="password"
-                      value={gitHubTokenInput}
-                      onChange={(e) => setGitHubTokenInput(e.target.value)}
-                      placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-600"
-                      autoFocus
-                    />
-                  </div>
-
-                  {gitHubConnectionStatus && (
-                    <div className={`p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 ${
-                      gitHubConnectionStatus.canWrite
-                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
-                        : gitHubConnectionStatus.success
-                        ? 'bg-amber-500/15 border-amber-500/30 text-amber-200'
-                        : 'bg-rose-500/15 border-rose-500/30 text-rose-200'
-                    }`}>
-                      {gitHubConnectionStatus.canWrite ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      ) : (
-                        <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                      )}
-                      <span className="leading-relaxed font-medium">{gitHubConnectionStatus.message}</span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={handleTestGitHubConnection}
-                      disabled={isTestingGitHub || !gitHubTokenInput.trim()}
-                      className="flex-1 py-3 px-4 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95 text-white font-bold text-xs border border-white/20 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
-                    >
-                      {isTestingGitHub ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
-                          <span>{isHe ? 'בודק הרשאות...' : 'Testing...'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>{isHe ? 'בדוק חיבור והרשאות' : 'Test Connection'}</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleSaveGitHubTokenExplicit();
-                        setShowGitHubTokenModal(false);
-                      }}
-                      disabled={!gitHubTokenInput.trim()}
-                      className="py-3 px-6 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black font-black text-xs transition-all cursor-pointer shadow-xl disabled:opacity-40"
-                    >
-                      <span>{isHe ? 'שמור והמשך' : 'Save & Continue'}</span>
-                    </button>
-                  </div>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </motion.div>
     </AnimatePresence>
   );

@@ -27,7 +27,6 @@ import { WikiItem, ArchiveItem, JamendoTrack, Language } from '../types';
 import { getWikipediaFeaturedOrRandom } from '../services/wikiService';
 import { CURATED_ARCHIVE_ITEMS } from '../services/archiveService';
 import { CURATED_JAMENDO_TRACKS } from '../services/jamendoService';
-import { CURATED_GITHUB_REPOS } from '../services/githubService';
 import { searchDuckDuckGoWeb, DuckDuckGoResponse, DuckDuckGoWebResult } from '../services/duckduckgoService';
 
 interface HomeDashboardViewProps {
@@ -597,56 +596,7 @@ export const HomeDashboardView: React.FC<HomeDashboardViewProps> = ({
         </div>
       </div>
 
-      {/* SECTION 3: Open Software & Repos */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-sm space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-          <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-            <Code className="w-5 h-5 text-emerald-600" />
-            <span>{isHe ? 'תוכנות קוד פתוח מובילות' : 'Top Open-Source Software'}</span>
-          </h3>
-          <button
-            onClick={() => onNavigateTab('software')}
-            className="text-xs font-bold text-emerald-600 hover:underline"
-          >
-            {isHe ? 'לכל התוכנות' : 'View All'}
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {CURATED_GITHUB_REPOS.slice(0, 4).map((repo) => (
-            <div
-              key={repo.name}
-              className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 hover:border-emerald-500 transition-all space-y-2 flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-extrabold text-slate-900">{repo.name}</span>
-                  <div className="flex items-center gap-1 text-[11px] font-mono text-amber-600">
-                    <Star className="w-3 h-3 fill-current" />
-                    <span>{repo.stars}</span>
-                  </div>
-                </div>
-                <p className="text-xs text-slate-500 mt-1 line-clamp-2">{repo.description}</p>
-              </div>
-
-              <div className="pt-2 flex items-center justify-between text-[11px]">
-                <span className="font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
-                  {repo.language}
-                </span>
-                <a
-                  href={repo.htmlUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-slate-600 hover:text-emerald-600 font-bold flex items-center gap-1"
-                >
-                  <span>קוד</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* SECTION 3: Open Software & Repos (Removed) */}
 
       {/* IN-APP WEB BROWSER VIEWER MODAL ("שיפתח את האתר בתוך האפליקציה על ולא בעמוד לחדש") */}
       <AnimatePresence>

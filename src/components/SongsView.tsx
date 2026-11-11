@@ -62,7 +62,7 @@ import {
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteTrackFromGitHubRepo, getStreamingMediaUrl } from '../services/githubStorageService';
+import { deleteTrackFromCloud, getStreamingMediaUrl } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 
 interface SongsViewProps {
@@ -1748,7 +1748,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
               await Promise.allSettled([
                 removeTrackFromStorage(trackId),
                 deleteArtistTrackFromFirebase(trackId),
-                deleteTrackFromGitHubRepo(trackId),
+                deleteTrackFromCloud(trackId),
               ]);
             }}
           />
@@ -1778,7 +1778,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
               await Promise.allSettled([
                 removeTrackFromStorage(trackId),
                 deleteArtistTrackFromFirebase(trackId),
-                deleteTrackFromGitHubRepo(trackId),
+                deleteTrackFromCloud(trackId),
               ]);
             }}
           />
@@ -1810,7 +1810,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           await Promise.allSettled([
             removeTrackFromStorage(trackId),
             deleteArtistTrackFromFirebase(trackId),
-            deleteTrackFromGitHubRepo(trackId),
+            deleteTrackFromCloud(trackId),
           ]);
         }}
       />
@@ -1841,7 +1841,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           await Promise.allSettled([
             removeTrackFromStorage(trackId),
             deleteArtistTrackFromFirebase(trackId),
-            deleteTrackFromGitHubRepo(trackId),
+            deleteTrackFromCloud(trackId),
           ]);
         }}
       />

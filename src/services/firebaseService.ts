@@ -221,7 +221,7 @@ export function getEffectiveUserAvatar(
     return user.photoURL;
   }
 
-  // If custom avatar set on profile (e.g. uploaded file or GitHub avatar)
+  // If custom avatar set on profile (e.g. uploaded file or Cloud avatar)
   if (profile?.avatarUrl) {
     // If it's a Google picture URL, only return it if current login is Google
     if (profile.avatarUrl.includes('googleusercontent.com')) {
