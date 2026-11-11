@@ -607,11 +607,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     e.preventDefault();
     if (!newAlbumTitle.trim()) return;
 
-    if (!isGitHubTokenConfigured()) {
-      setShowGitHubTokenModal(true);
-      return;
-    }
-
     setIsSavingAlbum(true);
     setAlbumErrorMessage(null);
 
@@ -810,19 +805,14 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (coverInputRef.current) coverInputRef.current.value = '';
   };
 
-  // Publish Track -> Direct, Verified Commit to Public GitHub Repo (Danielbarber11/Kolot-Music1)
+  // Publish Track -> Direct, Verified Commit to Public Cloud Storage
   const handlePublishTrack = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim() || !hasCertifiedRights) return;
 
-    if (!isGitHubTokenConfigured()) {
-      setShowGitHubTokenModal(true);
-      return;
-    }
-
     setIsPublishing(true);
     setPublishErrorMessage(null);
-    setPublishProgressStep(isHe ? 'מתחבר למאגר GitHub ומכין את הקבצים...' : 'Connecting to GitHub...');
+    setPublishProgressStep(isHe ? 'מתחבר לאחסון הענן ומכין את הקבצים...' : 'Connecting to Cloud Storage...');
 
     const effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
 
@@ -862,7 +852,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
       license: 'Kolot Music Cloud Storage (1GB)',
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      source: `GitHub Storage (${DEFAULT_REPO_NAME})`,
+      source: 'Kolot Cloud Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
       lyrics: lyricsInput.trim() || undefined,
       artistBio: currentArtist.bio,
@@ -886,16 +876,16 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'מעלה קובץ שמע ל-GitHub (Danielbarber11/Kolot-Music1)...' : 'Uploading audio to GitHub...');
+      setPublishProgressStep(isHe ? 'מעלה קובץ שמע לאחסון הענן...' : 'Uploading audio file to cloud...');
       const ghRes = await uploadTrackToGitHubRepo(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
 
       if (!ghRes.success) {
         setIsPublishing(false);
-        setPublishErrorMessage(ghRes.error || (isHe ? 'שגיאה בהעלאת השיר ל-GitHub. אנא ודא שמפתח הגישה תקין ובעל הרשאת repo.' : 'Failed to publish track to GitHub.'));
+        setPublishErrorMessage(ghRes.error || (isHe ? 'שגיאה בשמירת השיר באחסון הענן. אנא נסה שוב.' : 'Failed to publish track to cloud storage.'));
         return;
       }
 
-      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה ב-GitHub! מעדכן מטא-דאטה...' : 'Track saved to GitHub! Finalizing...');
+      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה באחסון הענן! מעדכן מטא-דאטה...' : 'Track saved to cloud storage! Finalizing...');
 
       if (ghRes.audioUrl) {
         newTrack.audioUrl = ghRes.audioUrl;
@@ -909,7 +899,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       onTrackPublished(newTrack);
       saveArtistTrackToFirebase(newTrack).catch(() => {});
 
-      setPublishProgressStep(isHe ? 'השיר פורסם בהצלחה ב-GitHub וזמין כעת לכל המשתמשים!' : 'Track successfully published on GitHub!');
+      setPublishProgressStep(isHe ? 'השיר פורסם בהצלחה וזמין כעת לכל המשתמשים!' : 'Track successfully published!');
       setPublishSuccess(true);
 
       // Reset form
@@ -1939,23 +1929,19 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 </div>
 
-                {/* GitHub Target Repo Badge */}
+                {/* Cloud Target Storage Badge */}
                 <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 text-xs">
                   <div className="flex items-center gap-2">
-                    <Github className="w-4 h-4 text-white" />
+                    <Globe className="w-4 h-4 text-emerald-400" />
                     <span className="text-neutral-300 font-medium">
-                      {isHe ? 'מאגר אחסון ציבורי:' : 'Storage Repo:'}{' '}
-                      <span className="font-mono text-emerald-400 font-bold">Danielbarber11/Kolot-Music1</span>
+                      {isHe ? 'אחסון ענן מוגן:' : 'Secure Storage:'}{' '}
+                      <span className="font-mono text-emerald-400 font-bold">{isHe ? 'סנכרון ענן פעיל (1,000 MB)' : 'Cloud Active (1,000 MB)'}</span>
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowGitHubTokenModal(true)}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/15 text-neutral-300 font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <Key className="w-3 h-3 text-amber-400" />
-                    <span>{isGitHubConnected ? (isHe ? 'טוקן מוגדר ✓' : 'Token Active ✓') : (isHe ? 'הגדר טוקן' : 'Set Token')}</span>
-                  </button>
+                  <div className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{isHe ? 'אחסון מחובר ✓' : 'Cloud Connected ✓'}</span>
+                  </div>
                 </div>
 
                 {/* Live Error Notification */}
@@ -1964,16 +1950,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     <div className="flex items-center gap-2 font-bold text-rose-300">
                       <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                       <span>{publishErrorMessage}</span>
-                    </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowGitHubTokenModal(true)}
-                        className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold border border-white/20 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Key className="w-3.5 h-3.5 text-amber-400" />
-                        <span>{isHe ? 'הגדר מפתח גישה של GitHub (Token)' : 'Configure GitHub Token'}</span>
-                      </button>
                     </div>
                   </div>
                 )}
@@ -1995,12 +1971,12 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   {isPublishing ? (
                     <span className="flex items-center gap-2">
                       <RefreshCw className="w-5 h-5 animate-spin text-black" />
-                      <span>{publishProgressStep || (isHe ? 'מעלה ושומר ב-GitHub...' : 'Publishing to GitHub...')}</span>
+                      <span>{publishProgressStep || (isHe ? 'מעלה ושומר באחסון הענן...' : 'Publishing to cloud...')}</span>
                     </span>
                   ) : (
                     <>
                       <Upload className="w-5 h-5 text-black" />
-                      <span>{isHe ? 'פרסם שיר ל-GitHub (Kolot-Music1)' : 'Publish Song to GitHub'}</span>
+                      <span>{isHe ? 'פרסם שיר לאחסון הענן' : 'Publish Song to Cloud'}</span>
                     </>
                   )}
                 </button>
@@ -2252,12 +2228,12 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     {isSavingAlbum ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin text-black" />
-                        <span>{isHe ? 'שומר ב-GitHub...' : 'Saving to GitHub...'}</span>
+                        <span>{isHe ? 'שומר באחסון הענן...' : 'Saving to Cloud...'}</span>
                       </>
                     ) : (
                       editingAlbum
-                        ? (isHe ? 'שמור שינויים באלבום ב-GitHub' : 'Save Album Changes to GitHub')
-                        : (isHe ? 'צור אלבום ושמור ב-GitHub' : 'Create Album on GitHub')
+                        ? (isHe ? 'שמור שינויים באלבום' : 'Save Album Changes')
+                        : (isHe ? 'צור אלבום ושמור' : 'Create Album')
                     )}
                   </button>
 
@@ -2593,112 +2569,31 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                 </div>
               </div>
 
-              {/* Section: GitHub Cloud Storage (Danielbarber11/Kolot-Music1) */}
+              {/* Section: Kolot Cloud Storage */}
               <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-emerald-500/30 space-y-4 shadow-2xl">
                 <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
                   <div className="flex items-center gap-2.5">
-                    <Github className="w-5 h-5 text-white" />
+                    <Globe className="w-5 h-5 text-emerald-400" />
                     <div>
                       <h3 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
-                        <span>{isHe ? 'אחסון ענן ראשי • GitHub Storage' : 'Primary Storage • GitHub'}</span>
+                        <span>{isHe ? 'אחסון ענן מאובטח • Kolot Cloud Storage' : 'Secure Cloud Storage • Kolot Cloud'}</span>
                       </h3>
-                      <p className="text-[10px] text-neutral-400 font-mono">
-                        {DEFAULT_REPO_NAME}
+                      <p className="text-[10px] text-emerald-400 font-mono">
+                        {isHe ? 'סנכרון ענן אוטומטי (1,000 MB)' : 'Auto Cloud Sync (1,000 MB)'}
                       </p>
                     </div>
                   </div>
-                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5 ${
-                    isGitHubConnected
-                      ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
-                      : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-                  }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${isGitHubConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                    <span>{isGitHubConnected ? (isHe ? 'מחובר למאגר' : 'Connected') : (isHe ? 'נדרש מפתח גישה' : 'Token Required')}</span>
+                  <span className="px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5 bg-emerald-500/15 border-emerald-500/30 text-emerald-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>{isHe ? 'אחסון מחובר ופעיל ✓' : 'Cloud Connected ✓'}</span>
                   </span>
                 </div>
 
                 <p className="text-[11px] text-neutral-300 leading-relaxed">
                   {isHe
-                    ? 'כל השירים, האלבומים, התמונות והמטא-דאטה נשמרים ישירות במאגר הציבורי של קולות (Danielbarber11/Kolot-Music1) ומופצים בעולם דרך CDN מהיר ללא עיכובים. הזן מפתח גישה (Personal Access Token) עם הרשאת repo כדי להעלות ולפרסם תכנים.'
-                    : 'All songs, albums, and covers are committed directly to Danielbarber11/Kolot-Music1 and served worldwide via CDN. Enter a GitHub Token with repo scope to publish.'}
+                    ? 'כל השירים, האלבומים, התמונות והמטא-דאטה נשמרים ישירות באחסון הענן המוגן של קולות ומופצים בעולם דרך CDN מהיר. השרתים מחוברים אוטומטית בצורה מאובטחת ומוצפנת.'
+                    : 'All songs, albums, and artwork are committed directly to Kolot Cloud Storage and served worldwide via CDN. Connection is secure and active automatically.'}
                 </p>
-
-                <div className="space-y-3 pt-1">
-                  <div>
-                    <label className="block text-white font-extrabold text-xs mb-1.5 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Key className="w-3.5 h-3.5 text-amber-400" />
-                        <span>{isHe ? 'מפתח גישה אישי של GitHub (Personal Access Token) *' : 'GitHub Personal Access Token *'}</span>
-                      </span>
-                      <a
-                        href="https://github.com/settings/tokens/new?scopes=repo&description=Kolot+Music+Publisher"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-emerald-400 hover:underline flex items-center gap-1"
-                      >
-                        <span>{isHe ? 'צור מפתח ב-GitHub ↗' : 'Create Token ↗'}</span>
-                      </a>
-                    </label>
-                    <input
-                      type="password"
-                      value={gitHubTokenInput}
-                      onChange={(e) => setGitHubTokenInput(e.target.value)}
-                      placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-600"
-                    />
-                    <p className="text-[10px] text-neutral-500 mt-1">
-                      {isHe ? 'הטוקן נשמר במכשיר שלך בלבד ולא נשלח לשום שרת צד שלישי.' : 'Saved securely in your browser local storage.'}
-                    </p>
-                  </div>
-
-                  {/* Status Banner */}
-                  {gitHubConnectionStatus && (
-                    <div className={`p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 ${
-                      gitHubConnectionStatus.canWrite
-                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
-                        : gitHubConnectionStatus.success
-                        ? 'bg-amber-500/15 border-amber-500/30 text-amber-200'
-                        : 'bg-rose-500/15 border-rose-500/30 text-rose-200'
-                    }`}>
-                      {gitHubConnectionStatus.canWrite ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                      ) : (
-                        <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                      )}
-                      <span className="leading-relaxed font-medium">{gitHubConnectionStatus.message}</span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={handleTestGitHubConnection}
-                      disabled={isTestingGitHub || !gitHubTokenInput.trim()}
-                      className="flex-1 py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95 text-white font-bold text-xs border border-white/20 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
-                    >
-                      {isTestingGitHub ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
-                          <span>{isHe ? 'בודק הרשאות כתיבה...' : 'Testing permissions...'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>{isHe ? 'בדוק חיבור והרשאות כתיבה' : 'Test Write Permissions'}</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleSaveGitHubTokenExplicit}
-                      disabled={!gitHubTokenInput.trim()}
-                      className="py-2.5 px-5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black font-black text-xs transition-all cursor-pointer disabled:opacity-40"
-                    >
-                      <span>{isHe ? 'שמור מפתח' : 'Save'}</span>
-                    </button>
-                  </div>
-                </div>
               </div>
 
               {/* Section 2: Cloud Storage Server */}
