@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { useExtractedColor, getTrackInstantColor } from '../services/colorService';
-import { getInstantSongPool, deduplicateTracks } from '../services/multiMusicService';
+import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner } from '../services/multiMusicService';
 import { getStreamingMediaUrl, deleteTrackFromGitHubRepo } from '../services/githubStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
@@ -65,15 +65,16 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const artistInfo = allArtists.find(a => (a.name || '').toLowerCase().trim() === cleanQuery);
   const effectiveArtistName = artistName || currentTrack?.artistName || artistInfo?.name || (isHe ? 'אמן' : 'Artist');
 
-  // Merge currentTrack, allTracks, and instant song pool so we never miss tracks for this artist
+  // Merge currentTrack, allTracks, and instant song pool strictly filtering for valid owner tracks
   const poolBase = Array.isArray(allTracks) ? allTracks : [];
   const fullPool = deduplicateTracks([
     ...(currentTrack ? [currentTrack] : []),
     ...poolBase,
     ...getInstantSongPool(),
-  ]);
+  ]).filter(isValidTrackWithOwner);
 
   let artistTracks = fullPool.filter((t) => {
+    if (!isValidTrackWithOwner(t)) return false;
     if (deletedTrackIds.includes(t.id)) return false;
     const tArtist = (t.artistName || '').toLowerCase().trim();
     if (!tArtist) return false;
@@ -85,7 +86,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     );
   });
 
-  if (artistTracks.length === 0 && currentTrack && !deletedTrackIds.includes(currentTrack.id)) {
+  if (artistTracks.length === 0 && currentTrack && isValidTrackWithOwner(currentTrack) && !deletedTrackIds.includes(currentTrack.id)) {
     artistTracks = [currentTrack];
   }
 

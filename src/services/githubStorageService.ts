@@ -600,27 +600,37 @@ async function updateMasterTracksIndexOnGitHub(repoFullName: string, tracks: Jam
 }
 
 async function fetchTracksFromSingleRepo(repoFullName: string, token: string): Promise<JamendoTrack[]> {
-  // 1. Try fetching high-speed master index via raw GitHub & CDN concurrently
+  // 1. Try fetching freshest master index via raw GitHub with cache buster
   try {
     const rawUrl = `https://raw.githubusercontent.com/${repoFullName}/main/tracks_index.json?t=${Date.now()}`;
-    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json`;
-
-    // Fetch fastest responding endpoint
-    const fetchPromises = [
-      fetch(rawUrl).then(r => (r.ok ? r.json() : Promise.reject())),
-      fetch(cdnUrl).then(r => (r.ok ? r.json() : Promise.reject())),
-    ];
-
-    const data: JamendoTrack[] = await Promise.any(fetchPromises).catch(() => null);
-
-    if (Array.isArray(data) && data.length > 0) {
-      return data.map((t) => ({
-        ...t,
-        bgColor: t.bgColor || computeTrackBgColor(t),
-        audioUrl: getStreamingMediaUrl(t.audioUrl),
-        coverUrl: getStreamingMediaUrl(t.coverUrl),
-        artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
-      }));
+    const rawRes = await fetch(rawUrl);
+    if (rawRes.ok) {
+      const data = await rawRes.json();
+      if (Array.isArray(data)) {
+        return data.map((t) => ({
+          ...t,
+          bgColor: t.bgColor || computeTrackBgColor(t),
+          audioUrl: getStreamingMediaUrl(t.audioUrl),
+          coverUrl: getStreamingMediaUrl(t.coverUrl),
+          artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
+        }));
+      }
+    } else if (rawRes.status !== 404) {
+      // Only fallback to CDN if raw GitHub network failed (not if 404 deleted)
+      const cdnUrl = `https://cdn.jsdelivr.net/gh/${repoFullName}@main/tracks_index.json`;
+      const cdnRes = await fetch(cdnUrl);
+      if (cdnRes.ok) {
+        const cdnData = await cdnRes.json();
+        if (Array.isArray(cdnData)) {
+          return cdnData.map((t) => ({
+            ...t,
+            bgColor: t.bgColor || computeTrackBgColor(t),
+            audioUrl: getStreamingMediaUrl(t.audioUrl),
+            coverUrl: getStreamingMediaUrl(t.coverUrl),
+            artistAvatarUrl: getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl),
+          }));
+        }
+      }
     }
   } catch (indexErr) {
     console.warn('tracks_index.json fetch notice:', indexErr);
@@ -1041,22 +1051,30 @@ export async function fetchAlbumsFromGitHub(): Promise<Album[]> {
   const repo = normalizeRepoFullName(config.repoName);
   const token = (config.token || '').trim();
 
-  // 1. Try master albums_index.json via raw and cdn
+  // 1. Try master albums_index.json via raw GitHub first
   try {
     const rawUrl = `https://raw.githubusercontent.com/${repo}/main/albums_index.json?t=${Date.now()}`;
-    const cdnUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/albums_index.json`;
-
-    const fetchPromises = [
-      fetch(rawUrl).then((r) => (r.ok ? r.json() : Promise.reject())),
-      fetch(cdnUrl).then((r) => (r.ok ? r.json() : Promise.reject())),
-    ];
-
-    const data: Album[] = await Promise.any(fetchPromises).catch(() => null);
-    if (Array.isArray(data) && data.length > 0) {
-      return data.map((a) => ({
-        ...a,
-        coverUrl: getStreamingMediaUrl(a.coverUrl),
-      }));
+    const rawRes = await fetch(rawUrl);
+    if (rawRes.ok) {
+      const data: Album[] = await rawRes.json();
+      if (Array.isArray(data)) {
+        return data.map((a) => ({
+          ...a,
+          coverUrl: getStreamingMediaUrl(a.coverUrl),
+        }));
+      }
+    } else if (rawRes.status !== 404) {
+      const cdnUrl = `https://cdn.jsdelivr.net/gh/${repo}@main/albums_index.json`;
+      const cdnRes = await fetch(cdnUrl);
+      if (cdnRes.ok) {
+        const cdnData: Album[] = await cdnRes.json();
+        if (Array.isArray(cdnData)) {
+          return cdnData.map((a) => ({
+            ...a,
+            coverUrl: getStreamingMediaUrl(a.coverUrl),
+          }));
+        }
+      }
     }
   } catch {}
 

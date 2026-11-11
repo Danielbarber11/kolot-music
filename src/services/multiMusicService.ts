@@ -43,15 +43,26 @@ export const ALL_MUSIC_GENRES = [
 
 const CLOUD_TRACKS_CACHE_KEY = 'kolot_cloud_tracks_cache';
 
+/**
+ * Strict validator: Every track MUST have an authentic user ID (uploadedByUid or uploadedByEmail).
+ * Any track without a user identifier is an orphan and is immediately rejected and pruned.
+ */
+export function isValidTrackWithOwner(track: JamendoTrack | null | undefined): boolean {
+  if (!track || !track.id || !track.name) return false;
+  const hasUserUid = typeof track.uploadedByUid === 'string' && track.uploadedByUid.trim().length > 0;
+  const hasUserEmail = typeof track.uploadedByEmail === 'string' && track.uploadedByEmail.trim().length > 0;
+  return hasUserUid || hasUserEmail;
+}
+
 export function getCachedCloudTracks(): JamendoTrack[] {
   try {
     const saved = localStorage.getItem(CLOUD_TRACKS_CACHE_KEY);
     if (saved) {
       const parsed: JamendoTrack[] = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         const deletedSet = getDeletedSongIds();
         return parsed.filter((t) => {
-          if (!t || !t.id || !t.name) return false;
+          if (!isValidTrackWithOwner(t)) return false;
           const normArtist = (t.artistName || '').trim().toLowerCase().replace(/\s+/g, ' ');
           const normName = (t.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
           return !deletedSet.has(t.id) && !deletedSet.has(`del_${normArtist}::${normName}`);
@@ -66,13 +77,37 @@ export function getCachedCloudTracks(): JamendoTrack[] {
 
 export function saveCachedCloudTracks(tracks: JamendoTrack[]): void {
   try {
-    if (Array.isArray(tracks) && tracks.length > 0) {
-      localStorage.setItem(CLOUD_TRACKS_CACHE_KEY, JSON.stringify(tracks));
+    if (Array.isArray(tracks)) {
+      const validOnly = tracks.filter(isValidTrackWithOwner);
+      localStorage.setItem(CLOUD_TRACKS_CACHE_KEY, JSON.stringify(validOnly));
     }
   } catch (e) {
     console.warn('Failed to save cloud tracks cache:', e);
   }
 }
+
+/**
+ * Startup sanitation: Purges any legacy unassigned tracks from local client storage immediately
+ */
+export function purgeOrphanedTracksFromLocalStorage(): void {
+  try {
+    const keys = [CLOUD_TRACKS_CACHE_KEY, 'kolot_uploaded_tracks'];
+    for (const key of keys) {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter(isValidTrackWithOwner);
+          if (valid.length !== parsed.length) {
+            localStorage.setItem(key, JSON.stringify(valid));
+          }
+        }
+      }
+    }
+  } catch {}
+}
+
+purgeOrphanedTracksFromLocalStorage();
 
 /**
  * Helper to extract numeric timestamp from track for strict newest-to-oldest sorting
@@ -266,11 +301,11 @@ export async function resumePendingUploads(): Promise<void> {
  */
 export async function getInstantSongPoolAsync(): Promise<JamendoTrack[]> {
   const deletedIds = getDeletedSongIds();
-  const cachedCloud = getCachedCloudTracks().filter((t) => !deletedIds.has(t.id));
-  const indexedDBTracks = (await loadTracksFromIndexedDB()).filter((t) => !deletedIds.has(t.id));
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
+  const cachedCloud = getCachedCloudTracks().filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  const indexedDBTracks = (await loadTracksFromIndexedDB()).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
   const combined = [...cachedCloud, ...indexedDBTracks, ...verified];
-  return deduplicateTracks(combined).filter((t) => !deletedIds.has(t.id));
+  return deduplicateTracks(combined).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
 }
 
 /**
@@ -278,10 +313,10 @@ export async function getInstantSongPoolAsync(): Promise<JamendoTrack[]> {
  */
 export function getInstantSongPool(): JamendoTrack[] {
   const deletedIds = getDeletedSongIds();
-  const cachedCloud = getCachedCloudTracks().filter((t) => !deletedIds.has(t.id));
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
+  const cachedCloud = getCachedCloudTracks().filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
   const combined = [...cachedCloud, ...verified];
-  return deduplicateTracks(combined).filter((t) => !deletedIds.has(t.id));
+  return deduplicateTracks(combined).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
 }
 
 const CLOUD_PROFILES_CACHE_KEY = 'kolot_cloud_profiles_cache';
@@ -362,6 +397,11 @@ export async function migrateFirebaseToGitHub(): Promise<void> {
     if (fbTracks.length > 0) {
       console.info(`Found ${fbTracks.length} tracks in Firebase. Migrating...`);
       for (const track of fbTracks) {
+        if (!isValidTrackWithOwner(track)) {
+          console.info(`Orphaned track detected without user account: ${track.name}. Deleting from Firebase...`);
+          await deleteArtistTrackFromFirebase(track.id);
+          continue;
+        }
         const audioBlob = track.audioUrl ? await urlToBlob(track.audioUrl) : null;
         const coverBlob = track.coverUrl ? await urlToBlob(track.coverUrl) : null;
         
@@ -384,8 +424,6 @@ export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
   onBatch?: (tracks: JamendoTrack[]) => void
 ): Promise<JamendoTrack[]> {
-  const instantPool = await getInstantSongPoolAsync();
-
   // Run resume and migration in background without blocking
   resumePendingUploads().catch(() => {});
   migrateFirebaseToGitHub().catch(() => {});
@@ -397,30 +435,30 @@ export async function fetchAllRealSongs(
     console.warn('GitHub tracks fetch warning:', e);
   }
 
-  // Force local cache to strictly match GitHub (GitHub is absolute source of truth)
-  if (ghTracks.length > 0) {
-    try {
-      const activeGitHubIds = new Set(ghTracks.map((t) => t.id));
-      
-      // Sync IndexedDB to match GitHub
-      const indexedDBTracks = await loadTracksFromIndexedDB();
-      for (const t of indexedDBTracks) {
-        // If it's a known github track (has non-blob URL) but not in current fetch, remove from local
-        if (t.audioUrl && !t.audioUrl.startsWith('blob:') && !activeGitHubIds.has(t.id)) {
-          await removeTrackFromStorage(t.id);
-        }
+  // Strictly filter tracks that have authentic owners
+  const validGhTracks = ghTracks.filter(isValidTrackWithOwner);
+
+  // Force local storage and caches to strictly match GitHub at all times (even when empty)
+  try {
+    const activeGitHubIds = new Set(validGhTracks.map((t) => t.id));
+    
+    // Sync IndexedDB to match GitHub
+    const indexedDBTracks = await loadTracksFromIndexedDB();
+    for (const t of indexedDBTracks) {
+      if (!activeGitHubIds.has(t.id)) {
+        await removeTrackFromStorage(t.id);
       }
-      
-      // Refresh the high-speed cloud cache
-      saveCachedCloudTracks(ghTracks);
-    } catch (err) {
-      console.warn('Stale track sync notice:', err);
     }
+    
+    // Refresh the high-speed cloud cache (clears stale entries if repo was cleared)
+    saveCachedCloudTracks(validGhTracks);
+  } catch (err) {
+    console.warn('Stale track sync notice:', err);
   }
 
   const deletedIds = getDeletedSongIds();
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => !deletedIds.has(t.id));
-  const combined = deduplicateTracks([...ghTracks, ...verified]).filter((t) => !deletedIds.has(t.id));
+  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  const combined = deduplicateTracks([...validGhTracks, ...verified]).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
   if (onProgress) onProgress(combined.length);
   if (onBatch) onBatch(combined);
 

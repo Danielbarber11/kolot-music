@@ -209,7 +209,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const canManageTrack = (track: JamendoTrack) => {
     if (!currentUser) return false;
     const userEmail = currentUser.email?.toLowerCase().trim() || '';
-    const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
 
     // 1. Direct match by uploadedByEmail
     if (track.uploadedByEmail && userEmail && track.uploadedByEmail.toLowerCase().trim() === userEmail) {
@@ -219,12 +218,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     // 2. Direct match by uploadedByUid
     if (track.uploadedByUid && currentUser.uid && track.uploadedByUid === currentUser.uid) {
       return true;
-    }
-
-    // 3. Unassigned songs or main admin email (danielbarber1246@gmail.com) automatically own unassigned/admin songs
-    if (isMainAdmin) {
-      if (!track.uploadedByEmail && !track.uploadedByUid) return true;
-      if (track.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
     }
 
     return false;
@@ -952,7 +945,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (deletedTrackIds.includes(t.id)) return false;
     if (!currentUser) return false;
     const userEmail = currentUser.email?.toLowerCase().trim() || '';
-    const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
+
+    // Must have a valid owner ID
+    if (!t.uploadedByEmail && !t.uploadedByUid) return false;
 
     // 1. Direct match by uploadedByEmail
     if (t.uploadedByEmail && userEmail && t.uploadedByEmail.toLowerCase().trim() === userEmail) {
@@ -962,12 +957,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     // 2. Direct match by uploadedByUid
     if (t.uploadedByUid && t.uploadedByUid === currentUser.uid) {
       return true;
-    }
-
-    // 3. Unassigned legacy songs automatically belong to main admin email (danielbarber1246@gmail.com)
-    if (isMainAdmin) {
-      if (!t.uploadedByEmail && !t.uploadedByUid) return true;
-      if (t.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
     }
 
     return false;

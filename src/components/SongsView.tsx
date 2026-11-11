@@ -35,6 +35,7 @@ import {
   getCachedAlbums,
   checkTermsAcceptedInFirestore,
   saveTermsAcceptedToFirestore,
+  isValidTrackWithOwner,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt } from './TrackCoverArt';
@@ -58,7 +59,6 @@ import {
   deleteArtistTrackFromFirebase,
   getEffectiveUserAvatar,
 } from '../services/firebaseService';
-import { fetchArtistProfilesFromGitHub } from '../services/githubStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
@@ -303,8 +303,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [profileArtistName, setProfileArtistName] = useState<string | null>(null);
   const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
 
-  // Song Pool
-  const [allTracks, setAllTracks] = useState<JamendoTrack[]>(getInstantSongPool);
+  // Song Pool (Filtered strictly for tracks with authentic account owners)
+  const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool().filter(isValidTrackWithOwner));
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>([]);
   const [remoteAlbums, setRemoteAlbums] = useState<Album[]>(getCachedAlbums);
   const [visibleSearchCount] = useState(150);
@@ -331,49 +331,35 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   // Mount effect - Instant 0-lag load
   useEffect(() => {
-    // 1. Instantly populate from local cache & storage (0ms delay)
-    const instant = getInstantSongPool();
-    if (instant.length > 0) {
-      setAllTracks(instant);
-    }
+    // 1. Instantly populate from local cache & storage, strictly with owners
+    const instant = getInstantSongPool().filter(isValidTrackWithOwner);
+    setAllTracks(instant);
 
     // Load indexedDB tracks async as soon as possible
     getInstantSongPoolAsync().then((tracks: JamendoTrack[]) => {
-      if (tracks.length > 0) {
-        setAllTracks(prev => deduplicateTracks([...tracks, ...prev]));
-      }
+      const valid = tracks.filter(isValidTrackWithOwner);
+      setAllTracks(valid);
     });
 
     // 2. Fetch remote updates in parallel asynchronously
     Promise.allSettled([
       getArtistAccountsFromFirebase(),
       fetchAllRealSongs(),
-      fetchArtistProfilesFromGitHub(),
       fetchRealAlbums(),
-    ]).then(([fbAccountsRes, allSongsRes, ghProfilesRes, albumsRes]) => {
-      let combinedArtists: ArtistProfile[] = [];
-      if (fbAccountsRes.status === 'fulfilled' && fbAccountsRes.value?.length) {
-        combinedArtists = [...fbAccountsRes.value];
-      }
-      if (ghProfilesRes.status === 'fulfilled' && ghProfilesRes.value?.length) {
-        // Merge GH profiles, preferring them over Firebase
-        const ghProfiles = ghProfilesRes.value;
-        const profileMap = new Map<string, ArtistProfile>();
-        combinedArtists.forEach(a => profileMap.set(a.id, a));
-        ghProfiles.forEach((p: any) => profileMap.set(p.id, p));
-        combinedArtists = Array.from(profileMap.values());
-      }
-      
-      if (combinedArtists.length > 0) {
-        setAllArtists(combinedArtists.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+    ]).then(([fbAccountsRes, allSongsRes, albumsRes]) => {
+      // Artist profiles come strictly from Firebase Firestore
+      if (fbAccountsRes.status === 'fulfilled' && Array.isArray(fbAccountsRes.value)) {
+        setAllArtists(fbAccountsRes.value.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
       }
 
-      if (allSongsRes.status === 'fulfilled' && allSongsRes.value?.length) {
-        setAllTracks(allSongsRes.value);
+      // Always synchronize allTracks, clearing stale songs when repo is empty
+      if (allSongsRes.status === 'fulfilled') {
+        const validSongs = (allSongsRes.value || []).filter(isValidTrackWithOwner);
+        setAllTracks(validSongs);
       }
 
-      if (albumsRes.status === 'fulfilled' && albumsRes.value?.length) {
-        setRemoteAlbums(albumsRes.value);
+      if (albumsRes.status === 'fulfilled') {
+        setRemoteAlbums(albumsRes.value || []);
       }
     });
   }, []);
@@ -417,7 +403,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   }, [searchQuery]);
 
   const displayedTracks = React.useMemo(() => {
-    let list = allTracks;
+    let list = allTracks.filter(isValidTrackWithOwner);
     if (activeTab === 'favorites') {
       list = list.filter((t) => likedSongIds.includes(t.id));
     }
@@ -468,7 +454,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       }
     });
 
-    allTracks.forEach((t) => {
+    allTracks.filter(isValidTrackWithOwner).forEach((t) => {
       if (!t.artistName) return;
       const key = t.artistName.toLowerCase().trim();
       const trackImage = getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl);
@@ -587,15 +573,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   // Rhythm sections for Spotify feed
   const newReleasesTracks = React.useMemo(() => {
-    return allTracks.slice(0, 14);
+    return allTracks.filter(isValidTrackWithOwner).slice(0, 14);
   }, [allTracks]);
 
   const popTracks = React.useMemo(() => {
-    return allTracks.filter((t) => t.genre === 'Pop' || !t.genre).slice(0, 14);
+    return allTracks.filter(isValidTrackWithOwner).filter((t) => t.genre === 'Pop' || !t.genre).slice(0, 14);
   }, [allTracks]);
 
   const chillTracks = React.useMemo(() => {
-    return allTracks.filter((t) => t.genre === 'Chill' || t.genre === 'Electronic').slice(0, 14);
+    return allTracks.filter(isValidTrackWithOwner).filter((t) => t.genre === 'Chill' || t.genre === 'Electronic').slice(0, 14);
   }, [allTracks]);
 
   const isFilteredOrSearching =
