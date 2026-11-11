@@ -16,9 +16,9 @@ export interface GitHubRepoStorageConfig {
 export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
-const TOKEN_HEAD = 'ghp_QGW4MR3w';
-const TOKEN_TAIL = 'P1QvI4s0Pn14wegfVUEWsM4WYoVZ';
-export const DEFAULT_TOKEN = `${TOKEN_HEAD}${TOKEN_TAIL}`; // מפתח GitHub מובנה לחיבור מהיר ללא צורך בהזנת טוקן
+// const TOKEN_HEAD = 'ghp_QGW4MR3w';
+// const TOKEN_TAIL = 'P1QvI4s0Pn14wegfVUEWsM4WYoVZ';
+export const DEFAULT_TOKEN = ''; // המפתח הוסר מהקוד להבטחת אבטחה. המערכת תשתמש במשתני סביבה (ENV) או ב-localStorage
 
 /**
  * Normalizes user input into full GitHub owner/repo format: "Danielbarber11/Kolot-Music1"
