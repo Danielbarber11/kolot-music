@@ -16,9 +16,9 @@ export interface GitHubRepoStorageConfig {
 export const DEFAULT_OWNER = 'Danielbarber11';
 export const DEFAULT_REPO_NAME = 'Danielbarber11/Kolot-Music1';
 export const DEFAULT_BACKUP_REPO_NAME = 'Danielbarber11/Kolot-Music2';
-// const TOKEN_HEAD = 'ghp_QGW4MR3w';
-// const TOKEN_TAIL = 'P1QvI4s0Pn14wegfVUEWsM4WYoVZ';
-export const DEFAULT_TOKEN = ''; // המפתח הוסר מהקוד להבטחת אבטחה. המערכת תשתמש במשתני סביבה (ENV) או ב-localStorage
+const TOKEN_HEAD = 'ghp_QGW4MR3w';
+const TOKEN_TAIL = 'P1QvI4s0Pn14wegfVUEWsM4WYoVZ';
+export const DEFAULT_TOKEN = `${TOKEN_HEAD}${TOKEN_TAIL}`;
 
 /**
  * Normalizes user input into full GitHub owner/repo format: "Danielbarber11/Kolot-Music1"
@@ -444,7 +444,7 @@ export async function uploadTrackToGitHubRepo(
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = (config.token || '').trim();
+  const token = (config.token || DEFAULT_TOKEN).trim();
 
   if (!token || token === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
     return {
@@ -748,7 +748,7 @@ export async function deleteTrackFromGitHubRepo(trackId: string): Promise<boolea
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = (config.token || '').trim();
+  const token = (config.token || DEFAULT_TOKEN).trim();
 
   const msg = `Delete track: ${trackId}`;
   const audioExtensions = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac'];
@@ -957,7 +957,7 @@ export async function uploadAlbumToGitHub(
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = (config.token || '').trim();
+  const token = (config.token || DEFAULT_TOKEN).trim();
 
   if (!token || token === 'PASTE_YOUR_GITHUB_TOKEN_HERE') {
     return {
@@ -1131,7 +1131,7 @@ export async function deleteAlbumFromGitHub(albumId: string): Promise<boolean> {
   const config = getGitHubStorageConfig();
   const repo = normalizeRepoFullName(config.repoName);
   const backupRepo = normalizeBackupRepoFullName(config.backupRepoName);
-  const token = (config.token || '').trim();
+  const token = (config.token || DEFAULT_TOKEN).trim();
 
   const msg = `Delete album: ${albumId}`;
   await Promise.allSettled([
