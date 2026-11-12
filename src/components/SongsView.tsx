@@ -45,6 +45,7 @@ import { AdminPanelModal } from './AdminPanelModal';
 import { AlbumModal } from './AlbumModal';
 import { Logo } from './Logo';
 import { TermsModal } from './TermsModal';
+import { Footer } from './Footer';
 import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
 import { AuthModal } from './AuthModal';
@@ -1720,6 +1721,13 @@ export const SongsView: React.FC<SongsViewProps> = ({
               )}
             </div>
           )}
+
+          {/* SITE FOOTER */}
+          <Footer
+            lang={lang}
+            onOpenPortal={() => setIsArtistPortalOpen(true)}
+            onOpenTerms={() => setShowTermsModal(true)}
+          />
         </main>
       </div>
 

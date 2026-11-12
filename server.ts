@@ -2,7 +2,14 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
-import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { 
+  S3Client, 
+  PutObjectCommand, 
+  ListObjectsV2Command, 
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListBucketsCommand
+} from '@aws-sdk/client-s3';
 import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,8 +34,24 @@ const r2Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.R2_BUCKET_NAME || '';
+let cachedBucketName = process.env.R2_BUCKET_NAME || '';
 const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
+
+// Dynamically resolve R2 Bucket Name (from env or auto-discovered from user's R2 account)
+async function getR2BucketName(): Promise<string> {
+  if (cachedBucketName) return cachedBucketName;
+  try {
+    const listRes = await r2Client.send(new ListBucketsCommand({}));
+    if (listRes.Buckets && listRes.Buckets.length > 0 && listRes.Buckets[0].Name) {
+      cachedBucketName = listRes.Buckets[0].Name;
+      console.log(`[R2 Storage] Auto-detected bucket: "${cachedBucketName}"`);
+      return cachedBucketName;
+    }
+  } catch (err: any) {
+    console.warn('[R2 Storage] Could not auto-detect bucket, using fallback:', err?.message);
+  }
+  return cachedBucketName || 'kolot-music';
+}
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '25mb' }));
@@ -388,6 +411,27 @@ ${gutenbergCtx ? `PROJECT GUTENBERG:\n${gutenbergCtx}\n` : ''}`;
 
 // --- Cloudflare R2 Storage Endpoints ---
 
+// Storage Status Probe
+app.get('/api/storage/status', async (req, res) => {
+  const hasKeys = !!(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_ENDPOINT);
+  try {
+    const bucket = await getR2BucketName();
+    return res.json({
+      success: true,
+      configured: hasKeys,
+      bucket,
+      hasPublicUrl: !!PUBLIC_URL,
+      endpoint: process.env.R2_ENDPOINT ? 'configured' : 'missing',
+    });
+  } catch (err: any) {
+    return res.json({
+      success: false,
+      configured: hasKeys,
+      error: err?.message || 'Failed to connect to R2',
+    });
+  }
+});
+
 // 1. Upload File (Audio/Image/JSON)
 app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), async (req: any, res) => {
   try {
@@ -403,19 +447,14 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
       return res.status(400).json({ error: 'No path provided' });
     }
 
-    if (!BUCKET_NAME) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'R2 storage not configured on server (Missing R2_BUCKET_NAME)' 
-      });
-    }
-
     if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
       return res.status(500).json({ 
         success: false, 
         error: 'R2 credentials or endpoint missing in server environment' 
       });
     }
+
+    const bucket = await getR2BucketName();
 
     let body: Buffer | string = '';
     let contentType = 'application/octet-stream';
@@ -430,7 +469,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     }
 
     const command = new PutObjectCommand({
-      Bucket: BUCKET_NAME,
+      Bucket: bucket,
       Key: filePath,
       Body: body,
       ContentType: contentType,
@@ -460,21 +499,24 @@ app.get('/api/storage/list', async (req, res) => {
   try {
     const { prefix } = req.query;
 
-    if (!BUCKET_NAME) {
+    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
       return res.status(500).json({ 
         success: false,
-        error: 'R2 storage not configured (Missing R2_BUCKET_NAME)' 
+        error: 'R2 storage credentials not configured' 
       });
     }
 
+    const bucket = await getR2BucketName();
+
     const command = new ListObjectsV2Command({
-      Bucket: BUCKET_NAME,
+      Bucket: bucket,
       Prefix: prefix as string,
     });
 
     const data = await r2Client.send(command);
     return res.json({
       success: true,
+      bucket,
       files: data.Contents?.map(item => ({
         key: item.Key,
         size: item.Size,
@@ -500,15 +542,10 @@ app.delete('/api/storage/delete', async (req, res) => {
       return res.status(400).json({ error: 'Missing path' });
     }
 
-    if (!BUCKET_NAME) {
-      return res.status(500).json({ 
-        success: false,
-        error: 'R2 storage not configured (Missing R2_BUCKET_NAME)' 
-      });
-    }
+    const bucket = await getR2BucketName();
 
     const command = new DeleteObjectCommand({
-      Bucket: BUCKET_NAME,
+      Bucket: bucket,
       Key: filePath,
     });
 
@@ -523,26 +560,45 @@ app.delete('/api/storage/delete', async (req, res) => {
   }
 });
 
-// 4. Raw Proxy (if no public URL)
+// 4. Raw Proxy / Streamer (Works with or without public URL)
 app.get('/api/storage/raw/*', async (req, res) => {
   try {
     const filePath = (req.params as any)[0];
     if (!filePath) return res.status(400).send('Missing path');
 
-    // Simple redirect or proxy from R2
-    // For now, let's just assume we want to use the public URL or error out
-    if (!PUBLIC_URL) {
-      return res.status(500).json({ 
-        success: false,
-        error: 'Public URL not configured (Missing R2_PUBLIC_URL)' 
-      });
+    // If PUBLIC_URL is configured, redirect for CDN speed
+    if (PUBLIC_URL) {
+      return res.redirect(`${PUBLIC_URL}/${filePath}`);
     }
 
-    return res.redirect(`${PUBLIC_URL}/${filePath}`);
+    // Otherwise, stream file directly from R2 S3 storage!
+    const bucket = await getR2BucketName();
+    const command = new GetObjectCommand({
+      Bucket: bucket,
+      Key: filePath,
+    });
+
+    const s3Item = await r2Client.send(command);
+
+    if (s3Item.ContentType) {
+      res.setHeader('Content-Type', s3Item.ContentType);
+    }
+    if (s3Item.ContentLength) {
+      res.setHeader('Content-Length', s3Item.ContentLength);
+    }
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+
+    if (s3Item.Body) {
+      // @ts-ignore
+      return s3Item.Body.pipe(res);
+    }
+
+    return res.status(404).send('File not found in storage');
   } catch (err: any) {
-    return res.status(500).json({ 
+    console.error('Error fetching file from R2:', err);
+    return res.status(404).json({ 
       success: false,
-      error: `Error proxying file: ${err?.message || 'Unknown error'}` 
+      error: `File not found in storage: ${err?.message || 'Unknown error'}` 
     });
   }
 });

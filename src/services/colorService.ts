@@ -221,3 +221,56 @@ export function prewarmTrackColor(track: JamendoTrack) {
     extractImageColor(track.artistAvatarUrl);
   }
 }
+
+/**
+ * Curated rich, harmonious theme colors for artists
+ */
+export const ARTIST_CURATED_PALETTES: { r: number; g: number; b: number }[] = [
+  { r: 20, g: 184, b: 166 }, // Emerald Teal
+  { r: 99, g: 102, b: 241 }, // Indigo
+  { r: 245, g: 158, b: 11 }, // Warm Amber
+  { r: 168, g: 85, b: 247 }, // Royal Purple
+  { r: 59, g: 130, b: 246 }, // Deep Ocean Blue
+  { r: 16, g: 185, b: 129 }, // Vibrant Mint
+  { r: 239, g: 68, b: 68 },  // Ruby Red
+  { r: 14, g: 165, b: 233 }, // Sky Cyan
+  { r: 217, g: 70, b: 239 }, // Electric Fuchsia
+  { r: 249, g: 115, b: 22 }, // Sunset Coral
+  { r: 132, g: 204, b: 22 }, // Lime Accent
+];
+
+/**
+ * Returns a permanent, 100% deterministic color palette for an artist.
+ * Caches in localStorage so the artist profile always renders with the exact same color.
+ */
+export function getArtistStableTheme(artistName?: string, _avatarUrl?: string): { r: number; g: number; b: number } {
+  const cleanName = (artistName || '').trim().toLowerCase();
+  if (!cleanName) {
+    return { r: 16, g: 185, b: 129 };
+  }
+
+  const cacheKey = `kolot_artist_color_${cleanName}`;
+  try {
+    const saved = localStorage.getItem(cacheKey);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (typeof parsed?.r === 'number' && typeof parsed?.g === 'number' && typeof parsed?.b === 'number') {
+        return parsed;
+      }
+    }
+  } catch {}
+
+  let hash = 0;
+  for (let i = 0; i < cleanName.length; i++) {
+    hash = (hash << 5) - hash + cleanName.charCodeAt(i);
+    hash |= 0;
+  }
+  const index = Math.abs(hash) % ARTIST_CURATED_PALETTES.length;
+  const chosen = ARTIST_CURATED_PALETTES[index];
+
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(chosen));
+  } catch {}
+
+  return chosen;
+}

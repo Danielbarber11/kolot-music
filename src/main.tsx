@@ -6,4 +6,13 @@ import { initializeMultiMusicService } from './services/multiMusicService';
 // Start fetching data immediately in the background
 initializeMultiMusicService().catch(() => {});
 
+// Register service worker for PWA support
+if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'development') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('SW registration failed:', err);
+    });
+  });
+}
+
 createRoot(document.getElementById('root')!).render(<App />);

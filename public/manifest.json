@@ -1,0 +1,35 @@
+{
+  "id": "/",
+  "name": "Kolot Music - קולות מוזיקה",
+  "short_name": "Kolot",
+  "description": "פלטפורמת מוזיקה מתקדמת להאזנה, יצירה והפצת שירים ואלבומים חופשיים",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#000000",
+  "background_color": "#000000",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["music", "entertainment", "audio"]
+}

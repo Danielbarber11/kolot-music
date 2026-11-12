@@ -13,7 +13,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
-import { useExtractedColor, getTrackInstantColor } from '../services/colorService';
+import { getArtistStableTheme, getTrackInstantColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner } from '../services/multiMusicService';
 import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
@@ -90,8 +90,8 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     artistTracks = [currentTrack];
   }
 
-  // If no songs exist for this artist, do not display the profile
-  if (!isOpen || artistTracks.length === 0) return null;
+  // Profile modal opens even if track count is currently 0 (reliable loading)
+  if (!isOpen || !effectiveArtistName) return null;
 
   // Retrieve albums for this artist, filtering out deleted tracks
   const artistAlbums: Album[] = (() => {
@@ -151,7 +151,8 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   }
 
   const avatarUrl = rawAvatarUrl ? getStreamingMediaUrl(rawAvatarUrl) : undefined;
-  const themeColor = useExtractedColor(avatarUrl || sampleTrack?.coverUrl, sampleTrack?.genre || 'Pop') || { r: 16, g: 185, b: 129 };
+  // Permanent, 100% deterministic artist color palette
+  const themeColor = getArtistStableTheme(effectiveArtistName, avatarUrl);
 
   const canDeleteTrack = (track: JamendoTrack) => {
     if (!onRemoveTrack) return false;
@@ -341,7 +342,13 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+          {artistTracks.length === 0 ? (
+            <div className="py-14 text-center text-white/50 bg-white/[0.03] rounded-3xl border border-white/10 p-8 space-y-3">
+              <Music className="w-10 h-10 mx-auto text-white/30" />
+              <p className="text-sm font-medium text-white/80">{isHe ? 'טרם הועלו שירים עבור אמן זה' : 'No songs uploaded yet for this artist'}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
             {artistTracks.map((track) => {
               const trackColor = getTrackInstantColor(track);
               const hoverShadow = `0 0 25px rgba(${trackColor.r}, ${trackColor.g}, ${trackColor.b}, 0.35)`;
@@ -449,6 +456,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
               );
             })}
           </div>
+          )}
         </main>
       </motion.div>
   );

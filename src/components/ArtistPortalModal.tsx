@@ -51,7 +51,7 @@ import {
 } from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getTrackInstantColor, useExtractedColor, globalTrackColorCache } from '../services/colorService';
+import { getTrackInstantColor, getArtistStableTheme, globalTrackColorCache } from '../services/colorService';
 import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { AlbumModal } from './AlbumModal';
@@ -889,8 +889,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
   const sampleTrack = myUploadedTracks[0] || allTracks[0];
   const activeAvatar = getEffectiveUserAvatar(currentUser, currentArtist);
-  const extractedArtistColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
-  const themeColor = extractedArtistColor || (sampleTrack ? getTrackInstantColor(sampleTrack) : { r: 99, g: 102, b: 241 });
+  const themeColor = getArtistStableTheme(currentArtist.name, activeAvatar);
 
   if (!currentUser) {
     return (
