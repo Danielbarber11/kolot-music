@@ -19,7 +19,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
           window.document.getElementById('splash-screen')?.remove();
         }
       }}
-      className="fixed inset-0 z-[9999] bg-black flex flex-col items-center justify-center overflow-hidden"
+      className={`fixed inset-0 z-[9999] bg-black flex flex-col items-center justify-center overflow-hidden ${!isLoading ? 'pointer-events-none' : ''}`}
       id="splash-screen"
     >
       {/* Dynamic Ambient Glow */}

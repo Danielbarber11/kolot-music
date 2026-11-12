@@ -62,68 +62,14 @@ export function calculateRealStorageUsage(tracks: JamendoTrack[]): { usedBytes: 
   };
 }
 
-export interface R2ClientCredentials {
-  endpoint: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  bucketName?: string;
-  publicUrl?: string;
-}
-
-export function getR2StoredCredentials(): R2ClientCredentials {
-  try {
-    const saved = localStorage.getItem('kolot_r2_credentials');
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch {}
-  return {
-    endpoint: '',
-    accessKeyId: '',
-    secretAccessKey: '',
-    bucketName: '',
-    publicUrl: '',
-  };
-}
-
-export async function saveR2Credentials(creds: R2ClientCredentials): Promise<{ success: boolean; message?: string; bucket?: string; error?: string }> {
-  try {
-    localStorage.setItem('kolot_r2_credentials', JSON.stringify(creds));
-    const res = await fetch('/api/storage/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(creds),
-    });
-    const data = await res.json();
-    if (data.success) {
-      if (data.bucket) {
-        creds.bucketName = data.bucket;
-        localStorage.setItem('kolot_r2_credentials', JSON.stringify(creds));
-      }
-      return { success: true, message: data.message, bucket: data.bucket };
-    } else {
-      return { success: false, error: data.error };
-    }
-  } catch (err: any) {
-    return { success: false, error: err?.message || 'שגיאה בחיבור לשרת האחסון' };
-  }
-}
-
 export function getR2AuthHeaders(): Record<string, string> {
-  const creds = getR2StoredCredentials();
-  const headers: Record<string, string> = {};
-  if (creds.endpoint) headers['x-r2-endpoint'] = creds.endpoint;
-  if (creds.accessKeyId) headers['x-r2-access-key-id'] = creds.accessKeyId;
-  if (creds.secretAccessKey) headers['x-r2-secret-access-key'] = creds.secretAccessKey;
-  if (creds.bucketName) headers['x-r2-bucket-name'] = creds.bucketName;
-  return headers;
+  // Credentials are processed 100% server-side in server.ts to prevent leaks in DevTools
+  return {};
 }
 
 export async function checkR2StorageStatus(): Promise<{ configured: boolean; bucket?: string; error?: string }> {
   try {
-    const res = await fetch('/api/storage/status', {
-      headers: getR2AuthHeaders(),
-    });
+    const res = await fetch('/api/storage/status');
     const data = await res.json();
     return {
       configured: !!data.configured,
@@ -143,14 +89,11 @@ export function getCloudStorageConfig(): CloudStorageConfig {
     }
   } catch {}
 
-  const creds = getR2StoredCredentials();
-  const hasCreds = !!(creds.endpoint && creds.accessKeyId && creds.secretAccessKey);
-
   return {
     capacityMb: 10000, // 10GB for Cloudflare R2
     usedBytes: 0,
     fileCount: 0,
-    isConnected: hasCreds,
+    isConnected: true, // Always connected via server-side R2 credentials
   };
 }
 

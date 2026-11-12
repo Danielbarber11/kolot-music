@@ -23,18 +23,15 @@ export default function App() {
 
   // Perform critical initialization before showing the UI
   useEffect(() => {
-    const init = async () => {
-      // 1. Fetch real songs from Secure Cloud primarily
-      // We wait at most 2 seconds for server to respond or return cached data
-      const timeout = new Promise(resolve => setTimeout(resolve, 2200));
-      const fetchTask = fetchAllRealSongs();
-      
-      await Promise.race([fetchTask, timeout]);
-      
-      // Even if timeout hits, we proceed with whatever we have (cache or partial load)
+    // Start fetching in background immediately
+    fetchAllRealSongs().catch(() => {});
+
+    // Hide splash screen within 800ms max
+    const timer = setTimeout(() => {
       setIsInitializing(false);
-    };
-    init();
+    }, 800);
+
+    return () => clearTimeout(timer);
   }, []);
 
   const handleToggleLikeSong = (id: string) => {
