@@ -319,22 +319,31 @@ export async function fetchAllRealSongs(
     cloudTracks = await fetchTracksFromCloud();
   } catch {}
 
-  const validCloudTracks = cloudTracks.filter(isValidTrackWithOwner);
+  let firebaseTracks: JamendoTrack[] = [];
+  try {
+    firebaseTracks = await getArtistTracksFromFirebase();
+  } catch {}
+
+  const allCloudTracks = [...cloudTracks, ...firebaseTracks].filter(isValidTrackWithOwner);
 
   try {
-    const activeCloudIds = new Set(validCloudTracks.map((t) => t.id));
+    const activeCloudIds = new Set(allCloudTracks.map((t) => t.id));
     const indexedDBTracks = await loadTracksFromIndexedDB();
     for (const t of indexedDBTracks) {
       if (!activeCloudIds.has(t.id)) {
         await removeTrackFromStorage(t.id);
       }
     }
-    saveCachedCloudTracks(validCloudTracks);
   } catch {}
 
   const deletedIds = getDeletedSongIds();
   const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const combined = deduplicateTracks([...validCloudTracks, ...verified]).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  const combined = deduplicateTracks([...allCloudTracks, ...verified]).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  
+  try {
+    saveCachedCloudTracks(combined);
+  } catch {}
+
   if (onProgress) onProgress(combined.length);
   if (onBatch) onBatch(combined);
 
