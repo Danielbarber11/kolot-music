@@ -54,7 +54,7 @@ import {
 } from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getTrackInstantColor, getArtistStableTheme, globalTrackColorCache } from '../services/colorService';
+import { getTrackInstantColor, getArtistStableTheme, globalTrackColorCache, extractImageColor } from '../services/colorService';
 import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { AlbumModal } from './AlbumModal';
@@ -844,8 +844,18 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       if (cloudRes.audioUrl) {
         newTrack.audioUrl = cloudRes.audioUrl;
       }
-      if (cloudRes.coverUrl) {
-        newTrack.coverUrl = cloudRes.coverUrl;
+      if (cloudRes.coverUrl || newTrack.coverUrl) {
+        if (cloudRes.coverUrl) newTrack.coverUrl = cloudRes.coverUrl;
+        try {
+          const extracted = await extractImageColor(newTrack.coverUrl);
+          if (extracted) {
+            const { r, g, b } = extracted;
+            const darkR = Math.round(r * 0.18), darkG = Math.round(g * 0.18), darkB = Math.round(b * 0.18);
+            newTrack.bgColor = `radial-gradient(circle at 50% 35%, rgba(${r}, ${g}, ${b}, 0.8) 0%, rgba(${darkR}, ${darkG}, ${darkB}, 0.96) 55%, #030712 100%)`;
+            globalTrackColorCache.set(newTrack.id, extracted);
+            if (newTrack.coverUrl) globalTrackColorCache.set(newTrack.coverUrl, extracted);
+          }
+        } catch {}
       }
 
       // 2. Save metadata to Firebase Firestore

@@ -115,16 +115,16 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
     img.onload = () => {
       try {
         const canvas = document.createElement('canvas');
-        canvas.width = 24;
-        canvas.height = 24;
+        canvas.width = 16;
+        canvas.height = 16;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           globalTrackColorCache.set(key, fallbackColor);
           resolve(fallbackColor);
           return;
         }
-        ctx.drawImage(img, 0, 0, 24, 24);
-        const data = ctx.getImageData(0, 0, 24, 24).data;
+        ctx.drawImage(img, 0, 0, 16, 16);
+        const data = ctx.getImageData(0, 0, 16, 16).data;
 
         let rSum = 0, gSum = 0, bSum = 0, count = 0;
         let maxSaturation = -1;
@@ -135,7 +135,7 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
           const g = data[i + 1];
           const b = data[i + 2];
           const a = data[i + 3];
-          if (a > 180 && (r + g + b > 80) && (r + g + b < 700)) {
+          if (a > 180 && (r + g + b > 50) && (r + g + b < 720)) {
             rSum += r;
             gSum += g;
             bSum += b;
@@ -151,18 +151,14 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
           }
         }
 
-        if (count > 0) {
-          const finalColor = maxSaturation > 0.3 ? bestColor : {
-            r: Math.round(rSum / count),
-            g: Math.round(gSum / count),
-            b: Math.round(bSum / count),
-          };
-          globalTrackColorCache.set(key, finalColor);
-          resolve(finalColor);
-        } else {
-          globalTrackColorCache.set(key, fallbackColor);
-          resolve(fallbackColor);
-        }
+        const finalColor = count > 0 && maxSaturation > 0.15 ? bestColor : (count > 0 ? {
+          r: Math.round(rSum / count),
+          g: Math.round(gSum / count),
+          b: Math.round(bSum / count),
+        } : fallbackColor);
+
+        globalTrackColorCache.set(key, finalColor);
+        resolve(finalColor);
       } catch {
         globalTrackColorCache.set(key, fallbackColor);
         resolve(fallbackColor);
@@ -240,37 +236,20 @@ export const ARTIST_CURATED_PALETTES: { r: number; g: number; b: number }[] = [
 ];
 
 /**
- * Returns a permanent, 100% deterministic color palette for an artist.
- * Caches in localStorage so the artist profile always renders with the exact same color.
+ * Returns a permanent, 100% deterministic color palette for an artist matching avatar image.
  */
-export function getArtistStableTheme(artistName?: string, _avatarUrl?: string): { r: number; g: number; b: number } {
+export function getArtistStableTheme(artistName?: string, avatarUrl?: string): { r: number; g: number; b: number } {
+  if (avatarUrl && globalTrackColorCache.has(avatarUrl)) {
+    return globalTrackColorCache.get(avatarUrl)!;
+  }
+  if (avatarUrl && avatarUrl.trim().length > 0) {
+    return stringToVibrantRGB(avatarUrl);
+  }
+
   const cleanName = (artistName || '').trim().toLowerCase();
   if (!cleanName) {
     return { r: 16, g: 185, b: 129 };
   }
 
-  const cacheKey = `kolot_artist_color_${cleanName}`;
-  try {
-    const saved = localStorage.getItem(cacheKey);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (typeof parsed?.r === 'number' && typeof parsed?.g === 'number' && typeof parsed?.b === 'number') {
-        return parsed;
-      }
-    }
-  } catch {}
-
-  let hash = 0;
-  for (let i = 0; i < cleanName.length; i++) {
-    hash = (hash << 5) - hash + cleanName.charCodeAt(i);
-    hash |= 0;
-  }
-  const index = Math.abs(hash) % ARTIST_CURATED_PALETTES.length;
-  const chosen = ARTIST_CURATED_PALETTES[index];
-
-  try {
-    localStorage.setItem(cacheKey, JSON.stringify(chosen));
-  } catch {}
-
-  return chosen;
+  return stringToVibrantRGB(cleanName);
 }

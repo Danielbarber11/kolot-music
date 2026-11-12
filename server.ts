@@ -10,7 +10,8 @@ import {
   ListObjectsV2Command, 
   DeleteObjectCommand,
   GetObjectCommand,
-  ListBucketsCommand
+  ListBucketsCommand,
+  CreateBucketCommand
 } from '@aws-sdk/client-s3';
 import multer from 'multer';
 
@@ -121,13 +122,21 @@ async function getR2Context(req?: express.Request): Promise<{ client: S3Client; 
     throw new Error('יצירת חיבור ל-Cloudflare R2 נכשלה. אנא ודא שהמפתחות וה-Endpoint תקינים.');
   }
 
-  let bucket = cfg.bucketName;
-  if (!bucket) {
+  let bucket = cfg.bucketName || 'kolot-music';
+  if (!cfg.bucketName) {
     try {
       const list = await client.send(new ListBucketsCommand({}));
       if (list.Buckets && list.Buckets.length > 0 && list.Buckets[0].Name) {
         bucket = list.Buckets[0].Name;
         activeR2Config.bucketName = bucket;
+      } else {
+        try {
+          await client.send(new CreateBucketCommand({ Bucket: bucket }));
+          console.log(`[R2 Storage] Created bucket '${bucket}' automatically`);
+          activeR2Config.bucketName = bucket;
+        } catch (createErr: any) {
+          console.warn('[R2 Storage] Auto create bucket notice:', createErr?.message);
+        }
       }
     } catch (e: any) {
       console.warn('[R2 Storage] ListBuckets discovery notice:', e?.message);
@@ -136,7 +145,7 @@ async function getR2Context(req?: express.Request): Promise<{ client: S3Client; 
 
   return {
     client,
-    bucket: bucket || 'kolot-music',
+    bucket,
     publicUrl: cfg.publicUrl,
     config: cfg,
   };
@@ -644,9 +653,29 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
         ContentType: contentType,
       });
 
-      await client.send(command);
-      r2Success = true;
-      r2Url = publicUrl ? `${publicUrl}/${filePath}` : `/api/storage/raw/${filePath}`;
+      try {
+        await client.send(command);
+        r2Success = true;
+      } catch (putErr: any) {
+        const errStr = String(putErr?.message || putErr?.name || '');
+        if (errStr.includes('NoSuchBucket') || errStr.includes('does not exist') || putErr?.name === 'NoSuchBucket') {
+          console.log(`[R2 Storage] Bucket '${bucket}' not found. Attempting auto-creation...`);
+          try {
+            await client.send(new CreateBucketCommand({ Bucket: bucket }));
+            console.log(`[R2 Storage] Bucket '${bucket}' created! Retrying upload...`);
+            await client.send(command);
+            r2Success = true;
+          } catch (createErr: any) {
+            console.warn('[R2 Storage] Bucket auto-creation failed:', createErr?.message);
+          }
+        } else {
+          throw putErr;
+        }
+      }
+
+      if (r2Success) {
+        r2Url = publicUrl ? `${publicUrl}/${filePath}` : `/api/storage/raw/${filePath}`;
+      }
     } catch (r2Err: any) {
       console.warn('[R2 Storage] Primary R2 upload notice (using server-disk fallback):', r2Err?.message);
     }

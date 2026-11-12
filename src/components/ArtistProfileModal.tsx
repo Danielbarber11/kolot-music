@@ -13,7 +13,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
-import { getArtistStableTheme, getTrackInstantColor } from '../services/colorService';
+import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner } from '../services/multiMusicService';
 import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
@@ -151,8 +151,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   }
 
   const avatarUrl = rawAvatarUrl ? getStreamingMediaUrl(rawAvatarUrl) : undefined;
-  // Permanent, 100% deterministic artist color palette
-  const themeColor = getArtistStableTheme(effectiveArtistName, avatarUrl);
+  const themeColor = useExtractedColor(avatarUrl, 'Pop');
 
   const canDeleteTrack = (track: JamendoTrack) => {
     if (!onRemoveTrack) return false;
