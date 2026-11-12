@@ -41,13 +41,13 @@ export const ALL_MUSIC_GENRES = [
 const CLOUD_TRACKS_CACHE_KEY = 'kolot_cloud_tracks_cache';
 
 /**
- * Strict validator: Every track MUST have an authentic user ID (uploadedByUid or uploadedByEmail).
+ * Strict validator: Every track MUST have an authentic ID, Name, and Audio URL.
  */
 export function isValidTrackWithOwner(track: JamendoTrack | null | undefined): boolean {
-  if (!track || !track.id || !track.name) return false;
-  const hasUserUid = typeof track.uploadedByUid === 'string' && track.uploadedByUid.trim().length > 0;
-  const hasUserEmail = typeof track.uploadedByEmail === 'string' && track.uploadedByEmail.trim().length > 0;
-  return hasUserUid || hasUserEmail;
+  if (!track || !track.id || typeof track.id !== 'string') return false;
+  if (!track.name || typeof track.name !== 'string' || !track.name.trim()) return false;
+  if (!track.audioUrl || typeof track.audioUrl !== 'string' || !track.audioUrl.trim()) return false;
+  return true;
 }
 
 export function getCachedCloudTracks(): JamendoTrack[] {
@@ -83,24 +83,10 @@ export function saveCachedCloudTracks(tracks: JamendoTrack[]): void {
 }
 
 /**
- * Startup sanitation: Purges any legacy unassigned tracks from local client storage immediately
+ * Startup sanitation: Keeps user tracks safe and prevents accidental track loss
  */
 export function purgeOrphanedTracksFromLocalStorage(): void {
-  try {
-    const keys = [CLOUD_TRACKS_CACHE_KEY, 'kolot_uploaded_tracks'];
-    for (const key of keys) {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const valid = parsed.filter(isValidTrackWithOwner);
-          if (valid.length !== parsed.length) {
-            localStorage.setItem(key, JSON.stringify(valid));
-          }
-        }
-      }
-    }
-  } catch {}
+  // Preserves all valid user uploaded tracks across reloads
 }
 
 purgeOrphanedTracksFromLocalStorage();

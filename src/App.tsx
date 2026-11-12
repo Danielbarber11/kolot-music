@@ -26,10 +26,10 @@ export default function App() {
     // Start fetching in background immediately
     fetchAllRealSongs().catch(() => {});
 
-    // Hide splash screen within 800ms max
+    // Hide splash screen within 200ms max for instant loading
     const timer = setTimeout(() => {
       setIsInitializing(false);
-    }, 800);
+    }, 200);
 
     return () => clearTimeout(timer);
   }, []);

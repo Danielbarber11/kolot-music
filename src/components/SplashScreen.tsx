@@ -8,6 +8,7 @@ interface SplashScreenProps {
 }
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
+  if (!isLoading) return null;
   return (
     <motion.div
       initial={{ opacity: 1 }}

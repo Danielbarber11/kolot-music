@@ -21,18 +21,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('React ErrorBoundary caught an error:', error, errorInfo);
-    // Auto-clear corrupted local cache keys that cause state crashes
-    try {
-      const keysToClear = [
-        'kolot_cloud_tracks_cache',
-        'kolot_uploaded_tracks',
-        'kolot_user_albums',
-        'wikiarchive_cached_auth_user',
-        'wikiarchive_artist_account',
-        'kolot_artist_account_v1',
-      ];
-      keysToClear.forEach((key) => localStorage.removeItem(key));
-    } catch {}
+    // Keep user uploaded tracks safe
   }
 
   private handleReset = () => {
