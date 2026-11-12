@@ -29,6 +29,8 @@ import {
   Globe,
   Key,
   CheckCircle2,
+  Cloud,
+  Server,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album } from '../types';
@@ -45,9 +47,13 @@ import {
 import {
   uploadTrackToCloud,
   deleteTrackFromCloud,
-  uploadAlbumToCloud as uploadAlbumToCloud,
-  deleteAlbumFromCloud as deleteAlbumFromCloud,
+  uploadAlbumToCloud,
+  deleteAlbumFromCloud,
   getCloudStorageConfig,
+  getR2StoredCredentials,
+  saveR2Credentials,
+  checkR2StorageStatus,
+  R2ClientCredentials,
 } from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
@@ -132,6 +138,42 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   // Cloud Storage Status
   const [cloudConfig] = useState(getCloudStorageConfig);
   const [isCloudConnected] = useState<boolean>(true);
+
+  // Cloudflare R2 Credentials & Status
+  const [r2Creds, setR2Creds] = useState<R2ClientCredentials>(() => getR2StoredCredentials());
+  const [r2Status, setR2Status] = useState<{ configured: boolean; bucket?: string; error?: string }>({
+    configured: false,
+  });
+  const [isTestingR2, setIsTestingR2] = useState(false);
+  const [r2TestFeedback, setR2TestFeedback] = useState<string | null>(null);
+  const [showR2ConfigSection, setShowR2ConfigSection] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      checkR2StorageStatus().then((status) => {
+        setR2Status(status);
+        if (!status.configured) {
+          setShowR2ConfigSection(true);
+        }
+      });
+    }
+  }, [isOpen]);
+
+  const handleSaveR2 = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsTestingR2(true);
+    setR2TestFeedback(null);
+    const res = await saveR2Credentials(r2Creds);
+    setIsTestingR2(false);
+    if (res.success) {
+      setR2Status({ configured: true, bucket: res.bucket });
+      setR2TestFeedback(isHe ? `✅ מחובר בהצלחה ל-Cloudflare R2 (באקט: ${res.bucket || 'kolot-music'})!` : 'Connected successfully to Cloudflare R2!');
+      setTimeout(() => setR2TestFeedback(null), 4000);
+    } else {
+      setR2Status({ configured: false, error: res.error });
+      setR2TestFeedback(isHe ? `❌ שגיאה: ${res.error}` : `Error: ${res.error}`);
+    }
+  };
 
   // Album creation extra states
   const [isSavingAlbum, setIsSavingAlbum] = useState<boolean>(false);
@@ -816,7 +858,13 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
       if (!cloudRes.success) {
         setIsPublishing(false);
-        setPublishErrorMessage(cloudRes.error || (isHe ? 'שגיאה בשמירת השיר בענן. אנא נסה שוב.' : 'Failed to publish track to cloud.'));
+        setShowR2ConfigSection(true);
+        setPublishErrorMessage(
+          cloudRes.error ||
+            (isHe
+              ? 'שגיאה בשמירת השיר באחסון Cloudflare R2. אנא ודא שהזנת את 3 המפתחות (Endpoint, Access Key, Secret Key) בהגדרות החיבור למטה ולחץ שמור.'
+              : 'Failed to publish track to Cloudflare R2. Please check your 3 R2 keys below.')
+        );
         return;
       }
 
@@ -1863,34 +1911,158 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 </div>
 
-                {/* Cloud Target Storage Badge */}
-                <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 text-xs">
-                  <div className="flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-emerald-400" />
-                    <span className="text-neutral-300 font-medium">
-                      {isHe ? 'אחסון ענן מוגן:' : 'Secure Storage:'}{' '}
-                      <span className="font-mono text-emerald-400 font-bold">{isHe ? 'סנכרון ענן פעיל (1,000 MB)' : 'Cloud Active (1,000 MB)'}</span>
-                    </span>
+                {/* Cloudflare R2 Storage Connection & Status Card */}
+                <div className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+                  r2Status.configured 
+                    ? 'bg-emerald-500/[0.04] border-emerald-500/30' 
+                    : 'bg-amber-500/[0.06] border-amber-500/40'
+                }`}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                        r2Status.configured ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
+                      }`}>
+                        <Cloud className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-bold text-white">אחסון Cloudflare R2</span>
+                          {r2Status.configured ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              <span>מחובר ופעיל ({r2Status.bucket || 'kolot-music'})</span>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3" />
+                              <span>ממתין להזנת מפתחות</span>
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-0.5">
+                          {r2Status.configured
+                            ? 'כל השירים והתמונות נשמרים ישירות ב-Cloudflare R2 שלך'
+                            : 'הזן את 3 המשתנים שהגדרת ב-Cloudflare (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowR2ConfigSection(!showR2ConfigSection)}
+                      className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white transition-colors cursor-pointer self-start sm:self-center"
+                    >
+                      {showR2ConfigSection ? (isHe ? 'סגור הגדרות' : 'Close Settings') : (isHe ? 'הגדרת מפתחות R2' : 'Configure R2 Keys')}
+                    </button>
                   </div>
-                  <div className="text-[11px] px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>{isHe ? 'אחסון מחובר ✓' : 'Cloud Connected ✓'}</span>
-                  </div>
+
+                  {/* Collapsible Key Entry Box */}
+                  {showR2ConfigSection && (
+                    <div className="mt-4 pt-4 border-t border-white/10 space-y-3.5 animate-fadeIn">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-neutral-300 block">
+                          1. כתובת נקודת קצה (R2_ENDPOINT):
+                        </label>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          placeholder="https://<account_id>.r2.cloudflarestorage.com"
+                          value={r2Creds.endpoint}
+                          onChange={(e) => setR2Creds({ ...r2Creds, endpoint: e.target.value })}
+                          className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-neutral-300 block">
+                            2. מזהה מפתח גישה (R2_ACCESS_KEY_ID):
+                          </label>
+                          <input
+                            type="text"
+                            dir="ltr"
+                            placeholder="Access Key ID"
+                            value={r2Creds.accessKeyId}
+                            onChange={(e) => setR2Creds({ ...r2Creds, accessKeyId: e.target.value })}
+                            className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-neutral-300 block">
+                            3. מפתח גישה סודי (R2_SECRET_ACCESS_KEY):
+                          </label>
+                          <input
+                            type="password"
+                            dir="ltr"
+                            placeholder="Secret Access Key"
+                            value={r2Creds.secretAccessKey}
+                            onChange={(e) => setR2Creds({ ...r2Creds, secretAccessKey: e.target.value })}
+                            className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {r2TestFeedback && (
+                        <div className={`p-3 rounded-xl text-xs font-bold ${
+                          r2TestFeedback.startsWith('✅') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                        }`}>
+                          {r2TestFeedback}
+                        </div>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                        <span className="text-[10px] text-neutral-400">
+                          * המפתחות נשמרים ישירות בשרת ומאפשרים העלאה והזרמה מהירה של שירים
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isTestingR2 || !r2Creds.endpoint || !r2Creds.accessKeyId || !r2Creds.secretAccessKey}
+                          onClick={handleSaveR2}
+                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer transition-all active:scale-95"
+                        >
+                          {isTestingR2 ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>בודק חיבור...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-3.5 h-3.5" />
+                              <span>שמור ובדוק חיבור R2</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Live Error Notification */}
                 {publishErrorMessage && (
-                  <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
-                    <div>
+                  <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-3 animate-fadeIn">
+                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="flex-1">
                       <p className="font-bold text-rose-300 mb-1">{isHe ? 'שגיאה בפרסום' : 'Publishing Error'}</p>
                       <p className="leading-relaxed">{publishErrorMessage}</p>
-                      <button 
-                        onClick={() => setPublishErrorMessage(null)}
-                        className="mt-2 text-rose-300 font-bold hover:underline cursor-pointer"
-                      >
-                        {isHe ? 'סגור הודעה' : 'Dismiss'}
-                      </button>
+                      <div className="flex items-center gap-3 mt-2.5">
+                        {!showR2ConfigSection && (
+                          <button
+                            type="button"
+                            onClick={() => setShowR2ConfigSection(true)}
+                            className="px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-bold text-[11px] cursor-pointer"
+                          >
+                            {isHe ? 'פתח הגדרות Cloudflare R2' : 'Configure R2 Keys'}
+                          </button>
+                        )}
+                        <button 
+                          type="button"
+                          onClick={() => setPublishErrorMessage(null)}
+                          className="text-rose-300 font-bold hover:underline cursor-pointer text-[11px]"
+                        >
+                          {isHe ? 'סגור הודעה' : 'Dismiss'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2581,6 +2753,109 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                         : 'I certify and grant permission to host, stream, and store tracks on cloud and public storage servers.'}
                     </span>
                   </label>
+                </div>
+              </div>
+
+              {/* Section 4: Cloudflare R2 Cloud Storage Settings */}
+              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-neutral-800 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Cloud className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-xs font-black text-white uppercase tracking-wider">
+                      {isHe ? 'חיבור אחסון Cloudflare R2' : 'Cloudflare R2 Storage'}
+                    </h3>
+                  </div>
+                  {r2Status.configured ? (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+                      {isHe ? 'נדרשת הגדרה' : 'Setup Required'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs text-neutral-400 leading-relaxed">
+                    {isHe
+                      ? 'הזן את 3 המשתנים שהגדרת ב-Cloudflare (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) לאחסון והזרמת כל השירים ישירות מ-Cloudflare R2.'
+                      : 'Enter your 3 Cloudflare credentials to store and stream audio tracks directly from R2.'}
+                  </p>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-neutral-300 block">
+                      1. כתובת נקודת קצה (R2_ENDPOINT):
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      placeholder="https://<account_id>.r2.cloudflarestorage.com"
+                      value={r2Creds.endpoint}
+                      onChange={(e) => setR2Creds({ ...r2Creds, endpoint: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-neutral-300 block">
+                        2. מזהה מפתח גישה (R2_ACCESS_KEY_ID):
+                      </label>
+                      <input
+                        type="text"
+                        dir="ltr"
+                        placeholder="Access Key ID"
+                        value={r2Creds.accessKeyId}
+                        onChange={(e) => setR2Creds({ ...r2Creds, accessKeyId: e.target.value })}
+                        className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-neutral-300 block">
+                        3. מפתח גישה סודי (R2_SECRET_ACCESS_KEY):
+                      </label>
+                      <input
+                        type="password"
+                        dir="ltr"
+                        placeholder="Secret Access Key"
+                        value={r2Creds.secretAccessKey}
+                        onChange={(e) => setR2Creds({ ...r2Creds, secretAccessKey: e.target.value })}
+                        className="w-full px-3.5 py-2 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder-neutral-500 font-mono focus:border-emerald-400 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {r2TestFeedback && (
+                    <div className={`p-3 rounded-xl text-xs font-bold ${
+                      r2TestFeedback.startsWith('✅') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                    }`}>
+                      {r2TestFeedback}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      disabled={isTestingR2 || !r2Creds.endpoint || !r2Creds.accessKeyId || !r2Creds.secretAccessKey}
+                      onClick={handleSaveR2}
+                      className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer transition-all active:scale-95"
+                    >
+                      {isTestingR2 ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>בודק חיבור...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>שמור ובדוק חיבור R2</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
 

@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { 
   S3Client, 
@@ -11,6 +13,9 @@ import {
   ListBucketsCommand
 } from '@aws-sdk/client-s3';
 import multer from 'multer';
+
+// Load environment variables immediately
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,33 +29,112 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
 });
 
-// Initialize R2 S3 Client
-const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: process.env.R2_ENDPOINT || '',
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-  },
-});
+export interface R2Config {
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucketName?: string;
+  publicUrl?: string;
+}
 
-let cachedBucketName = process.env.R2_BUCKET_NAME || '';
-const PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
-
-// Dynamically resolve R2 Bucket Name (from env or auto-discovered from user's R2 account)
-async function getR2BucketName(): Promise<string> {
-  if (cachedBucketName) return cachedBucketName;
-  try {
-    const listRes = await r2Client.send(new ListBucketsCommand({}));
-    if (listRes.Buckets && listRes.Buckets.length > 0 && listRes.Buckets[0].Name) {
-      cachedBucketName = listRes.Buckets[0].Name;
-      console.log(`[R2 Storage] Auto-detected bucket: "${cachedBucketName}"`);
-      return cachedBucketName;
-    }
-  } catch (err: any) {
-    console.warn('[R2 Storage] Could not auto-detect bucket, using fallback:', err?.message);
+function sanitizeR2Endpoint(endpoint?: string): string {
+  if (!endpoint) return '';
+  let cleaned = endpoint.trim().replace(/^["']|["']$/g, '');
+  if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
+    cleaned = 'https://' + cleaned;
   }
-  return cachedBucketName || 'kolot-music';
+  cleaned = cleaned.replace(/\/+$/, '');
+  return cleaned;
+}
+
+function sanitizeKey(val?: string): string {
+  if (!val) return '';
+  return val.trim().replace(/^["']|["']$/g, '');
+}
+
+// Persistent and in-memory R2 config
+const R2_CONFIG_FILE = path.join(__dirname, '.r2-config.json');
+let activeR2Config: R2Config = {
+  endpoint: sanitizeR2Endpoint(process.env.R2_ENDPOINT),
+  accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID),
+  secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY),
+  bucketName: sanitizeKey(process.env.R2_BUCKET_NAME),
+  publicUrl: sanitizeR2Endpoint(process.env.R2_PUBLIC_URL),
+};
+
+try {
+  if (fs.existsSync(R2_CONFIG_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(R2_CONFIG_FILE, 'utf-8'));
+    activeR2Config = {
+      ...activeR2Config,
+      ...saved,
+      endpoint: sanitizeR2Endpoint(saved.endpoint || activeR2Config.endpoint),
+      accessKeyId: sanitizeKey(saved.accessKeyId || activeR2Config.accessKeyId),
+      secretAccessKey: sanitizeKey(saved.secretAccessKey || activeR2Config.secretAccessKey),
+    };
+    console.log('[R2 Storage] Loaded config from .r2-config.json');
+  }
+} catch (e: any) {
+  console.warn('[R2 Storage] Could not read .r2-config.json:', e?.message);
+}
+
+function resolveR2Config(req?: express.Request): R2Config {
+  const headerEndpoint = req?.headers?.['x-r2-endpoint'] as string;
+  const headerAccessKey = req?.headers?.['x-r2-access-key-id'] as string;
+  const headerSecretKey = req?.headers?.['x-r2-secret-access-key'] as string;
+  const headerBucket = req?.headers?.['x-r2-bucket-name'] as string;
+
+  const endpoint = sanitizeR2Endpoint(headerEndpoint || activeR2Config.endpoint || process.env.R2_ENDPOINT);
+  const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID);
+  const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY);
+  const bucketName = sanitizeKey(headerBucket || activeR2Config.bucketName || process.env.R2_BUCKET_NAME);
+  const publicUrl = sanitizeR2Endpoint(activeR2Config.publicUrl || process.env.R2_PUBLIC_URL);
+
+  return { endpoint, accessKeyId, secretAccessKey, bucketName, publicUrl };
+}
+
+function createR2Client(cfg: R2Config): S3Client | null {
+  if (!cfg.endpoint || !cfg.accessKeyId || !cfg.secretAccessKey) return null;
+  return new S3Client({
+    region: 'auto',
+    endpoint: cfg.endpoint,
+    credentials: {
+      accessKeyId: cfg.accessKeyId,
+      secretAccessKey: cfg.secretAccessKey,
+    },
+  });
+}
+
+async function getR2Context(req?: express.Request): Promise<{ client: S3Client; bucket: string; publicUrl?: string; config: R2Config }> {
+  const cfg = resolveR2Config(req);
+  if (!cfg.endpoint || !cfg.accessKeyId || !cfg.secretAccessKey) {
+    throw new Error('חסרים מפתחות Cloudflare R2 (Endpoint, Access Key, Secret Key). אנא הזן אותם בהגדרות האחסון.');
+  }
+
+  const client = createR2Client(cfg);
+  if (!client) {
+    throw new Error('יצירת חיבור ל-Cloudflare R2 נכשלה. אנא ודא שהמפתחות וה-Endpoint תקינים.');
+  }
+
+  let bucket = cfg.bucketName;
+  if (!bucket) {
+    try {
+      const list = await client.send(new ListBucketsCommand({}));
+      if (list.Buckets && list.Buckets.length > 0 && list.Buckets[0].Name) {
+        bucket = list.Buckets[0].Name;
+        activeR2Config.bucketName = bucket;
+      }
+    } catch (e: any) {
+      console.warn('[R2 Storage] ListBuckets discovery notice:', e?.message);
+    }
+  }
+
+  return {
+    client,
+    bucket: bucket || 'kolot-music',
+    publicUrl: cfg.publicUrl,
+    config: cfg,
+  };
 }
 
 // Increase payload limit for base64 images
@@ -411,23 +495,88 @@ ${gutenbergCtx ? `PROJECT GUTENBERG:\n${gutenbergCtx}\n` : ''}`;
 
 // --- Cloudflare R2 Storage Endpoints ---
 
-// Storage Status Probe
-app.get('/api/storage/status', async (req, res) => {
-  const hasKeys = !!(process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_ENDPOINT);
+// Save / Test R2 Configuration
+app.post('/api/storage/config', async (req, res) => {
   try {
-    const bucket = await getR2BucketName();
+    const { endpoint, accessKeyId, secretAccessKey, bucketName, publicUrl } = req.body;
+    if (!endpoint || !accessKeyId || !secretAccessKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'נא להזין את 3 הפרטים: Endpoint, Access Key ID, Secret Access Key',
+      });
+    }
+
+    const cleanedCfg: R2Config = {
+      endpoint: sanitizeR2Endpoint(endpoint),
+      accessKeyId: sanitizeKey(accessKeyId),
+      secretAccessKey: sanitizeKey(secretAccessKey),
+      bucketName: sanitizeKey(bucketName),
+      publicUrl: sanitizeR2Endpoint(publicUrl),
+    };
+
+    const testClient = createR2Client(cleanedCfg);
+    if (!testClient) {
+      return res.status(400).json({ success: false, error: 'פרטי החיבור אינם תקינים' });
+    }
+
+    // Verify connection by listing buckets
+    const listRes = await testClient.send(new ListBucketsCommand({}));
+    let detectedBucket = cleanedCfg.bucketName;
+    if (!detectedBucket && listRes.Buckets && listRes.Buckets.length > 0 && listRes.Buckets[0].Name) {
+      detectedBucket = listRes.Buckets[0].Name;
+      cleanedCfg.bucketName = detectedBucket;
+    }
+
+    // Save in memory
+    activeR2Config = { ...activeR2Config, ...cleanedCfg };
+
+    // Persist to .r2-config.json
+    try {
+      fs.writeFileSync(R2_CONFIG_FILE, JSON.stringify(cleanedCfg, null, 2), 'utf-8');
+    } catch (e: any) {
+      console.warn('[R2 Storage] Could not write to .r2-config.json:', e?.message);
+    }
+
     return res.json({
       success: true,
-      configured: hasKeys,
+      bucket: detectedBucket || 'kolot-music',
+      message: 'חיבור Cloudflare R2 אומת ונשמר בהצלחה!',
+    });
+  } catch (err: any) {
+    console.error('R2 Config Verification Error:', err);
+    return res.status(500).json({
+      success: false,
+      error: `שגיאה באימות החיבור ל-Cloudflare R2: ${err?.message || 'אנא ודא שהמפתחות וה-Endpoint תקינים'}`,
+    });
+  }
+});
+
+// Storage Status Probe
+app.get('/api/storage/status', async (req, res) => {
+  try {
+    const cfg = resolveR2Config(req);
+    const hasKeys = !!(cfg.endpoint && cfg.accessKeyId && cfg.secretAccessKey);
+    if (!hasKeys) {
+      return res.json({
+        success: true,
+        configured: false,
+        message: 'R2 storage credentials not set yet',
+      });
+    }
+
+    const { bucket, publicUrl } = await getR2Context(req);
+    return res.json({
+      success: true,
+      configured: true,
       bucket,
-      hasPublicUrl: !!PUBLIC_URL,
-      endpoint: process.env.R2_ENDPOINT ? 'configured' : 'missing',
+      hasPublicUrl: !!publicUrl,
+      endpoint: 'configured',
     });
   } catch (err: any) {
     return res.json({
       success: false,
-      configured: hasKeys,
-      error: err?.message || 'Failed to connect to R2',
+      configured: false,
+      error: err?.message || 'Failed to connect to Cloudflare R2',
     });
   }
 });
@@ -447,14 +596,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
       return res.status(400).json({ error: 'No path provided' });
     }
 
-    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'R2 credentials or endpoint missing in server environment' 
-      });
-    }
-
-    const bucket = await getR2BucketName();
+    const { client, bucket, publicUrl } = await getR2Context(req);
 
     let body: Buffer | string = '';
     let contentType = 'application/octet-stream';
@@ -463,7 +605,6 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
       body = file.buffer;
       contentType = file.mimetype;
     } else if (req.body.content) {
-      // Handle JSON/Text uploads
       body = req.body.content;
       contentType = req.body.contentType || 'application/json';
     }
@@ -475,20 +616,21 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
       ContentType: contentType,
     });
 
-    await r2Client.send(command);
+    await client.send(command);
 
-    const url = PUBLIC_URL ? `${PUBLIC_URL}/${filePath}` : `/api/storage/raw/${filePath}`;
+    const url = publicUrl ? `${publicUrl}/${filePath}` : `/api/storage/raw/${filePath}`;
 
     return res.json({
       success: true,
       url,
       path: filePath,
+      bucket,
     });
   } catch (err: any) {
     console.error('R2 Upload Error:', err);
     return res.status(500).json({ 
-      success: false,
-      error: `Failed to upload to R2: ${err?.message || 'Unknown error'}`,
+      success: false, 
+      error: `שגיאה בהעלאה ל-Cloudflare R2: ${err?.message || 'נא לבדוק את הגדרות האחסון'}`,
       details: err?.stack || String(err)
     });
   }
@@ -498,22 +640,14 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
 app.get('/api/storage/list', async (req, res) => {
   try {
     const { prefix } = req.query;
-
-    if (!process.env.R2_ENDPOINT || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
-      return res.status(500).json({ 
-        success: false,
-        error: 'R2 storage credentials not configured' 
-      });
-    }
-
-    const bucket = await getR2BucketName();
+    const { client, bucket, publicUrl } = await getR2Context(req);
 
     const command = new ListObjectsV2Command({
       Bucket: bucket,
       Prefix: prefix as string,
     });
 
-    const data = await r2Client.send(command);
+    const data = await client.send(command);
     return res.json({
       success: true,
       bucket,
@@ -521,13 +655,13 @@ app.get('/api/storage/list', async (req, res) => {
         key: item.Key,
         size: item.Size,
         lastModified: item.LastModified,
-        url: PUBLIC_URL ? `${PUBLIC_URL}/${item.Key}` : `/api/storage/raw/${item.Key}`,
+        url: publicUrl ? `${publicUrl}/${item.Key}` : `/api/storage/raw/${item.Key}`,
       })) || [],
     });
   } catch (err: any) {
     console.error('R2 List Error:', err);
     return res.status(500).json({ 
-      success: false,
+      success: false, 
       error: `Failed to list R2 files: ${err?.message || 'Unknown error'}` 
     });
   }
@@ -537,24 +671,23 @@ app.get('/api/storage/list', async (req, res) => {
 app.delete('/api/storage/delete', async (req, res) => {
   try {
     const { path: filePath } = req.query;
-
     if (!filePath || typeof filePath !== 'string') {
       return res.status(400).json({ error: 'Missing path' });
     }
 
-    const bucket = await getR2BucketName();
+    const { client, bucket } = await getR2Context(req);
 
     const command = new DeleteObjectCommand({
       Bucket: bucket,
       Key: filePath,
     });
 
-    await r2Client.send(command);
+    await client.send(command);
     return res.json({ success: true });
   } catch (err: any) {
     console.error('R2 Delete Error:', err);
     return res.status(500).json({ 
-      success: false,
+      success: false, 
       error: `Failed to delete R2 file: ${err?.message || 'Unknown error'}` 
     });
   }
@@ -566,19 +699,18 @@ app.get('/api/storage/raw/*', async (req, res) => {
     const filePath = (req.params as any)[0];
     if (!filePath) return res.status(400).send('Missing path');
 
-    // If PUBLIC_URL is configured, redirect for CDN speed
-    if (PUBLIC_URL) {
-      return res.redirect(`${PUBLIC_URL}/${filePath}`);
+    const { client, bucket, publicUrl } = await getR2Context(req);
+
+    if (publicUrl) {
+      return res.redirect(`${publicUrl}/${filePath}`);
     }
 
-    // Otherwise, stream file directly from R2 S3 storage!
-    const bucket = await getR2BucketName();
     const command = new GetObjectCommand({
       Bucket: bucket,
       Key: filePath,
     });
 
-    const s3Item = await r2Client.send(command);
+    const s3Item = await client.send(command);
 
     if (s3Item.ContentType) {
       res.setHeader('Content-Type', s3Item.ContentType);
@@ -597,7 +729,7 @@ app.get('/api/storage/raw/*', async (req, res) => {
   } catch (err: any) {
     console.error('Error fetching file from R2:', err);
     return res.status(404).json({ 
-      success: false,
+      success: false, 
       error: `File not found in storage: ${err?.message || 'Unknown error'}` 
     });
   }

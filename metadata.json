@@ -1,6 +1,6 @@
 {
   "name": "kolot",
-  "description": "kolot music - פלטפורמת מוזיקה מתקדמת להאזנה, יצירה והפצת שירים ואלבומים חופשיים.",
+  "description": "Kolot R2 Music - פלטפורמת מוזיקה מתקדמת להאזנה, יצירה והפצת שירים ואלבומים עם אחסון ענן Cloudflare R2.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
