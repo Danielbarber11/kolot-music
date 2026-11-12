@@ -586,7 +586,15 @@ app.get('/api/storage/status', async (req, res) => {
   }
 });
 
-// 1. Upload File (Audio/Image/JSON)
+// Local Server Storage Directory Fallback
+const LOCAL_STORAGE_DIR = path.join(__dirname, 'public', 'uploads');
+try {
+  fs.mkdirSync(LOCAL_STORAGE_DIR, { recursive: true });
+} catch {}
+
+app.use('/uploads', express.static(LOCAL_STORAGE_DIR));
+
+// 1. Upload File (Audio/Image/JSON) - Dual Engine (R2 + Local Disk Fallback)
 app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), async (req: any, res) => {
   try {
     const { path: filePath } = req.body;
@@ -601,73 +609,144 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
       return res.status(400).json({ error: 'No path provided' });
     }
 
-    const { client, bucket, publicUrl } = await getR2Context(req);
-
-    let body: Buffer | string = '';
+    let body: Buffer = Buffer.from([]);
     let contentType = 'application/octet-stream';
 
     if (file) {
       body = file.buffer;
       contentType = file.mimetype;
     } else if (req.body.content) {
-      body = req.body.content;
+      body = Buffer.from(req.body.content, 'utf-8');
       contentType = req.body.contentType || 'application/json';
     }
 
-    const command = new PutObjectCommand({
-      Bucket: bucket,
-      Key: filePath,
-      Body: body,
-      ContentType: contentType,
-    });
+    // Always persist to local disk directory first as a guaranteed fallback
+    const targetDiskPath = path.join(LOCAL_STORAGE_DIR, filePath);
+    try {
+      fs.mkdirSync(path.dirname(targetDiskPath), { recursive: true });
+      fs.writeFileSync(targetDiskPath, body);
+    } catch (diskErr: any) {
+      console.warn('[Storage] Local disk write warning:', diskErr?.message);
+    }
 
-    await client.send(command);
+    // Attempt Cloudflare R2 Upload
+    let r2Success = false;
+    let r2Url = '';
+    let bucketName = '';
 
-    const url = publicUrl ? `${publicUrl}/${filePath}` : `/api/storage/raw/${filePath}`;
+    try {
+      const { client, bucket, publicUrl } = await getR2Context(req);
+      bucketName = bucket;
+      const command = new PutObjectCommand({
+        Bucket: bucket,
+        Key: filePath,
+        Body: body,
+        ContentType: contentType,
+      });
+
+      await client.send(command);
+      r2Success = true;
+      r2Url = publicUrl ? `${publicUrl}/${filePath}` : `/api/storage/raw/${filePath}`;
+    } catch (r2Err: any) {
+      console.warn('[R2 Storage] Primary R2 upload notice (using server-disk fallback):', r2Err?.message);
+    }
+
+    const finalUrl = r2Success && r2Url ? r2Url : `/uploads/${filePath}`;
 
     return res.json({
       success: true,
-      url,
+      url: finalUrl,
       path: filePath,
-      bucket,
+      bucket: bucketName || 'kolot-storage',
+      mode: r2Success ? 'r2' : 'server-disk',
     });
   } catch (err: any) {
-    console.error('R2 Upload Error:', err);
+    console.error('Storage Upload Route Error:', err);
     return res.status(500).json({ 
       success: false, 
-      error: `שגיאה בהעלאה ל-Cloudflare R2: ${err?.message || 'נא לבדוק את הגדרות האחסון'}`,
+      error: `שגיאה בהעלאת הקובץ: ${err?.message || 'אנא נסה שוב'}`,
       details: err?.stack || String(err)
     });
   }
 });
 
-// 2. List Files (for index management)
+// 2. List Files (R2 + Local disk merge)
 app.get('/api/storage/list', async (req, res) => {
   try {
-    const { prefix } = req.query;
-    const { client, bucket, publicUrl } = await getR2Context(req);
+    const prefix = String(req.query.prefix || '');
+    const fileMap = new Map<string, { key: string; size: number; lastModified?: Date; url: string }>();
 
-    const command = new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: prefix as string,
-    });
+    // 1. Try listing from R2
+    try {
+      const { client, bucket, publicUrl } = await getR2Context(req);
+      const command = new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+      });
+      const data = await client.send(command);
+      if (data.Contents) {
+        data.Contents.forEach((item) => {
+          if (item.Key) {
+            fileMap.set(item.Key, {
+              key: item.Key,
+              size: item.Size || 0,
+              lastModified: item.LastModified,
+              url: publicUrl ? `${publicUrl}/${item.Key}` : `/api/storage/raw/${item.Key}`,
+            });
+          }
+        });
+      }
+    } catch (r2Err: any) {
+      console.warn('[R2 Storage] R2 List notice (falling back to server disk list):', r2Err?.message);
+    }
 
-    const data = await client.send(command);
+    // 2. Supplement from local disk
+    try {
+      const targetDir = prefix ? path.join(LOCAL_STORAGE_DIR, prefix) : LOCAL_STORAGE_DIR;
+      if (fs.existsSync(targetDir)) {
+        const stats = fs.statSync(targetDir);
+        if (stats.isDirectory()) {
+          const diskFiles = fs.readdirSync(targetDir);
+          diskFiles.forEach((f) => {
+            const relativeKey = prefix ? path.join(prefix, f).replace(/\\/g, '/') : f;
+            if (!fileMap.has(relativeKey)) {
+              const fullFp = path.join(LOCAL_STORAGE_DIR, relativeKey);
+              const fileStats = fs.statSync(fullFp);
+              if (fileStats.isFile()) {
+                fileMap.set(relativeKey, {
+                  key: relativeKey,
+                  size: fileStats.size,
+                  lastModified: fileStats.mtime,
+                  url: `/uploads/${relativeKey}`,
+                });
+              }
+            }
+          });
+        } else if (stats.isFile()) {
+          const key = prefix.replace(/\\/g, '/');
+          if (!fileMap.has(key)) {
+            fileMap.set(key, {
+              key,
+              size: stats.size,
+              lastModified: stats.mtime,
+              url: `/uploads/${key}`,
+            });
+          }
+        }
+      }
+    } catch (diskErr: any) {
+      console.warn('[Storage] Disk list warning:', diskErr?.message);
+    }
+
     return res.json({
       success: true,
-      bucket,
-      files: data.Contents?.map(item => ({
-        key: item.Key,
-        size: item.Size,
-        lastModified: item.LastModified,
-        url: publicUrl ? `${publicUrl}/${item.Key}` : `/api/storage/raw/${item.Key}`,
-      })) || [],
+      files: Array.from(fileMap.values()),
     });
   } catch (err: any) {
-    console.error('R2 List Error:', err);
+    console.error('Storage List Error:', err);
     return res.status(500).json({ 
       success: false, 
-      error: `Failed to list R2 files: ${err?.message || 'Unknown error'}` 
+      error: `Failed to list files: ${err?.message || 'Unknown error'}` 
     });
   }
 });
@@ -675,69 +754,73 @@ app.get('/api/storage/list', async (req, res) => {
 // 3. Delete File
 app.delete('/api/storage/delete', async (req, res) => {
   try {
-    const { path: filePath } = req.query;
-    if (!filePath || typeof filePath !== 'string') {
+    const filePath = String(req.query.path || '');
+    if (!filePath) {
       return res.status(400).json({ error: 'Missing path' });
     }
 
-    const { client, bucket } = await getR2Context(req);
+    // Delete from R2 if configured
+    try {
+      const { client, bucket } = await getR2Context(req);
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: filePath }));
+    } catch {}
 
-    const command = new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: filePath,
-    });
+    // Delete from disk
+    try {
+      const targetDiskPath = path.join(LOCAL_STORAGE_DIR, filePath);
+      if (fs.existsSync(targetDiskPath)) {
+        fs.unlinkSync(targetDiskPath);
+      }
+    } catch {}
 
-    await client.send(command);
     return res.json({ success: true });
   } catch (err: any) {
-    console.error('R2 Delete Error:', err);
+    console.error('Storage Delete Error:', err);
     return res.status(500).json({ 
       success: false, 
-      error: `Failed to delete R2 file: ${err?.message || 'Unknown error'}` 
+      error: `Failed to delete file: ${err?.message || 'Unknown error'}` 
     });
   }
 });
 
-// 4. Raw Proxy / Streamer (Works with or without public URL)
+// 4. Raw Streamer Proxy (R2 + Disk Fallback)
 app.get('/api/storage/raw/*', async (req, res) => {
+  const filePath = (req.params as any)[0];
+  if (!filePath) return res.status(400).send('Missing path');
+
+  // 1. Try R2 fetch
   try {
-    const filePath = (req.params as any)[0];
-    if (!filePath) return res.status(400).send('Missing path');
-
     const { client, bucket, publicUrl } = await getR2Context(req);
-
     if (publicUrl) {
       return res.redirect(`${publicUrl}/${filePath}`);
     }
 
-    const command = new GetObjectCommand({
-      Bucket: bucket,
-      Key: filePath,
-    });
-
+    const command = new GetObjectCommand({ Bucket: bucket, Key: filePath });
     const s3Item = await client.send(command);
 
-    if (s3Item.ContentType) {
-      res.setHeader('Content-Type', s3Item.ContentType);
-    }
-    if (s3Item.ContentLength) {
-      res.setHeader('Content-Length', s3Item.ContentLength);
-    }
+    if (s3Item.ContentType) res.setHeader('Content-Type', s3Item.ContentType);
+    if (s3Item.ContentLength) res.setHeader('Content-Length', s3Item.ContentLength);
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
     if (s3Item.Body) {
       // @ts-ignore
       return s3Item.Body.pipe(res);
     }
-
-    return res.status(404).send('File not found in storage');
-  } catch (err: any) {
-    console.error('Error fetching file from R2:', err);
-    return res.status(404).json({ 
-      success: false, 
-      error: `File not found in storage: ${err?.message || 'Unknown error'}` 
-    });
+  } catch (r2Err: any) {
+    console.warn('[R2 Proxy] R2 getObject notice, checking local disk:', r2Err?.message);
   }
+
+  // 2. Fallback to local disk file
+  try {
+    const localDiskPath = path.join(LOCAL_STORAGE_DIR, filePath);
+    if (fs.existsSync(localDiskPath)) {
+      return res.sendFile(localDiskPath);
+    }
+  } catch (diskErr: any) {
+    console.warn('[R2 Proxy] Local disk fetch notice:', diskErr?.message);
+  }
+
+  return res.status(404).send('File not found in storage');
 });
 
 // 4. Gemini Fast Recipe Translation Endpoint
