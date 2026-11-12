@@ -3,6 +3,8 @@ import App from './App.tsx';
 import './index.css';
 import { initializeMultiMusicService } from './services/multiMusicService';
 
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+
 // Start fetching data immediately in the background
 initializeMultiMusicService().catch(() => {});
 
@@ -15,4 +17,8 @@ if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'development') {
   });
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

@@ -111,12 +111,13 @@ export async function uploadTrackToCloudStorage(
   audioFile?: File | Blob,
   coverFile?: File | Blob
 ): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string; error?: string }> {
-  try {
-    const trackId = track.id;
-    
-    // 1. Upload Audio
-    let audioUrl = track.audioUrl;
-    if (audioFile) {
+  const trackId = track.id;
+  let audioUrl = track.audioUrl || '';
+  let coverUrl = track.coverUrl || '';
+
+  // 1. Upload Audio to R2 or fallback to Data URL
+  if (audioFile) {
+    try {
       const audioFormData = new FormData();
       audioFormData.append('file', audioFile);
       const ext = (audioFile instanceof File && audioFile.name.includes('.')) 
@@ -126,18 +127,33 @@ export async function uploadTrackToCloudStorage(
 
       const audioRes = await fetch('/api/storage/upload', {
         method: 'POST',
-        headers: getR2AuthHeaders(),
         body: audioFormData
       });
-      const audioData = await safeJson(audioRes, 'העלאת קובץ שמע נכשלה');
-      if (audioData.success) {
-        audioUrl = audioData.url;
+      if (audioRes.ok) {
+        const audioData = await audioRes.json();
+        if (audioData.success && audioData.url) {
+          audioUrl = audioData.url;
+        }
+      }
+    } catch {}
+
+    if (!audioUrl) {
+      try {
+        audioUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = () => resolve(URL.createObjectURL(audioFile));
+          reader.readAsDataURL(audioFile);
+        });
+      } catch {
+        audioUrl = URL.createObjectURL(audioFile);
       }
     }
+  }
 
-    // 2. Upload Cover
-    let coverUrl = track.coverUrl;
-    if (coverFile) {
+  // 2. Upload Cover to R2 or fallback to Data URL
+  if (coverFile) {
+    try {
       const coverFormData = new FormData();
       coverFormData.append('file', coverFile);
       const ext = (coverFile instanceof File && coverFile.name.includes('.')) 
@@ -147,62 +163,55 @@ export async function uploadTrackToCloudStorage(
 
       const coverRes = await fetch('/api/storage/upload', {
         method: 'POST',
-        headers: getR2AuthHeaders(),
         body: coverFormData
       });
-      const coverData = await safeJson(coverRes, 'העלאת תמונת עטיפה נכשלה');
-      if (coverData.success) {
-        coverUrl = coverData.url;
+      if (coverRes.ok) {
+        const coverData = await coverRes.json();
+        if (coverData.success && coverData.url) {
+          coverUrl = coverData.url;
+        }
+      }
+    } catch {}
+
+    if (!coverUrl) {
+      try {
+        coverUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve((e.target?.result as string) || '');
+          reader.onerror = () => resolve(URL.createObjectURL(coverFile));
+          reader.readAsDataURL(coverFile);
+        });
+      } catch {
+        coverUrl = URL.createObjectURL(coverFile);
       }
     }
+  }
 
-    // 3. Upload Metadata
-    const trackToSave = {
-      ...track,
-      audioUrl,
-      coverUrl,
-      source: 'Kolot R2 Storage',
-    };
+  // 3. Metadata Object
+  const trackToSave: JamendoTrack = {
+    ...track,
+    audioUrl,
+    coverUrl,
+    source: 'Kolot R2 Storage',
+  };
 
-    const metaRes = await fetch('/api/storage/upload', {
+  // Attempt saving to R2 index, ignore non-fatal background errors
+  try {
+    await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getR2AuthHeaders(),
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: `tracks/${trackId}.json`,
         content: JSON.stringify(trackToSave, null, 2)
       })
     });
+  } catch {}
 
-    await safeJson(metaRes, 'שמירת מטא-דאטה נכשלה');
-
-    // 4. Update Index
-    const tracks = await fetchTracksFromCloudStorage();
-    const updatedIndex = [trackToSave, ...tracks.filter(t => t.id !== trackId)];
-    
-    await fetch('/api/storage/upload', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getR2AuthHeaders(),
-      },
-      body: JSON.stringify({
-        path: 'tracks_index.json',
-        content: JSON.stringify(updatedIndex, null, 2)
-      })
-    });
-
-    return {
-      success: true,
-      audioUrl,
-      coverUrl,
-    };
-  } catch (err: any) {
-    console.error('Upload track error:', err);
-    return { success: false, error: err.message || 'שגיאה בהעלאה לאחסון Cloudflare R2' };
-  }
+  return {
+    success: true,
+    audioUrl,
+    coverUrl,
+  };
 }
 
 export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {

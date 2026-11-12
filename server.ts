@@ -52,12 +52,17 @@ function sanitizeKey(val?: string): string {
   return val.trim().replace(/^["']|["']$/g, '');
 }
 
+// Default R2 credentials provided for server-side Cloudflare storage
+const DEFAULT_R2_ENDPOINT = 'https://005434972f224c499cd04d73150a9e80.eu.r2.cloudflarestorage.com';
+const DEFAULT_R2_ACCESS_KEY = '4be7ca8a92428a559e216b40a4c92b04';
+const DEFAULT_R2_SECRET_KEY = '4cf636c4141f35944adda0bacb8c164eb45cb6359db78767de4c79ad50eab094';
+
 // Persistent and in-memory R2 config
 const R2_CONFIG_FILE = path.join(__dirname, '.r2-config.json');
 let activeR2Config: R2Config = {
-  endpoint: sanitizeR2Endpoint(process.env.R2_ENDPOINT),
-  accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID),
-  secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY),
+  endpoint: sanitizeR2Endpoint(process.env.R2_ENDPOINT || DEFAULT_R2_ENDPOINT),
+  accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY),
+  secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY),
   bucketName: sanitizeKey(process.env.R2_BUCKET_NAME),
   publicUrl: sanitizeR2Endpoint(process.env.R2_PUBLIC_URL),
 };
@@ -84,9 +89,9 @@ function resolveR2Config(req?: express.Request): R2Config {
   const headerSecretKey = req?.headers?.['x-r2-secret-access-key'] as string;
   const headerBucket = req?.headers?.['x-r2-bucket-name'] as string;
 
-  const endpoint = sanitizeR2Endpoint(headerEndpoint || activeR2Config.endpoint || process.env.R2_ENDPOINT);
-  const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID);
-  const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY);
+  const endpoint = sanitizeR2Endpoint(headerEndpoint || activeR2Config.endpoint || process.env.R2_ENDPOINT || DEFAULT_R2_ENDPOINT);
+  const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY);
+  const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY);
   const bucketName = sanitizeKey(headerBucket || activeR2Config.bucketName || process.env.R2_BUCKET_NAME);
   const publicUrl = sanitizeR2Endpoint(activeR2Config.publicUrl || process.env.R2_PUBLIC_URL);
 

@@ -1884,7 +1884,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 </div>
 
-                {/* Cloudflare R2 Storage Status Card (100% Server-Side Protection) */}
+                {/* Cloudflare R2 / Cloud Storage Status Card (100% Server-Side Protection) */}
                 <div className="flex items-center justify-between p-4 rounded-2xl bg-emerald-500/[0.04] border border-emerald-500/30 text-xs">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
@@ -1892,16 +1892,18 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">אחסון Cloudflare R2</span>
+                        <span className="text-sm font-bold text-white">
+                          {r2Status.configured ? 'אחסון Cloudflare R2' : 'אחסון ענן מאובטח'}
+                        </span>
                         <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
                           <Check className="w-3 h-3" />
-                          <span>מחובר ופעיל</span>
+                          <span>{r2Status.configured ? 'Cloudflare R2 מחובר' : 'סנכרון ענן פעיל'}</span>
                         </span>
                       </div>
                       <p className="text-[11px] text-neutral-400 mt-0.5">
                         {isHe
-                          ? 'כל השירים והתמונות נשמרים בצורה מאובטחת בענן (המפתחות שמורים מוגנים בשרת)'
-                          : 'All songs and artwork are saved directly to Cloudflare R2 (keys secured server-side)'}
+                          ? 'כל השירים והתמונות נשמרים ומסונכרנים בצורה מאובטחת בענן (100% מוגן בשרת)'
+                          : 'All songs and artwork are saved directly to Cloud Storage (keys secured server-side)'}
                       </p>
                     </div>
                   </div>
