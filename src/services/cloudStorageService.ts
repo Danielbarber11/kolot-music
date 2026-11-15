@@ -82,13 +82,6 @@ export async function checkR2StorageStatus(): Promise<{ configured: boolean; buc
 }
 
 export function getCloudStorageConfig(): CloudStorageConfig {
-  try {
-    const saved = localStorage.getItem('kolot_cloud_storage_config');
-    if (saved) {
-      return JSON.parse(saved);
-    }
-  } catch {}
-
   return {
     capacityMb: 10000, // 10GB for Cloudflare R2
     usedBytes: 0,
@@ -97,14 +90,12 @@ export function getCloudStorageConfig(): CloudStorageConfig {
   };
 }
 
-export function saveCloudStorageConfig(config: CloudStorageConfig): void {
-  try {
-    localStorage.setItem('kolot_cloud_storage_config', JSON.stringify(config));
-  } catch {}
+export function saveCloudStorageConfig(_config: CloudStorageConfig): void {
+  // Storage configuration is managed 100% server-side in R2 (no localStorage)
 }
 
 /**
- * Upload & Commit track audio file, cover image, and metadata JSON directly into Cloud Storage
+ * Upload & Commit track audio file, cover image, and metadata JSON directly into Cloudflare R2
  */
 export async function uploadTrackToCloudStorage(
   track: JamendoTrack,
@@ -115,76 +106,90 @@ export async function uploadTrackToCloudStorage(
   let audioUrl = track.audioUrl || '';
   let coverUrl = track.coverUrl || '';
 
-  // 1. Upload Audio to R2 or fallback to persistent Data URL
+  // 1. Upload Audio to R2
   if (audioFile) {
     try {
       const audioFormData = new FormData();
       audioFormData.append('file', audioFile);
-      const ext = (audioFile instanceof File && audioFile.name.includes('.')) 
-        ? audioFile.name.split('.').pop() 
-        : 'mp3';
+      const ext =
+        audioFile instanceof File && audioFile.name.includes('.')
+          ? audioFile.name.split('.').pop()?.toLowerCase() || 'mp3'
+          : 'mp3';
       audioFormData.append('path', `audio/${trackId}.${ext}`);
 
       const audioRes = await fetch('/api/storage/upload', {
         method: 'POST',
-        body: audioFormData
+        body: audioFormData,
       });
-      if (audioRes.ok) {
-        const audioData = await audioRes.json();
-        if (audioData.success && audioData.url) {
-          audioUrl = audioData.url;
-        }
+      const audioData = await audioRes.json();
+      if (audioRes.ok && audioData.success && audioData.url) {
+        audioUrl = audioData.url;
+      } else {
+        return {
+          success: false,
+          error:
+            audioData.error ||
+            'שגיאה בהעלאת קובץ השמע ל-Cloudflare R2. אנא בדוק את חיבור האחסון בשרת.',
+        };
       }
-    } catch (err) {
-      console.warn('Audio R2 upload network notice:', err);
-    }
-
-    if (!audioUrl || audioUrl.startsWith('blob:')) {
-      try {
-        audioUrl = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve((e.target?.result as string) || '');
-          reader.onerror = () => resolve('');
-          reader.readAsDataURL(audioFile);
-        });
-      } catch {}
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `תקלת רשת בחיבור ל-Cloudflare R2: ${err?.message || 'אנא נסה שוב'}`,
+      };
     }
   }
 
-  // 2. Upload Cover to R2 or fallback to persistent Data URL
-  if (coverFile) {
+  // Reject unresolved blob URLs
+  if (!audioUrl || audioUrl.startsWith('blob:')) {
+    return {
+      success: false,
+      error: 'קובץ השמע לא הועלה לענן (Cloudflare R2). אנא בחר קובץ שמע תקין ונסה שוב.',
+    };
+  }
+
+  // 2. Upload Cover to R2 (either compressed DataURL or raw Cover File)
+  let coverBlobToUpload: Blob | File | undefined = coverFile;
+  if (!coverBlobToUpload && coverUrl.startsWith('data:image/')) {
+    coverBlobToUpload = (await urlToBlob(coverUrl)) || undefined;
+  }
+
+  if (coverBlobToUpload) {
     try {
       const coverFormData = new FormData();
-      coverFormData.append('file', coverFile);
-      const ext = (coverFile instanceof File && coverFile.name.includes('.')) 
-        ? coverFile.name.split('.').pop() 
-        : 'jpg';
+      coverFormData.append('file', coverBlobToUpload);
+      const ext =
+        coverBlobToUpload instanceof File && coverBlobToUpload.name.includes('.')
+          ? coverBlobToUpload.name.split('.').pop()?.toLowerCase() || 'jpg'
+          : 'jpg';
       coverFormData.append('path', `covers/${trackId}.${ext}`);
 
       const coverRes = await fetch('/api/storage/upload', {
         method: 'POST',
-        body: coverFormData
+        body: coverFormData,
       });
-      if (coverRes.ok) {
-        const coverData = await coverRes.json();
-        if (coverData.success && coverData.url) {
-          coverUrl = coverData.url;
-        }
+      const coverData = await coverRes.json();
+      if (coverRes.ok && coverData.success && coverData.url) {
+        coverUrl = coverData.url;
+      } else {
+        return {
+          success: false,
+          error: coverData.error || 'שגיאה בהעלאת תמונת העטיפה ל-Cloudflare R2.',
+        };
       }
-    } catch (err) {
-      console.warn('Cover R2 upload network notice:', err);
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `שגיאה בהעלאת תמונת העטיפה ל-R2: ${err?.message || 'אנא נסה שוב'}`,
+      };
     }
+  }
 
-    if (!coverUrl || coverUrl.startsWith('blob:')) {
-      try {
-        coverUrl = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve((e.target?.result as string) || '');
-          reader.onerror = () => resolve('');
-          reader.readAsDataURL(coverFile);
-        });
-      } catch {}
-    }
+  if (coverUrl.startsWith('blob:')) {
+    return {
+      success: false,
+      error: 'תמונת העטיפה לא הועלתה לענן. אנא בחר תמונה תקינה ונסה שוב.',
+    };
   }
 
   // 3. Metadata Object
@@ -195,21 +200,31 @@ export async function uploadTrackToCloudStorage(
     source: 'Kolot R2 Storage',
   };
 
-  // Save tracks/${trackId}.json
+  // Save tracks/${trackId}.json strictly in R2
   try {
-    await fetch('/api/storage/upload', {
+    const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: `tracks/${trackId}.json`,
-        content: JSON.stringify(trackToSave, null, 2)
-      })
+        content: JSON.stringify(trackToSave, null, 2),
+      }),
     });
-  } catch (err) {
-    console.warn('Metadata JSON R2 upload notice:', err);
+    const metaData = await metaRes.json();
+    if (!metaRes.ok || !metaData.success) {
+      return {
+        success: false,
+        error: metaData.error || 'שגיאה בשמירת נתוני השיר ב-Cloudflare R2.',
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `שגיאה בשמירת נתוני השיר ב-R2: ${err?.message || 'אנא נסה שוב'}`,
+    };
   }
 
-  // Synchronize tracks_index.json
+  // Synchronize tracks_index.json in R2
   try {
     const existing = await fetchTracksFromCloudStorage();
     const map = new Map<string, JamendoTrack>();
@@ -222,8 +237,8 @@ export async function uploadTrackToCloudStorage(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: 'tracks_index.json',
-        content: JSON.stringify(updatedIndex, null, 2)
-      })
+        content: JSON.stringify(updatedIndex, null, 2),
+      }),
     });
   } catch (err) {
     console.warn('tracks_index.json update notice:', err);
@@ -236,13 +251,21 @@ export async function uploadTrackToCloudStorage(
   };
 }
 
+function isCloudPlayableTrack(t: any): t is JamendoTrack {
+  if (!t || !t.id || !t.name || !t.audioUrl) return false;
+  if (typeof t.audioUrl !== 'string') return false;
+  if (t.audioUrl.startsWith('blob:') || t.audioUrl.startsWith('/uploads/')) return false;
+  return true;
+}
+
 export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
   const trackMap = new Map<string, JamendoTrack>();
 
-  // 1. Fetch tracks directory
+  // 1. Fetch tracks directory strictly from Cloudflare R2 (no cache)
   try {
     const res = await fetch('/api/storage/list?prefix=tracks/', {
       headers: getR2AuthHeaders(),
+      cache: 'no-store',
     });
     if (res.ok) {
       const data = await res.json();
@@ -251,7 +274,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
         const loaded = await Promise.all(
           jsonFiles.map(async (f: any) => {
             try {
-              const itemRes = await fetch(f.url);
+              const itemRes = await fetch(f.url, { cache: 'no-store' });
               if (itemRes.ok) {
                 return await itemRes.json();
               }
@@ -259,8 +282,8 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
             return null;
           })
         );
-        loaded.filter(Boolean).forEach((t: JamendoTrack) => {
-          if (t && t.id) trackMap.set(t.id, t);
+        loaded.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
+          trackMap.set(t.id, t);
         });
       }
     }
@@ -268,21 +291,22 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
     console.warn('Failed to list tracks/ from R2:', err);
   }
 
-  // 2. Fetch tracks_index.json
+  // 2. Fetch tracks_index.json from R2 as supplementary catalog (only if tracks/ didn't already include it)
   try {
     const res = await fetch('/api/storage/list?prefix=tracks_index.json', {
       headers: getR2AuthHeaders(),
+      cache: 'no-store',
     });
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.files?.length > 0) {
         const indexUrl = data.files[0].url;
-        const indexRes = await fetch(indexUrl);
+        const indexRes = await fetch(indexUrl, { cache: 'no-store' });
         if (indexRes.ok) {
           const indexTracks = await indexRes.json();
           if (Array.isArray(indexTracks)) {
-            indexTracks.forEach((t: JamendoTrack) => {
-              if (t && t.id && !trackMap.has(t.id)) {
+            indexTracks.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
+              if (!trackMap.has(t.id)) {
                 trackMap.set(t.id, t);
               }
             });
@@ -299,22 +323,45 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
 
 export async function deleteTrackFromCloudStorage(trackId: string): Promise<boolean> {
   try {
-    await fetch(`/api/storage/delete?path=tracks/${trackId}.json`, {
+    // Delete track metadata JSON
+    await fetch(`/api/storage/delete?path=${encodeURIComponent(`tracks/${trackId}.json`)}`, {
       method: 'DELETE',
       headers: getR2AuthHeaders(),
     });
-    
+
+    // Clean up associated audio & cover objects in R2
+    try {
+      const [audioListRes, coverListRes] = await Promise.all([
+        fetch(`/api/storage/list?prefix=${encodeURIComponent(`audio/${trackId}`)}`, { cache: 'no-store' }),
+        fetch(`/api/storage/list?prefix=${encodeURIComponent(`covers/${trackId}`)}`, { cache: 'no-store' }),
+      ]);
+      const deletions: Promise<any>[] = [];
+      if (audioListRes.ok) {
+        const aData = await audioListRes.json();
+        (aData.files || []).forEach((f: any) => {
+          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }));
+        });
+      }
+      if (coverListRes.ok) {
+        const cData = await coverListRes.json();
+        (cData.files || []).forEach((f: any) => {
+          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }));
+        });
+      }
+      await Promise.allSettled(deletions);
+    } catch {}
+
     // Update index
     const tracks = await fetchTracksFromCloudStorage();
-    const updatedIndex = tracks.filter(t => t.id !== trackId);
-    
+    const updatedIndex = tracks.filter((t) => t.id !== trackId);
+
     await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: 'tracks_index.json',
-        content: JSON.stringify(updatedIndex, null, 2)
-      })
+        content: JSON.stringify(updatedIndex, null, 2),
+      }),
     });
 
     return true;
@@ -353,14 +400,14 @@ export async function uploadArtistProfileToCloud(artist: any, avatarFile?: File 
 
 export async function fetchArtistProfilesFromCloud(): Promise<any[]> {
   try {
-    const res = await fetch('/api/storage/list?prefix=profiles/');
+    const res = await fetch('/api/storage/list?prefix=profiles/', { cache: 'no-store' });
     const data = await safeJson(res, 'טעינת פרופילי אמנים נכשלה');
     if (data.success && data.files) {
       const profileFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
       const profiles = await Promise.all(
         profileFiles.map(async (f: any) => {
           try {
-            const profileRes = await fetch(f.url);
+            const profileRes = await fetch(f.url, { cache: 'no-store' });
             if (profileRes.ok) return await safeJson(profileRes, 'עיבוד פרופיל אמן נכשל');
           } catch {}
           return null;
@@ -477,7 +524,7 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
       if (data.success) coverUrl = data.url;
     }
     const albumToSave = { ...album, coverUrl };
-    await fetch('/api/storage/upload', {
+    const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -488,14 +535,15 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
         content: JSON.stringify(albumToSave, null, 2)
       })
     });
-    return { success: true, coverUrl };
+    const metaData = await safeJson(metaRes, 'שמירת אלבום בענן נכשלה');
+    return { success: !!metaData.success, coverUrl };
   } catch (err: any) {
     return { success: false, error: err.message || 'שגיאה בשמירת האלבום' };
   }
 }
 
 export async function deleteAlbumFromCloud(albumId: string) {
-  await fetch(`/api/storage/delete?path=albums/${albumId}.json`, {
+  await fetch(`/api/storage/delete?path=${encodeURIComponent(`albums/${albumId}.json`)}`, {
     method: 'DELETE',
     headers: getR2AuthHeaders(),
   });
@@ -506,6 +554,7 @@ export async function fetchAlbumsFromCloud(): Promise<Album[]> {
   try {
     const res = await fetch('/api/storage/list?prefix=albums/', {
       headers: getR2AuthHeaders(),
+      cache: 'no-store',
     });
     const data = await safeJson(res, 'טעינת רשימת אלבומים נכשלה');
     if (data.success && data.files) {
@@ -513,7 +562,7 @@ export async function fetchAlbumsFromCloud(): Promise<Album[]> {
       const albums = await Promise.all(
         albumFiles.map(async (f: any) => {
           try {
-            const albumRes = await fetch(f.url);
+            const albumRes = await fetch(f.url, { cache: 'no-store' });
             if (albumRes.ok) return await safeJson(albumRes, 'עיבוד נתוני אלבום נכשל');
           } catch {}
           return null;

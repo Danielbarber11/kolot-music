@@ -55,8 +55,9 @@ import {
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, getArtistStableTheme, globalTrackColorCache, extractImageColor } from '../services/colorService';
-import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
+import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
+import { getCachedAlbums, saveCachedAlbums, fetchAllRealSongs, getInstantSongPool, saveCachedCloudTracks } from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
 
 interface ArtistPortalModalProps {
@@ -252,33 +253,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       isAiGenerated: editIsAiGenerated,
     };
 
-    // Update cloud tracks cache immediately
-    try {
-      const cached = localStorage.getItem('kolot_cloud_tracks_cache');
-      let cloudList: JamendoTrack[] = cached ? JSON.parse(cached) : [];
-      const cIdx = cloudList.findIndex((t) => t.id === updatedTrack.id);
-      if (cIdx >= 0) {
-        cloudList[cIdx] = updatedTrack;
-      } else {
-        cloudList.unshift(updatedTrack);
-      }
-      localStorage.setItem('kolot_cloud_tracks_cache', JSON.stringify(cloudList));
-    } catch {}
-
-    // Update uploaded tracks cache immediately
-    try {
-      const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
-      let localList: JamendoTrack[] = savedLocal ? JSON.parse(savedLocal) : [];
-      const lIdx = localList.findIndex((t) => t.id === updatedTrack.id);
-      if (lIdx >= 0) {
-        localList[lIdx] = updatedTrack;
-      } else {
-        localList.unshift(updatedTrack);
-      }
-      localStorage.setItem('kolot_uploaded_tracks', JSON.stringify(localList));
-    } catch {}
-
-    await persistTrackToStorage(updatedTrack);
     try {
       await saveArtistTrackToFirebase(updatedTrack);
     } catch (err) {
@@ -332,13 +306,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [selectedTrackIdsForAlbum, setSelectedTrackIdsForAlbum] = useState<string[]>([]);
   const [myAlbums, setMyAlbums] = useState<Album[]>(() => {
-    let stored: Album[] = [];
-    try {
-      const saved = localStorage.getItem('kolot_user_albums');
-      if (saved) {
-        stored = JSON.parse(saved);
-      }
-    } catch {}
+    const stored: Album[] = getCachedAlbums();
 
     const albumMap = new Map<string, Album>();
     stored.forEach((a) => {
@@ -592,7 +560,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const handleDeleteAlbum = async (albumId: string) => {
     const updated = myAlbums.filter((a) => a.id !== albumId);
     setMyAlbums(updated);
-    localStorage.setItem('kolot_user_albums', JSON.stringify(updated));
+    saveCachedAlbums(updated);
     if (editingAlbum?.id === albumId) {
       handleCancelEditAlbum();
     }
@@ -646,7 +614,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         : [album, ...myAlbums];
 
       setMyAlbums(updatedAlbums);
-      localStorage.setItem('kolot_user_albums', JSON.stringify(updatedAlbums));
+      saveCachedAlbums(updatedAlbums);
       setEditingAlbum(null);
       setNewAlbumTitle('');
       setNewAlbumCover('');
@@ -765,8 +733,9 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
 
     const effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
 
+    const trackId = `artist_track_${Date.now()}`;
     const tempTrackForColor: JamendoTrack = {
-      id: 'temp',
+      id: trackId,
       name: songTitle,
       artistName: currentArtist.name,
       albumName: albumTitle || 'Single',
@@ -775,8 +744,18 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       coverUrl: coverArtUrl,
       genre: effectiveGenre,
     };
-    const computedColor = getTrackInstantColor(tempTrackForColor);
-    const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.65) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
+
+    // Extract accurate color from the cover BEFORE uploading metadata to R2
+    let computedColor = getTrackInstantColor(tempTrackForColor);
+    try {
+      if (coverArtUrl.trim()) {
+        const extractedBefore = await extractImageColor(coverArtUrl.trim());
+        if (extractedBefore) {
+          computedColor = extractedBefore;
+        }
+      }
+    } catch {}
+    const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.8) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
 
     const updatedArtist: ArtistProfile = {
       ...currentArtist,
@@ -789,7 +768,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || 'דניאל ברבר';
 
     const newTrack: JamendoTrack = {
-      id: `artist_track_${Date.now()}`,
+      id: trackId,
       name: songTitle.trim(),
       artistName: finalArtistName,
       featuredArtist: featuredArtistInput.trim() || undefined,
@@ -801,7 +780,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
       license: 'Kolot Music Cloud Storage (10GB)',
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      source: 'Kolot Cloud Storage',
+      source: 'Kolot R2 Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
       lyrics: lyricsInput.trim() || undefined,
       artistBio: currentArtist.bio,
@@ -815,19 +794,13 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       isAiGenerated: isAiGeneratedInput,
     };
 
-    // Pre-cache color for 0ms color calculation in player
-    globalTrackColorCache.set(newTrack.id, computedColor);
-    if (newTrack.coverUrl) {
-      globalTrackColorCache.set(newTrack.coverUrl, computedColor);
-    }
-
     const currentAudioFile = rawAudioFile;
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות בענן המאובטח...' : 'Saving directly to cloud storage...');
+      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות באחסון הענן Cloudflare R2...' : 'Uploading directly to Cloudflare R2...');
 
-      // 1. UPLOAD DIRECTLY TO CLOUD (R2 via server proxy)
+      // 1. UPLOAD DIRECTLY TO CLOUDFLARE R2 (audio + cover + tracks/*.json + tracks_index.json)
       const cloudRes = await uploadTrackToCloud(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
 
       if (!cloudRes.success) {
@@ -835,7 +808,7 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         setPublishErrorMessage(
           cloudRes.error ||
             (isHe
-              ? 'שגיאה בשמירת השיר באחסון Cloudflare R2. אנא ודא שהמפתח בשרת תקין.'
+              ? 'שגיאה בשמירת השיר באחסון Cloudflare R2. אנא ודא שהדלי והמפתחות בשרת תקינים.'
               : 'Failed to publish track to Cloudflare R2.')
         );
         return;
@@ -844,27 +817,25 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       if (cloudRes.audioUrl) {
         newTrack.audioUrl = cloudRes.audioUrl;
       }
-      if (cloudRes.coverUrl || newTrack.coverUrl) {
-        if (cloudRes.coverUrl) newTrack.coverUrl = cloudRes.coverUrl;
-        try {
-          const extracted = await extractImageColor(newTrack.coverUrl);
-          if (extracted) {
-            const { r, g, b } = extracted;
-            const darkR = Math.round(r * 0.18), darkG = Math.round(g * 0.18), darkB = Math.round(b * 0.18);
-            newTrack.bgColor = `radial-gradient(circle at 50% 35%, rgba(${r}, ${g}, ${b}, 0.8) 0%, rgba(${darkR}, ${darkG}, ${darkB}, 0.96) 55%, #030712 100%)`;
-            globalTrackColorCache.set(newTrack.id, extracted);
-            if (newTrack.coverUrl) globalTrackColorCache.set(newTrack.coverUrl, extracted);
-          }
-        } catch {}
+      if (cloudRes.coverUrl) {
+        newTrack.coverUrl = cloudRes.coverUrl;
+      }
+
+      // Pre-cache color under both track ID and final R2 cover URL
+      globalTrackColorCache.set(newTrack.id, computedColor);
+      if (newTrack.coverUrl) {
+        globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
       // 2. Save metadata to Firebase Firestore
-      saveArtistTrackToFirebase(newTrack).catch(() => {});
+      await saveArtistTrackToFirebase(newTrack).catch(() => {});
 
-      // 3. Broadcast track to UI
+      // 3. Update session pool and broadcast track to UI
+      saveCachedCloudTracks([newTrack, ...getInstantSongPool()]);
       onTrackPublished(newTrack);
+      fetchAllRealSongs().catch(() => {});
 
-      setPublishProgressStep(isHe ? 'השיר נשמר בהצלחה וזמין לכל המכשירים!' : 'Track successfully saved to cloud!');
+      setPublishProgressStep(isHe ? 'השיר נשמר ב-Cloudflare R2 וזמין בכל המכשירים!' : 'Track saved to Cloudflare R2!');
       setPublishSuccess(true);
 
       // Reset form

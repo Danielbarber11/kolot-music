@@ -62,8 +62,9 @@ import {
 } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
-import { persistTrackToStorage, removeTrackFromStorage } from '../services/localTrackStorage';
+import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { deleteTrackFromCloud, getStreamingMediaUrl } from '../services/cloudStorageService';
+import { saveCachedCloudTracks } from '../services/multiMusicService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 
 interface SongsViewProps {
@@ -330,30 +331,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
 
-  // Mount effect - Instant 0-lag load
+  // Mount effect - 100% Live Cloud Load (Cloudflare R2 + Firebase Firestore)
   useEffect(() => {
-    // 1. Instantly populate from local cache & storage, strictly with owners
-    const instant = getInstantSongPool().filter(isValidTrackWithOwner);
-    setAllTracks(instant);
-
-    // Load indexedDB tracks async as soon as possible
-    getInstantSongPoolAsync().then((tracks: JamendoTrack[]) => {
-      const valid = tracks.filter(isValidTrackWithOwner);
-      setAllTracks(valid);
-    });
-
-    // 2. Fetch remote updates in parallel asynchronously
     Promise.allSettled([
       getArtistAccountsFromFirebase(),
       fetchAllRealSongs(),
       fetchRealAlbums(),
     ]).then(([fbAccountsRes, allSongsRes, albumsRes]) => {
-      // Artist profiles come strictly from Firebase Firestore
       if (fbAccountsRes.status === 'fulfilled' && Array.isArray(fbAccountsRes.value)) {
         setAllArtists(fbAccountsRes.value.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
       }
 
-      // Always synchronize allTracks, clearing stale songs when repo is empty
       if (allSongsRes.status === 'fulfilled') {
         const validSongs = (allSongsRes.value || []).filter(isValidTrackWithOwner);
         setAllTracks(validSongs);
@@ -498,27 +486,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
     return [...allTracks].sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
   }, [allTracks, getTrackPopularity]);
 
-  // Row 2: Popular albums synthesized from storage and tracks
+  // Row 2: Popular albums synthesized purely from R2 cloud albums and cloud tracks
   const popularAlbums = React.useMemo(() => {
-    let storedAlbums: Album[] = [];
-    try {
-      const raw = localStorage.getItem('kolot_user_albums');
-      if (raw) {
-        storedAlbums = JSON.parse(raw);
-      }
-    } catch {
-      // ignore
-    }
-
     const albumMap = new Map<string, Album>();
 
     remoteAlbums.forEach((a) => {
-      if (a.title && a.id) {
-        albumMap.set(a.title.toLowerCase().trim(), a);
-      }
-    });
-
-    storedAlbums.forEach((a) => {
       if (a.title && a.id) {
         albumMap.set(a.title.toLowerCase().trim(), a);
       }
@@ -1807,8 +1779,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
         }}
         lang={lang}
         onTrackPublished={async (newTrack) => {
-          setAllTracks((prev) => deduplicateTracks([newTrack, ...prev]));
-          await persistTrackToStorage(newTrack);
+          setAllTracks((prev) => {
+            const next = deduplicateTracks([newTrack, ...prev]);
+            saveCachedCloudTracks(next);
+            return next;
+          });
         }}
         allTracks={allTracks}
         onPlayTrack={(track) => openSongPlayer(track)}

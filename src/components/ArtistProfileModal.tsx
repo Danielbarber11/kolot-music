@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
-import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner } from '../services/multiMusicService';
+import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums } from '../services/multiMusicService';
 import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
@@ -93,12 +93,11 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   // Profile modal opens even if track count is currently 0 (reliable loading)
   if (!isOpen || !effectiveArtistName) return null;
 
-  // Retrieve albums for this artist, filtering out deleted tracks
+  // Retrieve albums for this artist from cloud session albums
   const artistAlbums: Album[] = (() => {
     try {
-      const saved = localStorage.getItem('kolot_user_albums');
-      if (!saved) return [];
-      const parsed: Album[] = JSON.parse(saved);
+      const parsed: Album[] = getCachedAlbums();
+      if (!parsed.length) return [];
       const validTrackIds = new Set(artistTracks.map((t) => t.id));
       return parsed
         .filter((a) => {

@@ -443,7 +443,16 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
     const tracks: JamendoTrack[] = [];
     snapshot.forEach((docSnap) => {
       const data = docSnap.data();
-      if (data && data.audioUrl && data.name && data.artistName) {
+      if (
+        data &&
+        !data.isDeleted &&
+        data.audioUrl &&
+        typeof data.audioUrl === 'string' &&
+        !data.audioUrl.startsWith('blob:') &&
+        !data.audioUrl.startsWith('/uploads/') &&
+        data.name &&
+        data.artistName
+      ) {
         tracks.push({
           id: data.id || docSnap.id,
           name: data.name,
@@ -455,8 +464,8 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           audioUrl: data.audioUrl,
           coverUrl: data.coverUrl || '',
           genre: data.genre || 'Pop',
-          license: 'Kolot Music Cloud Storage (1GB)',
-          source: 'Kolot Music Open Storage',
+          license: 'Kolot Music Cloud Storage (10GB)',
+          source: 'Kolot R2 Storage',
           legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
           lyrics: data.lyrics || undefined,
           publishedDate: data.createdAt || '2024',
@@ -543,14 +552,21 @@ export async function dismissTrackReportInFirebase(reportId: string): Promise<bo
 export async function deleteArtistTrackFromFirebase(trackId: string): Promise<boolean> {
   try {
     const trackDocRef = doc(db, 'artistTracks', trackId);
-    await deleteDoc(trackDocRef);
+    try {
+      await deleteDoc(trackDocRef);
+    } catch {
+      // If rules disallow hard delete, mark isDeleted: true so it never returns
+      await setDoc(trackDocRef, { isDeleted: true }, { merge: true });
+    }
 
     try {
       const q = query(collection(db, 'artistTracks'), where('id', '==', trackId));
       const snap = await getDocs(q);
       const deletePromises: Promise<void>[] = [];
       snap.forEach((d) => {
-        deletePromises.push(deleteDoc(d.ref));
+        deletePromises.push(
+          deleteDoc(d.ref).catch(() => setDoc(d.ref, { isDeleted: true }, { merge: true }))
+        );
       });
       await Promise.allSettled(deletePromises);
     } catch {}

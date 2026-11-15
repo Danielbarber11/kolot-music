@@ -1,28 +1,21 @@
 import { JamendoTrack, Album } from '../types';
-import { 
-  getArtistTracksFromFirebase, 
-  deleteArtistTrackFromFirebase, 
-  getArtistAccountsFromFirebase, 
-  saveArtistAccountToFirebase 
+import {
+  getArtistTracksFromFirebase,
+  getArtistAccountsFromFirebase,
+  saveArtistAccountToFirebase,
 } from './firebaseService';
-import { 
-  loadTracksFromIndexedDB, 
-  getCachedAudioBlob,
-  removeTrackFromStorage,
-} from './localTrackStorage';
-import { 
-  fetchTracksFromCloud, 
+import { clearAllLocalDeviceStorage } from './localTrackStorage';
+import {
+  fetchTracksFromCloud,
   computeTrackBgColor,
-  uploadTrackToCloud,
-  urlToBlob,
   fetchArtistProfilesFromCloud,
-  fetchAlbumsFromCloud
+  fetchAlbumsFromCloud,
 } from './cloudStorageService';
 import { getDeletedSongIds } from './deletedTracksService';
 
 /**
- * Cloud-Backed Music Service (Cloudflare R2)
- * Tracks are loaded dynamically from R2 / Firebase.
+ * 100% Cloud-Native Music Service (Cloudflare R2 + Firebase Firestore)
+ * Zero local storage persistence for tracks, albums, or profiles.
  */
 export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
 
@@ -38,55 +31,43 @@ export const ALL_MUSIC_GENRES = [
   'Cinematic',
 ];
 
-const CLOUD_TRACKS_CACHE_KEY = 'kolot_cloud_tracks_cache';
+// Session-only in-memory state (never persisted to localStorage or IndexedDB)
+let memorySessionTracks: JamendoTrack[] = [];
+let memorySessionProfiles: any[] = [];
+let memorySessionAlbums: Album[] = [];
 
 /**
- * Strict validator: Every track MUST have an authentic ID, Name, and Audio URL.
+ * Strict validator: Every track MUST have an authentic ID, Name, and non-local Audio URL.
  */
 export function isValidTrackWithOwner(track: JamendoTrack | null | undefined): boolean {
   if (!track || !track.id || typeof track.id !== 'string') return false;
   if (!track.name || typeof track.name !== 'string' || !track.name.trim()) return false;
   if (!track.audioUrl || typeof track.audioUrl !== 'string' || !track.audioUrl.trim()) return false;
+  if (track.audioUrl.startsWith('blob:') || track.audioUrl.startsWith('/uploads/')) return false;
   return true;
 }
 
 export function getCachedCloudTracks(): JamendoTrack[] {
-  try {
-    const saved = localStorage.getItem(CLOUD_TRACKS_CACHE_KEY);
-    if (saved) {
-      const parsed: JamendoTrack[] = JSON.parse(saved);
-      if (Array.isArray(parsed)) {
-        const deletedSet = getDeletedSongIds();
-        return parsed.filter((t) => {
-          if (!isValidTrackWithOwner(t)) return false;
-          const normArtist = (t.artistName || '').trim().toLowerCase().replace(/\s+/g, ' ');
-          const normName = (t.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
-          return !deletedSet.has(t.id) && !deletedSet.has(`del_${normArtist}::${normName}`);
-        });
-      }
-    }
-  } catch (e) {
-    console.warn('Failed to parse cached cloud tracks:', e);
-  }
-  return [];
+  const deletedSet = getDeletedSongIds();
+  return memorySessionTracks.filter((t) => {
+    if (!isValidTrackWithOwner(t)) return false;
+    const normArtist = (t.artistName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const normName = (t.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    return !deletedSet.has(t.id) && !deletedSet.has(`del_${normArtist}::${normName}`);
+  });
 }
 
 export function saveCachedCloudTracks(tracks: JamendoTrack[]): void {
-  try {
-    if (Array.isArray(tracks)) {
-      const validOnly = tracks.filter(isValidTrackWithOwner);
-      localStorage.setItem(CLOUD_TRACKS_CACHE_KEY, JSON.stringify(validOnly));
-    }
-  } catch (e) {
-    console.warn('Failed to save cloud tracks cache:', e);
+  if (Array.isArray(tracks)) {
+    memorySessionTracks = tracks.filter(isValidTrackWithOwner);
   }
 }
 
 /**
- * Startup sanitation: Keeps user tracks safe and prevents accidental track loss
+ * Startup sanitation: Clears legacy localStorage / IndexedDB track caches so the app uses 100% live cloud data.
  */
 export function purgeOrphanedTracksFromLocalStorage(): void {
-  // Preserves all valid user uploaded tracks across reloads
+  clearAllLocalDeviceStorage().catch(() => {});
 }
 
 purgeOrphanedTracksFromLocalStorage();
@@ -112,21 +93,27 @@ export function sortTracksChronologically(tracks: JamendoTrack[]): JamendoTrack[
   return [...tracks].sort((a, b) => getTrackTimestamp(b) - getTrackTimestamp(a));
 }
 
-/**
- * Intelligent helper to score cover art quality
- */
 function getCoverQualityScore(url?: string): number {
   if (!url || typeof url !== 'string') return 0;
   const trimmed = url.trim();
-  if (!trimmed) return 0;
-  if (trimmed.startsWith('data:image/')) return 3;
-  if (trimmed.includes('r2.cloudflarestorage.com') || trimmed.includes('firestore')) return 4;
-  if (trimmed.startsWith('blob:')) return 2;
-  return 2;
+  if (!trimmed || trimmed.startsWith('blob:') || trimmed.startsWith('/uploads/')) return 0;
+  if (trimmed.includes('/api/storage/raw/') || trimmed.includes('r2.cloudflarestorage.com')) return 5;
+  if (trimmed.startsWith('https://')) return 4;
+  if (trimmed.startsWith('data:image/')) return 2;
+  return 1;
+}
+
+function getAudioQualityScore(url?: string): number {
+  if (!url || typeof url !== 'string') return 0;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.startsWith('blob:') || trimmed.startsWith('/uploads/')) return 0;
+  if (trimmed.includes('/api/storage/raw/') || trimmed.includes('r2.cloudflarestorage.com')) return 5;
+  if (trimmed.startsWith('https://')) return 4;
+  return 1;
 }
 
 /**
- * Deduplicates tracks by ID and normalized Artist + Title
+ * Deduplicates tracks by ID and normalized Artist + Title, preferring Cloudflare R2 URLs.
  */
 export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
   const deletedSet = getDeletedSongIds();
@@ -142,7 +129,7 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
     const titleArtistKey = `${normArtist}::${normName}`;
 
     if (t.id && deletedSet.has(t.id)) continue;
-    if (!t.audioUrl || typeof t.audioUrl !== 'string' || !t.audioUrl.trim()) continue;
+    if (!isValidTrackWithOwner(t)) continue;
 
     const rawIdKey = t.id ? t.id.trim() : titleArtistKey;
     const canonicalKey = idToCanonicalKey.get(rawIdKey) || titleArtistToCanonicalKey.get(titleArtistKey);
@@ -154,15 +141,24 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
       titleArtistToCanonicalKey.set(titleArtistKey, key);
     } else {
       const existing = trackMap.get(canonicalKey)!;
-      const existingCoverScore = getCoverQualityScore(existing.coverUrl);
-      const newCoverScore = getCoverQualityScore(t.coverUrl);
-      const bestCover = newCoverScore > existingCoverScore ? t.coverUrl : existing.coverUrl;
+      const bestCover =
+        getCoverQualityScore(t.coverUrl) > getCoverQualityScore(existing.coverUrl)
+          ? t.coverUrl
+          : existing.coverUrl;
+      const bestAudio =
+        getAudioQualityScore(t.audioUrl) > getAudioQualityScore(existing.audioUrl)
+          ? t.audioUrl
+          : existing.audioUrl;
 
       const merged: JamendoTrack = {
         ...existing,
         ...t,
         id: existing.id || t.id,
-        artistName: (existing.artistName && existing.artistName !== 'אמן לא ידוע') ? existing.artistName : (t.artistName || 'אמן לא ידוע'),
+        artistName:
+          existing.artistName && existing.artistName !== 'אמן לא ידוע'
+            ? existing.artistName
+            : t.artistName || 'אמן לא ידוע',
+        audioUrl: bestAudio,
         coverUrl: bestCover || '',
         bgColor: existing.bgColor || t.bgColor || computeTrackBgColor(existing),
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
@@ -175,98 +171,49 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
 }
 
 export function getSavedRepoTracks(): JamendoTrack[] {
-  try {
-    const savedLocal = localStorage.getItem('kolot_uploaded_tracks');
-    if (savedLocal) {
-      const parsed: JamendoTrack[] = JSON.parse(savedLocal);
-      if (Array.isArray(parsed)) {
-        const deletedSet = getDeletedSongIds();
-        return parsed.filter((t) => {
-          if (!t || !t.id || !t.name) return false;
-          return !deletedSet.has(t.id);
-        });
-      }
-    }
-  } catch {}
-  return [];
+  return getCachedCloudTracks();
 }
 
 export async function resumePendingUploads(): Promise<void> {
-  try {
-    const pendingJson = localStorage.getItem('kolot_pending_uploads');
-    if (!pendingJson) return;
-    
-    const pendingIds: string[] = JSON.parse(pendingJson);
-    if (!Array.isArray(pendingIds) || pendingIds.length === 0) return;
-
-    const allCached = await loadTracksFromIndexedDB();
-    
-    for (const id of pendingIds) {
-      const track = allCached.find(t => t.id === id);
-      if (!track) continue;
-
-      const audioBlob = await getCachedAudioBlob(id);
-      const coverBlob = (track.coverUrl && track.coverUrl.startsWith('data:')) ? await urlToBlob(track.coverUrl) : null;
-      
-      const res = await uploadTrackToCloud(track, audioBlob || undefined, coverBlob || undefined);
-      if (res.success) {
-        const currentPending = JSON.parse(localStorage.getItem('kolot_pending_uploads') || '[]');
-        const updated = currentPending.filter((pid: string) => pid !== id);
-        localStorage.setItem('kolot_pending_uploads', JSON.stringify(updated));
-      }
-    }
-  } catch {}
+  // No local pending queue — uploads commit directly to Cloudflare R2
 }
 
 export async function getInstantSongPoolAsync(): Promise<JamendoTrack[]> {
-  const deletedIds = getDeletedSongIds();
-  const cachedCloud = getCachedCloudTracks().filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const indexedDBTracks = (await loadTracksFromIndexedDB()).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const combined = [...cachedCloud, ...indexedDBTracks, ...verified];
-  return deduplicateTracks(combined).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  return getInstantSongPool();
 }
 
 export function getInstantSongPool(): JamendoTrack[] {
   const deletedIds = getDeletedSongIds();
-  const cachedCloud = getCachedCloudTracks().filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const combined = [...cachedCloud, ...verified];
-  return deduplicateTracks(combined).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
+  return deduplicateTracks(memorySessionTracks).filter(
+    (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
+  );
 }
-
-const CLOUD_PROFILES_CACHE_KEY = 'kolot_cloud_profiles_cache';
 
 export async function fetchAllArtistProfiles(): Promise<any[]> {
   try {
-    const fbAccounts = await getArtistAccountsFromFirebase();
-    const cloudAccounts = await fetchArtistProfilesFromCloud();
-    
+    const [fbAccounts, cloudAccounts] = await Promise.all([
+      getArtistAccountsFromFirebase().catch(() => []),
+      fetchArtistProfilesFromCloud().catch(() => []),
+    ]);
+
     const combined = [...fbAccounts];
-    cloudAccounts.forEach(ca => {
-      if (!combined.some(a => a.id === ca.id)) {
+    cloudAccounts.forEach((ca) => {
+      if (ca && ca.id && !combined.some((a) => a.id === ca.id)) {
         combined.push(ca);
       }
     });
 
-    if (combined.length > 0) {
-      localStorage.setItem(CLOUD_PROFILES_CACHE_KEY, JSON.stringify(combined));
-      return combined;
-    }
-  } catch {}
-  
-  try {
-    const cached = localStorage.getItem(CLOUD_PROFILES_CACHE_KEY);
-    if (cached) return JSON.parse(cached);
-  } catch {}
-  
-  return [];
+    memorySessionProfiles = combined;
+    return combined;
+  } catch {
+    return memorySessionProfiles;
+  }
 }
 
 export async function checkTermsAcceptedInFirestore(uid: string): Promise<boolean> {
   try {
     const fbAccounts = await getArtistAccountsFromFirebase();
-    const account = fbAccounts.find(a => a.id === uid || a.googleUid === uid);
+    const account = fbAccounts.find((a) => a.id === uid || a.googleUid === uid);
     return !!account?.hasAcceptedTerms;
   } catch {
     return false;
@@ -292,43 +239,26 @@ export async function saveTermsAcceptedToFirestore(uid: string, name: string): P
 }
 
 /**
- * Fetches all saved tracks from Cloud Storage primarily.
+ * Fetches all saved tracks live from Cloudflare R2 & Firebase Firestore (100% Cloud-Native).
  */
 export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
   onBatch?: (tracks: JamendoTrack[]) => void
 ): Promise<JamendoTrack[]> {
-  resumePendingUploads().catch(() => {});
+  const [cloudResult, firebaseResult] = await Promise.allSettled([
+    fetchTracksFromCloud(),
+    getArtistTracksFromFirebase(),
+  ]);
 
-  let cloudTracks: JamendoTrack[] = [];
-  try {
-    cloudTracks = await fetchTracksFromCloud();
-  } catch {}
-
-  let firebaseTracks: JamendoTrack[] = [];
-  try {
-    firebaseTracks = await getArtistTracksFromFirebase();
-  } catch {}
-
-  const allCloudTracks = [...cloudTracks, ...firebaseTracks].filter(isValidTrackWithOwner);
-
-  try {
-    const activeCloudIds = new Set(allCloudTracks.map((t) => t.id));
-    const indexedDBTracks = await loadTracksFromIndexedDB();
-    for (const t of indexedDBTracks) {
-      if (!activeCloudIds.has(t.id)) {
-        await removeTrackFromStorage(t.id);
-      }
-    }
-  } catch {}
+  const cloudTracks = cloudResult.status === 'fulfilled' ? cloudResult.value : [];
+  const firebaseTracks = firebaseResult.status === 'fulfilled' ? firebaseResult.value : [];
 
   const deletedIds = getDeletedSongIds();
-  const verified = VERIFIED_REAL_TRACKS.filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  const combined = deduplicateTracks([...allCloudTracks, ...verified]).filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
-  
-  try {
-    saveCachedCloudTracks(combined);
-  } catch {}
+  const combined = deduplicateTracks([...cloudTracks, ...firebaseTracks]).filter(
+    (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
+  );
+
+  saveCachedCloudTracks(combined);
 
   if (onProgress) onProgress(combined.length);
   if (onBatch) onBatch(combined);
@@ -355,49 +285,32 @@ export function getTotalSongCount(): number {
 let initPromise: Promise<any> | null = null;
 export function initializeMultiMusicService(): Promise<any> {
   if (initPromise) return initPromise;
-  
-  initPromise = (async () => {
-    const songsPromise = fetchAllRealSongs();
-    const profilesPromise = fetchAllArtistProfiles();
-    const albumsPromise = fetchRealAlbums();
-    return Promise.allSettled([songsPromise, profilesPromise, albumsPromise]);
-  })();
-  
+
+  initPromise = Promise.allSettled([
+    fetchAllRealSongs(),
+    fetchAllArtistProfiles(),
+    fetchRealAlbums(),
+  ]);
+
   return initPromise;
 }
 
-const USER_ALBUMS_CACHE_KEY = 'kolot_user_albums';
-
 export function getCachedAlbums(): Album[] {
-  try {
-    const raw = localStorage.getItem(USER_ALBUMS_CACHE_KEY);
-    if (raw) {
-      const parsed: Album[] = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
+  return memorySessionAlbums;
 }
 
 export function saveCachedAlbums(albums: Album[]): void {
-  try {
-    localStorage.setItem(USER_ALBUMS_CACHE_KEY, JSON.stringify(albums));
-  } catch {}
+  if (Array.isArray(albums)) {
+    memorySessionAlbums = albums;
+  }
 }
 
 export async function fetchRealAlbums(): Promise<Album[]> {
   try {
     const cloudAlbums = await fetchAlbumsFromCloud();
-    const cached = getCachedAlbums();
-    const combined = [...cloudAlbums];
-    cached.forEach(a => {
-      if (!combined.some(ca => ca.id === a.id)) {
-        combined.push(a);
-      }
-    });
-    saveCachedAlbums(combined);
-    return combined;
+    saveCachedAlbums(cloudAlbums);
+    return cloudAlbums;
   } catch {
-    return getCachedAlbums();
+    return memorySessionAlbums;
   }
 }
