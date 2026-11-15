@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { 
   S3Client, 
   PutObjectCommand, 
@@ -41,11 +41,26 @@ export interface R2Config {
 function sanitizeR2Endpoint(endpoint?: string): string {
   if (!endpoint) return '';
   let cleaned = endpoint.trim().replace(/^["']|["']$/g, '');
+  if (!cleaned) return '';
+  // Reject Cloudflare API tokens (e.g. cfat_...) or invalid values accidentally pasted as R2_ENDPOINT
+  if (cleaned.startsWith('cfat_') || !cleaned.includes('.r2.cloudflarestorage.com')) {
+    return '';
+  }
   if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
     cleaned = 'https://' + cleaned;
   }
   cleaned = cleaned.replace(/\/+$/, '');
   return cleaned;
+}
+
+function sanitizePublicUrl(url?: string): string {
+  if (!url) return '';
+  let cleaned = url.trim().replace(/^["']|["']$/g, '');
+  if (!cleaned || cleaned.startsWith('cfat_') || !cleaned.includes('.')) return '';
+  if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
+    cleaned = 'https://' + cleaned;
+  }
+  return cleaned.replace(/\/+$/, '');
 }
 
 function sanitizeKey(val?: string): string {
@@ -65,7 +80,7 @@ let activeR2Config: R2Config = {
   accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY),
   secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY),
   bucketName: sanitizeKey(process.env.R2_BUCKET_NAME),
-  publicUrl: sanitizeR2Endpoint(process.env.R2_PUBLIC_URL),
+  publicUrl: sanitizePublicUrl(process.env.R2_PUBLIC_URL),
 };
 
 try {
@@ -74,9 +89,10 @@ try {
     activeR2Config = {
       ...activeR2Config,
       ...saved,
-      endpoint: sanitizeR2Endpoint(saved.endpoint || activeR2Config.endpoint),
+      endpoint: sanitizeR2Endpoint(saved.endpoint) || activeR2Config.endpoint,
       accessKeyId: sanitizeKey(saved.accessKeyId || activeR2Config.accessKeyId),
       secretAccessKey: sanitizeKey(saved.secretAccessKey || activeR2Config.secretAccessKey),
+      publicUrl: sanitizePublicUrl(saved.publicUrl) || activeR2Config.publicUrl,
     };
     console.log('[R2 Storage] Loaded config from .r2-config.json');
   }
@@ -90,11 +106,15 @@ function resolveR2Config(req?: express.Request): R2Config {
   const headerSecretKey = req?.headers?.['x-r2-secret-access-key'] as string;
   const headerBucket = req?.headers?.['x-r2-bucket-name'] as string;
 
-  const endpoint = sanitizeR2Endpoint(headerEndpoint || activeR2Config.endpoint || process.env.R2_ENDPOINT || DEFAULT_R2_ENDPOINT);
+  const endpoint =
+    sanitizeR2Endpoint(headerEndpoint) ||
+    sanitizeR2Endpoint(activeR2Config.endpoint) ||
+    sanitizeR2Endpoint(process.env.R2_ENDPOINT) ||
+    DEFAULT_R2_ENDPOINT;
   const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY);
   const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY);
   const bucketName = sanitizeKey(headerBucket || activeR2Config.bucketName || process.env.R2_BUCKET_NAME);
-  const publicUrl = sanitizeR2Endpoint(activeR2Config.publicUrl || process.env.R2_PUBLIC_URL);
+  const publicUrl = sanitizePublicUrl(activeR2Config.publicUrl || process.env.R2_PUBLIC_URL);
 
   return { endpoint, accessKeyId, secretAccessKey, bucketName, publicUrl };
 }
@@ -809,6 +829,610 @@ app.get('/api/storage/raw/*', async (req, res) => {
   }
 
   return res.status(404).send('File not found in R2 storage');
+});
+
+// 4b. Image CORS Proxy for accurate dominant color sampling on external avatars & covers
+function isSafeExternalHttpUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('169.254.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/proxy-image', async (req, res) => {
+  const targetUrl = String(req.query.url || '').trim();
+  if (!targetUrl || !isSafeExternalHttpUrl(targetUrl)) {
+    return res.status(400).send('Invalid image URL');
+  }
+
+  try {
+    const upstream = await fetch(targetUrl, {
+      headers: {
+        'User-Agent': 'Kolot-Music-ColorExtractor/1.0',
+        Accept: 'image/*,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!upstream.ok) {
+      return res.status(upstream.status).send('Failed to fetch external image');
+    }
+
+    const contentType = upstream.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/')) {
+      return res.status(415).send('URL did not return an image');
+    }
+
+    const arrayBuf = await upstream.arrayBuffer();
+    if (arrayBuf.byteLength > 8 * 1024 * 1024) {
+      return res.status(413).send('Image too large');
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(arrayBuf));
+  } catch (err: any) {
+    return res.status(502).send(`Image proxy error: ${err?.message || 'Failed'}`);
+  }
+});
+
+// 4c. Whisper AI Subtitles & Audio Transcription Endpoint
+function parseTimestampToSeconds(ts: string): number {
+  const parts = ts.trim().split(':').map((p) => parseFloat(p));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  return parts[0] || 0;
+}
+
+interface TranscribedSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+}
+
+function buildSegmentsFromTimedText(rawText: string, trackDuration: number): TranscribedSegment[] {
+  const cleaned = rawText
+    .replace(/^```[\w]*\n?/gm, '')
+    .replace(/```$/gm, '')
+    .trim();
+
+  if (!cleaned) return [];
+
+  const rawLines = cleaned
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  const timed: { startTime: number; endTime?: number; text: string }[] = [];
+  const untimed: string[] = [];
+
+  for (const line of rawLines) {
+    // Match [MM:SS - MM:SS] text or [MM:SS] text or (MM:SS) text
+    const rangeMatch = line.match(/^[\[(]?(\d{1,2}:\d{2}(?:\.\d{1,2})?)\s*[-–>to]+\s*(\d{1,2}:\d{2}(?:\.\d{1,2})?)[\])]?\s*(.+)$/);
+    if (rangeMatch) {
+      const startTime = parseTimestampToSeconds(rangeMatch[1]);
+      const endTime = parseTimestampToSeconds(rangeMatch[2]);
+      const text = rangeMatch[3].replace(/^[-:|•\s]+/, '').trim();
+      if (text) {
+        timed.push({ startTime, endTime: endTime > startTime ? endTime : startTime + 4, text });
+      }
+      continue;
+    }
+
+    const singleMatch = line.match(/^[\[(](\d{1,2}:\d{2}(?:\.\d{1,2})?)[\])]\s*(.+)$/);
+    if (singleMatch) {
+      const startTime = parseTimestampToSeconds(singleMatch[1]);
+      const text = singleMatch[2].replace(/^[-:|•\s]+/, '').trim();
+      if (text) {
+        timed.push({ startTime, text });
+      }
+      continue;
+    }
+
+    untimed.push(line);
+  }
+
+  if (timed.length > 0) {
+    return timed.map((seg, idx) => {
+      const nextStart = timed[idx + 1]?.startTime;
+      const fallbackEnd = nextStart && nextStart > seg.startTime
+        ? nextStart
+        : Math.min(Math.max(trackDuration, seg.startTime + 4), seg.startTime + 5.5);
+      return {
+        id: `whisper_seg_${idx}`,
+        startTime: Number(seg.startTime.toFixed(2)),
+        endTime: Number((seg.endTime ?? fallbackEnd).toFixed(2)),
+        text: seg.text,
+      };
+    });
+  }
+
+  // Distribute untimed lines across track duration cleanly
+  const safeDuration = Math.max(20, trackDuration || 120);
+  const introOffset = safeDuration > 25 ? 4 : 0;
+  const activeSpan = Math.max(10, safeDuration - introOffset - 2);
+  const step = activeSpan / Math.max(1, untimed.length);
+
+  return untimed.map((text, idx) => {
+    const startTime = introOffset + idx * step;
+    const endTime = startTime + step;
+    return {
+      id: `whisper_seg_${idx}`,
+      startTime: Number(startTime.toFixed(2)),
+      endTime: Number(endTime.toFixed(2)),
+      text,
+    };
+  });
+}
+
+function guessAudioMimeType(urlOrName: string, headerType?: string | null): string {
+  if (headerType && headerType.startsWith('audio/')) {
+    return headerType.split(';')[0].trim();
+  }
+  const lower = urlOrName.toLowerCase();
+  if (lower.includes('.wav')) return 'audio/wav';
+  if (lower.includes('.ogg')) return 'audio/ogg';
+  if (lower.includes('.m4a') || lower.includes('.mp4')) return 'audio/mp4';
+  if (lower.includes('.webm')) return 'audio/webm';
+  if (lower.includes('.flac')) return 'audio/flac';
+  return 'audio/mp3';
+}
+
+const CANONICAL_AUDIO_GENRES = [
+  'Pop',
+  'Mizrahi',
+  'Rock',
+  'Electronic',
+  'Hip Hop',
+  'Acoustic',
+  'Chill',
+  'Classical',
+  'Jazz',
+  'Blues',
+  'Cinematic',
+] as const;
+
+const HEBREW_GENRE_LABELS: Record<string, string> = {
+  Pop: 'פופ',
+  Mizrahi: 'מזרחית',
+  Rock: 'רוק',
+  Electronic: 'אלקטרוני',
+  'Hip Hop': 'היפ הופ / ראפ',
+  Acoustic: 'אקוסטי',
+  Chill: 'צ׳יל',
+  Classical: 'קלאסי',
+  Jazz: 'ג׳אז',
+  Blues: 'בלוז',
+  Cinematic: 'קולנועי',
+};
+
+async function resolveAudioBytesForAi(req: any): Promise<{ audioBuffer: Buffer | null; mimeType: string; fetchError?: { status: number; message: string } }> {
+  const audioUrl = String(req.body?.audioUrl || '').trim();
+  let audioBuffer: Buffer | null = null;
+  let mimeType = 'audio/mp3';
+
+  if (req.file?.buffer) {
+    audioBuffer = req.file.buffer;
+    mimeType = guessAudioMimeType(req.file.originalname || 'track.mp3', req.file.mimetype);
+  } else if (audioUrl.startsWith('data:')) {
+    const match = audioUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      mimeType = match[1];
+      audioBuffer = Buffer.from(match[2], 'base64');
+    }
+  } else if (audioUrl.startsWith('/api/storage/raw/')) {
+    const r2Key = decodeURIComponent(audioUrl.replace(/^\/api\/storage\/raw\//, ''));
+    const { client, bucket } = await getR2Context(req);
+    const s3Item = await client.send(new GetObjectCommand({ Bucket: bucket, Key: r2Key }));
+    if (s3Item.Body) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of s3Item.Body as any) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      }
+      audioBuffer = Buffer.concat(chunks);
+      mimeType = guessAudioMimeType(r2Key, s3Item.ContentType);
+    }
+  } else if (audioUrl && isSafeExternalHttpUrl(audioUrl)) {
+    const upstream = await fetch(audioUrl, {
+      headers: { 'User-Agent': 'Kolot-Audio-AI/1.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstream.ok) {
+      return {
+        audioBuffer: null,
+        mimeType,
+        fetchError: { status: 502, message: `שגיאה בטעינת קובץ השמע (${upstream.status})` },
+      };
+    }
+    const arr = await upstream.arrayBuffer();
+    audioBuffer = Buffer.from(arr);
+    mimeType = guessAudioMimeType(audioUrl, upstream.headers.get('content-type'));
+  }
+
+  return { audioBuffer, mimeType };
+}
+
+function classifyGenreHeuristic(songTitle: string, artistName: string, lyrics: string) {
+  const combined = `${songTitle} ${artistName} ${lyrics}`.toLowerCase();
+  const has = (words: string[]) => words.some((w) => combined.includes(w));
+
+  let genre: (typeof CANONICAL_AUDIO_GENRES)[number] = 'Pop';
+  let mood = 'Upbeat';
+  let reasonHe = 'סיווג משוער לפי מאפייני השיר';
+
+  if (has(['מזרח', 'דרבוקה', 'חפלה', 'סלסול', 'בוזוקי', 'קפה', 'ים תיכונ', 'יאללה', 'נשמה', 'עיניים', 'כפרה', 'mizrahi', 'oriental'])) {
+    genre = 'Mizrahi';
+    mood = 'רגשי / ים-תיכוני';
+    reasonHe = 'זוהו מוטיבים ים-תיכוניים ומזרחיים בשיר';
+  } else if (has(['ראפ', 'היפ', 'ביט', 'פריסטייל', 'חרוז', 'טראפ', 'hip', 'rap', 'trap', 'flow', 'drill', 'mc'])) {
+    genre = 'Hip Hop';
+    mood = 'קצבי / אורבני';
+    reasonHe = 'זוהה אופי של ראפ / היפ הופ וביט קצבי';
+  } else if (has(['רוק', 'גיטרה חשמלית', 'מטאל', 'פאנק', 'rock', 'guitar', 'metal', 'punk', 'grunge', 'indie rock'])) {
+    genre = 'Rock';
+    mood = 'אנרגטי / עוצמתי';
+    reasonHe = 'זוהו מאפייני רוק וגיטרות';
+  } else if (has(['אלקטרו', 'טראנס', 'האוס', 'טכנו', 'רמיקס', 'דאנס', 'edm', 'house', 'techno', 'trance', 'synth', 'dubstep', 'electronic', 'club'])) {
+    genre = 'Electronic';
+    mood = 'אנרגטי / מסיבתי';
+    reasonHe = 'זוהו סינתיסייזרים ומקצב אלקטרוני';
+  } else if (has(['צ׳יל', "צ'יל", 'לואו פיי', 'רגיעה', 'לילה', 'chill', 'lofi', 'lo-fi', 'ambient', 'relax', 'sleep', 'calm'])) {
+    genre = 'Chill';
+    mood = 'רגוע / אווירתי';
+    reasonHe = 'זוהה אופי רגוע ואווירתי (צ׳יל)';
+  } else if (has(['אקוסט', 'גיטרה', 'מדורה', 'שקט', 'acoustic', 'unplugged', 'folk', 'ballad'])) {
+    genre = 'Acoustic';
+    mood = 'חמים / אינטימי';
+    reasonHe = 'זוהה אופי אקוסטי טבעי';
+  } else if (has(['קלאס', 'פסנתר', 'כינור', 'סימפוני', 'תזמורת', 'piano', 'violin', 'orchestra', 'symphony', 'classical'])) {
+    genre = 'Classical';
+    mood = 'מלכותי / קלאסי';
+    reasonHe = 'זוהו כלי נגינה קלאסיים ותזמורתיים';
+  } else if (has(['ג׳אז', "ג'אז", 'סקסופון', 'jazz', 'sax', 'swing', 'bebop'])) {
+    genre = 'Jazz';
+    mood = 'מתוחכם / גרובי';
+    reasonHe = 'זוהו מאפייני ג׳אז ואלתור';
+  } else if (has(['בלוז', 'סול', 'blues', 'soul', 'r&b'])) {
+    genre = 'Blues';
+    mood = 'עמוק / נשמה';
+    reasonHe = 'זוהו מאפייני בלוז ונשמה';
+  } else if (has(['פסקול', 'קולנוע', 'אפי', 'דרמה', 'soundtrack', 'cinematic', 'epic', 'score', 'trailer'])) {
+    genre = 'Cinematic';
+    mood = 'דרמטי / קולנועי';
+    reasonHe = 'זוהה אופי קולנועי ואפי';
+  }
+
+  return {
+    genre,
+    hebrewGenre: HEBREW_GENRE_LABELS[genre] || genre,
+    confidence: 0.68,
+    mood,
+    bpmEstimate: genre === 'Electronic' ? 126 : genre === 'Hip Hop' ? 92 : genre === 'Chill' ? 78 : 110,
+    reasonHe,
+  };
+}
+
+app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
+  try {
+    const language = String(req.body?.language || 'he');
+    const songTitle = String(req.body?.songTitle || '').trim();
+    const artistName = String(req.body?.artistName || '').trim();
+    const duration = Math.max(10, Number(req.body?.duration) || 180);
+
+    const resolved = await resolveAudioBytesForAi(req);
+    if (resolved.fetchError) {
+      return res.status(resolved.fetchError.status).json({ success: false, error: resolved.fetchError.message });
+    }
+    let { audioBuffer } = resolved;
+    const { mimeType } = resolved;
+
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'לא נמצא קובץ שמע זמין לתמלול כתוביות.',
+      });
+    }
+
+    // Keep within inline payload size limits (~18MB max)
+    const MAX_AUDIO_BYTES = 18 * 1024 * 1024;
+    if (audioBuffer.length > MAX_AUDIO_BYTES) {
+      audioBuffer = audioBuffer.subarray(0, MAX_AUDIO_BYTES);
+    }
+
+    // 1. Optional OpenAI Whisper API if OPENAI_API_KEY is configured in environment
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const ext = mimeType.split('/')[1]?.replace('mpeg', 'mp3') || 'mp3';
+        const form = new FormData();
+        form.append('file', new Blob([new Uint8Array(audioBuffer)], { type: mimeType }), `audio.${ext}`);
+        form.append('model', 'whisper-1');
+        form.append('response_format', 'verbose_json');
+        form.append('timestamp_granularities[]', 'segment');
+
+        const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          body: form,
+        });
+
+        if (whisperRes.ok) {
+          const wData: any = await whisperRes.json();
+          const rawSegments = Array.isArray(wData.segments) ? wData.segments : [];
+          const segments: TranscribedSegment[] = rawSegments
+            .filter((s: any) => s.text && String(s.text).trim().length > 0)
+            .map((s: any, idx: number) => ({
+              id: `whisper_${idx}`,
+              startTime: Number((s.start ?? 0).toFixed(2)),
+              endTime: Number((s.end ?? (s.start ?? 0) + 4).toFixed(2)),
+              text: String(s.text).trim(),
+            }));
+
+          const fullLyrics = segments.length > 0
+            ? segments.map((s) => s.text).join('\n')
+            : String(wData.text || '').trim();
+
+          if (segments.length > 0 || fullLyrics) {
+            return res.json({
+              success: true,
+              provider: 'openai-whisper',
+              segments: segments.length > 0 ? segments : buildSegmentsFromTimedText(fullLyrics, duration),
+              lyrics: fullLyrics,
+            });
+          }
+        }
+      } catch (whisperErr: any) {
+        console.warn('[Whisper API] Fallback to Gemini Transcribe:', whisperErr?.message);
+      }
+    }
+
+    // 2. Primary Server-Side Audio Transcription via @google/genai (gemini-3.5-transcribe)
+    if (!ai) {
+      return res.status(503).json({
+        success: false,
+        error: 'שירות התמלול האוטומטי דורש הגדרת מפתח GEMINI_API_KEY או OPENAI_API_KEY בשרת.',
+      });
+    }
+
+    const base64Audio = audioBuffer.toString('base64');
+    const audioPart = {
+      inlineData: {
+        mimeType,
+        data: base64Audio,
+      },
+    };
+
+    const transcribeInstruction =
+      `Transcribe all sung lyrics and spoken vocals from this song audio word-for-word in the exact language spoken or sung (e.g. Hebrew, English, etc.). ` +
+      `${songTitle ? `Song title context: "${songTitle}". ` : ''}` +
+      `${artistName ? `Artist context: "${artistName}". ` : ''}` +
+      `Format EVERY lyric line with its exact start and end timestamp like:\n` +
+      `[00:08 - 00:13] First lyric line\n` +
+      `[00:13 - 00:18] Second lyric line\n` +
+      `If the audio has no vocals at all (purely instrumental), output ONLY: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track (No vocals)'}. ` +
+      `Do not invent lyrics that are not heard in the audio.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-transcribe',
+      contents: {
+        parts: [audioPart, { text: transcribeInstruction }],
+      },
+    });
+
+    const transcribedText = (response.text || '').trim();
+    if (!transcribedText) {
+      return res.status(500).json({
+        success: false,
+        error: 'המערכת לא הצליחה לזהות מילים בקובץ השמע.',
+      });
+    }
+
+    const segments = buildSegmentsFromTimedText(transcribedText, duration);
+    const lyrics = segments.map((s) => s.text).join('\n');
+
+    return res.json({
+      success: true,
+      provider: 'whisper-gemini-transcribe',
+      segments,
+      lyrics,
+    });
+  } catch (err: any) {
+    console.error('Whisper AI Transcription Error:', err);
+    return res.status(500).json({
+      success: false,
+      error: `שגיאה בתמלול הכתוביות: ${err?.message || 'אנא נסה שוב'}`,
+    });
+  }
+});
+
+// 4d. Audio Classification Endpoint (Detects true musical genre from audio waveform + optional HF AST)
+app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) => {
+  try {
+    const songTitle = String(req.body?.songTitle || '').trim();
+    const artistName = String(req.body?.artistName || '').trim();
+    const lyrics = String(req.body?.lyrics || '').trim();
+
+    let resolved: { audioBuffer: Buffer | null; mimeType: string; fetchError?: { status: number; message: string } } = {
+      audioBuffer: null,
+      mimeType: 'audio/mp3',
+    };
+
+    try {
+      resolved = await resolveAudioBytesForAi(req);
+    } catch (resolveErr: any) {
+      console.warn('[Audio Classification] Could not fetch audio bytes:', resolveErr?.message);
+    }
+
+    let { audioBuffer } = resolved;
+    const { mimeType } = resolved;
+
+    if (audioBuffer && audioBuffer.length > 15 * 1024 * 1024) {
+      audioBuffer = audioBuffer.subarray(0, 15 * 1024 * 1024);
+    }
+
+    // Optional Hugging Face Audio Spectrogram Transformer (MIT/ast-finetuned-audioset) acoustic feature signal
+    let hfLabels: Array<{ label: string; score: number }> = [];
+    if (process.env.HF_TOKEN && audioBuffer && audioBuffer.length > 0) {
+      try {
+        const hfSlice = audioBuffer.length > 4 * 1024 * 1024 ? audioBuffer.subarray(0, 4 * 1024 * 1024) : audioBuffer;
+        const hfRes = await fetch(
+          'https://router.huggingface.co/hf-inference/models/MIT/ast-finetuned-audioset-10-10-0.4593',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.HF_TOKEN}`,
+              'Content-Type': mimeType,
+            },
+            body: new Uint8Array(hfSlice),
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        if (hfRes.ok) {
+          const parsed = await hfRes.json();
+          if (Array.isArray(parsed)) {
+            hfLabels = parsed.slice(0, 8).map((x: any) => ({
+              label: String(x.label || ''),
+              score: Number(x.score || 0),
+            }));
+          }
+        }
+      } catch (hfErr: any) {
+        console.warn('[Audio Classification] HF AST optional probe skipped:', hfErr?.message);
+      }
+    }
+
+    // Primary: True multimodal Audio Classification with @google/genai (gemini-4-hydrogen)
+    if (ai && audioBuffer && audioBuffer.length > 0) {
+      try {
+        const base64Audio = audioBuffer.toString('base64');
+        const audioPart = {
+          inlineData: {
+            mimeType,
+            data: base64Audio,
+          },
+        };
+
+        const hfContext = hfLabels.length > 0
+          ? `Acoustic AudioSet labels detected: ${hfLabels.map((l) => `${l.label} (${Math.round(l.score * 100)}%)`).join(', ')}. `
+          : '';
+
+        const classificationPrompt =
+          `Listen carefully to this actual song audio (instrumentation, rhythm, tempo, beat, vocal phrasing, scales/maqam, production style) and classify its exact musical genre.\n` +
+          `${songTitle ? `Song title: "${songTitle}". ` : ''}` +
+          `${artistName ? `Artist: "${artistName}". ` : ''}` +
+          `${lyrics ? `Lyrics excerpt: "${lyrics.slice(0, 400)}". ` : ''}` +
+          `${hfContext}\n` +
+          `Choose ONLY ONE best-fitting canonical genre from the schema enum:\n` +
+          `- Mizrahi: Israeli Mediterranean / Middle Eastern pop, darbukah, bouzouki, Oriental maqam/trills (סלסולים), Hebrew mizrahit vocals.\n` +
+          `- Pop: Contemporary mainstream pop, catchy chorus, upbeat polished production.\n` +
+          `- Hip Hop: Rap verses, trap/boom-bap beats, 808 bass, rhythmic spoken/melodic flow.\n` +
+          `- Rock: Electric/distorted guitars, live rock drums, alternative/indie/punk energy.\n` +
+          `- Electronic: EDM, house, techno, trance, synthwave, electronic dance production.\n` +
+          `- Acoustic: Unplugged acoustic guitar or piano vocals, singer-songwriter, folk.\n` +
+          `- Chill: Lo-fi, ambient, downtempo, relaxing atmospheric beats.\n` +
+          `- Classical: Orchestral strings, classical piano, symphony, chamber music.\n` +
+          `- Jazz: Swing, saxophone, brass, walking bass, jazz improvisation.\n` +
+          `- Blues: Blues guitar riffs, soul/R&B groove.\n` +
+          `- Cinematic: Film score, dramatic orchestral soundtrack, epic trailer music.\n` +
+          `Provide a concise reason in Hebrew explaining what you heard in the audio (e.g. "זוהתה שירה ים-תיכונית עם מקצב דרבוקה וגיטרות סול").`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: {
+            parts: [audioPart, { text: classificationPrompt }],
+          },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                genre: {
+                  type: Type.STRING,
+                  enum: [...CANONICAL_AUDIO_GENRES],
+                  description: 'The canonical genre that best describes the audio.',
+                },
+                confidence: {
+                  type: Type.NUMBER,
+                  description: 'Confidence score between 0 and 1.',
+                },
+                mood: {
+                  type: Type.STRING,
+                  description: 'Short mood description in Hebrew (2-3 words).',
+                },
+                bpmEstimate: {
+                  type: Type.NUMBER,
+                  description: 'Estimated tempo in BPM.',
+                },
+                reasonHe: {
+                  type: Type.STRING,
+                  description: 'Short explanation in Hebrew of acoustic cues heard in the track.',
+                },
+              },
+              required: ['genre', 'confidence', 'mood', 'bpmEstimate', 'reasonHe'],
+            },
+          },
+        });
+
+        const parsedJson = JSON.parse((response.text || '{}').trim());
+        const detectedGenre = CANONICAL_AUDIO_GENRES.includes(parsedJson.genre)
+          ? parsedJson.genre
+          : 'Pop';
+
+        return res.json({
+          success: true,
+          provider: hfLabels.length > 0 ? 'hf-ast+gemini-audio' : 'gemini-audio-classifier',
+          genre: detectedGenre,
+          hebrewGenre: HEBREW_GENRE_LABELS[detectedGenre] || detectedGenre,
+          confidence: Math.min(0.99, Math.max(0.5, Number(parsedJson.confidence) || 0.9)),
+          mood: parsedJson.mood || '',
+          bpmEstimate: Number(parsedJson.bpmEstimate) || 110,
+          reasonHe: parsedJson.reasonHe || 'זוהה ישירות מתוך האזנה לקובץ השמע',
+          acousticTags: hfLabels.map((l) => l.label),
+        });
+      } catch (aiErr: any) {
+        console.warn('[Audio Classification] Gemini audio analysis failed, trying fallback:', aiErr?.message);
+      }
+    }
+
+    // Fallback when AI key is missing or remote audio isn't reachable
+    const fallback = classifyGenreHeuristic(songTitle, artistName, lyrics);
+    return res.json({
+      success: true,
+      provider: 'heuristic-metadata',
+      ...fallback,
+      acousticTags: hfLabels.map((l) => l.label),
+    });
+  } catch (err: any) {
+    console.error('Audio Classification Error:', err);
+    return res.status(500).json({
+      success: false,
+      error: `שגיאה בזיהוי הז'אנר מהשמע: ${err?.message || 'אנא נסה שוב'}`,
+    });
+  }
 });
 
 // 4. Gemini Fast Recipe Translation Endpoint

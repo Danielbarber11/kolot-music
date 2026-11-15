@@ -20,6 +20,8 @@ import {
   Play,
   LogIn,
   UserPlus,
+  Wand2,
+  Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album } from '../types';
@@ -55,6 +57,7 @@ import {
   testFirestoreConnection,
   onAuthUserChanged,
   saveArtistAccountToFirebase,
+  saveArtistTrackToFirebase,
   getArtistAccountByGoogleUid,
   loginWithGoogle,
   deleteArtistTrackFromFirebase,
@@ -63,7 +66,14 @@ import {
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteTrackFromCloud, getStreamingMediaUrl } from '../services/cloudStorageService';
+import { deleteTrackFromCloud, getStreamingMediaUrl, saveTrackGenreInCloud } from '../services/cloudStorageService';
+import {
+  CANONICAL_GENRES,
+  normalizeGenreId,
+  getGenreDisplayLabel,
+  isUntaggedGenre,
+  classifyTrackAudio,
+} from '../services/audioClassificationService';
 import { saveCachedCloudTracks } from '../services/multiMusicService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 
@@ -98,6 +108,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [activeTab, setActiveTab] = useState<'all' | 'favorites'>('all');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [isBulkClassifying, setIsBulkClassifying] = useState(false);
+  const [bulkClassifyNotice, setBulkClassifyNotice] = useState<string | null>(null);
 
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
@@ -400,7 +412,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
       list = list.filter((t) => t.artistName.toLowerCase().includes(artistFilter.toLowerCase()));
     }
     if (selectedGenre) {
-      list = list.filter((t) => t.genre?.toLowerCase() === selectedGenre.toLowerCase());
+      const normSelected = normalizeGenreId(selectedGenre) || selectedGenre.toLowerCase();
+      list = list.filter((t) => {
+        const trackNorm = normalizeGenreId(t.genre);
+        return trackNorm.toLowerCase() === normSelected.toLowerCase() || (t.genre || '').toLowerCase() === selectedGenre.toLowerCase();
+      });
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -408,7 +424,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
         (t) =>
           t.name.toLowerCase().includes(q) ||
           t.artistName.toLowerCase().includes(q) ||
-          t.genre?.toLowerCase().includes(q)
+          t.genre?.toLowerCase().includes(q) ||
+          getGenreDisplayLabel(t.genre, true).toLowerCase().includes(q)
       );
     }
     return list;
@@ -544,18 +561,90 @@ export const SongsView: React.FC<SongsViewProps> = ({
     });
   }, [allTracks, remoteAlbums]);
 
-  // Rhythm sections for Spotify feed
+  // Organized, Audio-Classified Genre Collections (Pure canonical genre matching)
+  const validHomeTracks = React.useMemo(() => allTracks.filter(isValidTrackWithOwner), [allTracks]);
+
   const newReleasesTracks = React.useMemo(() => {
-    return allTracks.filter(isValidTrackWithOwner).slice(0, 14);
-  }, [allTracks]);
+    return validHomeTracks.slice(0, 14);
+  }, [validHomeTracks]);
+
+  const mizrahiTracks = React.useMemo(() => {
+    return validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Mizrahi');
+  }, [validHomeTracks]);
 
   const popTracks = React.useMemo(() => {
-    return allTracks.filter(isValidTrackWithOwner).filter((t) => t.genre === 'Pop' || !t.genre).slice(0, 14);
-  }, [allTracks]);
+    return validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Pop');
+  }, [validHomeTracks]);
+
+  const hipHopTracks = React.useMemo(() => {
+    return validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Hip Hop');
+  }, [validHomeTracks]);
+
+  const rockTracks = React.useMemo(() => {
+    return validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Rock');
+  }, [validHomeTracks]);
 
   const chillTracks = React.useMemo(() => {
-    return allTracks.filter(isValidTrackWithOwner).filter((t) => t.genre === 'Chill' || t.genre === 'Electronic').slice(0, 14);
-  }, [allTracks]);
+    return validHomeTracks.filter((t) => {
+      const g = normalizeGenreId(t.genre);
+      return g === 'Chill' || g === 'Electronic';
+    });
+  }, [validHomeTracks]);
+
+  const acousticClassicTracks = React.useMemo(() => {
+    return validHomeTracks.filter((t) => {
+      const g = normalizeGenreId(t.genre);
+      return g === 'Acoustic' || g === 'Classical' || g === 'Jazz' || g === 'Blues' || g === 'Cinematic';
+    });
+  }, [validHomeTracks]);
+
+  const untaggedTracks = React.useMemo(() => {
+    return validHomeTracks.filter((t) => isUntaggedGenre(t.genre));
+  }, [validHomeTracks]);
+
+  const genreCounts = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    validHomeTracks.forEach((t) => {
+      const g = normalizeGenreId(t.genre);
+      if (g) counts[g] = (counts[g] || 0) + 1;
+    });
+    return counts;
+  }, [validHomeTracks]);
+
+  const handleBulkClassifyUntagged = async () => {
+    if (isBulkClassifying || untaggedTracks.length === 0) return;
+    setIsBulkClassifying(true);
+    setBulkClassifyNotice(isHe ? `מאזין ומסווג ${untaggedTracks.length} שירים אוטומטית...` : `Classifying ${untaggedTracks.length} tracks...`);
+    let updatedCount = 0;
+    const targets = untaggedTracks.slice(0, 12);
+
+    for (const track of targets) {
+      try {
+        const res = await classifyTrackAudio({ track });
+        if (res.success && res.genre) {
+          updatedCount += 1;
+          const updatedTrack: JamendoTrack = { ...track, genre: res.genre };
+          setAllTracks((prev) => {
+            const next = prev.map((item) => (item.id === track.id ? updatedTrack : item));
+            saveCachedCloudTracks(next);
+            return next;
+          });
+          await Promise.allSettled([
+            saveTrackGenreInCloud(updatedTrack, res.genre),
+            saveArtistTrackToFirebase(updatedTrack),
+          ]);
+        }
+      } catch {}
+    }
+
+    setIsBulkClassifying(false);
+    setBulkClassifyNotice(
+      updatedCount > 0
+        ? (isHe ? `סווגו ${updatedCount} שירים בהצלחה לפי האזנה לשמע!` : `Classified ${updatedCount} tracks!`)
+        : (isHe ? 'לא נמצאו שירים לעדכון.' : 'No tracks updated.')
+    );
+    setTimeout(() => setBulkClassifyNotice(null), 4000);
+  };
 
   const isFilteredOrSearching =
     searchQuery.trim().length > 0 || !!artistFilter || !!selectedGenre || activeTab === 'favorites';
@@ -785,8 +874,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       : `Songs by ${artistFilter}`
                     : selectedGenre
                     ? isHe
-                      ? `ז'אנר: ${selectedGenre}`
-                      : `Genre: ${selectedGenre}`
+                      ? `ז'אנר: ${getGenreDisplayLabel(selectedGenre, true)}`
+                      : `Genre: ${getGenreDisplayLabel(selectedGenre, false)}`
                     : isHe
                     ? 'כל השירים'
                     : 'All Songs'}
@@ -945,7 +1034,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         {/* Metadata indicator with favorite button */}
                         <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
                           <span className="text-[10px] text-white/50 font-medium truncate">
-                            {track.genre || 'Music'}
+                            {getGenreDisplayLabel(track.genre, isHe)}
                           </span>
                           <button
                             onClick={(e) => {
@@ -1019,7 +1108,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             <span>{featuredTrack.artistName}</span>
                             <span className="w-1.5 h-1.5 rounded-full bg-white/40" />
                           </button>
-                          <span>{featuredTrack.genre || (isHe ? 'מוזיקה' : 'Music')}</span>
+                          <span>{getGenreDisplayLabel(featuredTrack.genre, isHe)}</span>
                           {featuredTrack.albumName && (
                             <>
                               <span className="w-1.5 h-1.5 rounded-full bg-white/40" />
@@ -1103,43 +1192,35 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     cover: leadingTracks[0]?.coverUrl,
                   },
                   {
-                    title: isHe ? 'השירים שאהבת' : 'Liked Songs',
-                    action: () => setActiveTab('favorites'),
-                    icon: Heart,
-                    cover: null,
-                    count: likedSongIds.length,
+                    title: isHe ? 'מזרחית וים-תיכוני' : 'Mizrahi Vibes',
+                    action: () => setSelectedGenre('Mizrahi'),
+                    icon: Sparkles,
+                    cover: mizrahiTracks[0]?.coverUrl || leadingTracks[0]?.coverUrl,
                   },
                   {
-                    title: isHe ? 'חדש במוזיקה' : 'New Releases',
-                    action: () => {
-                      if (newReleasesTracks[0]) openSongPlayer(newReleasesTracks[0]);
-                    },
-                    icon: Sparkles,
-                    cover: newReleasesTracks[0]?.coverUrl,
+                    title: isHe ? 'היפ הופ וראפ' : 'Hip Hop & Rap',
+                    action: () => setSelectedGenre('Hip Hop'),
+                    icon: Disc,
+                    cover: hipHopTracks[0]?.coverUrl,
                   },
                   {
                     title: isHe ? 'צ׳יל ורגיעה' : 'Chill Vibes',
-                    action: () => {
-                      setSelectedGenre('Chill');
-                    },
+                    action: () => setSelectedGenre('Chill'),
                     icon: Disc,
                     cover: chillTracks[0]?.coverUrl,
                   },
                   {
                     title: isHe ? 'להיטי פופ' : 'Pop Bangers',
-                    action: () => {
-                      setSelectedGenre('Pop');
-                    },
+                    action: () => setSelectedGenre('Pop'),
                     icon: Play,
                     cover: popTracks[0]?.coverUrl,
                   },
                   {
-                    title: isHe ? 'אלבומים מובחרים' : 'Featured Albums',
-                    action: () => {
-                      if (popularAlbums[0]) setSelectedAlbum(popularAlbums[0]);
-                    },
-                    icon: Disc,
-                    cover: popularAlbums[0]?.coverUrl,
+                    title: isHe ? 'השירים שאהבת' : 'Liked Songs',
+                    action: () => setActiveTab('favorites'),
+                    icon: Heart,
+                    cover: null,
+                    count: likedSongIds.length,
                   },
                 ].map((item, i) => (
                   <button
@@ -1158,6 +1239,76 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   </button>
                 ))}
               </div>
+
+              {/* AUDIO-CLASSIFIED GENRE EXPLORER STRIP */}
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+                    <h2 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                      {isHe ? 'עיון לפי ז׳אנר (זיהוי שמע אוטומטי)' : 'Browse by Audio-Classified Genre'}
+                    </h2>
+                  </div>
+
+                  {untaggedTracks.length > 0 && (
+                    <button
+                      onClick={handleBulkClassifyUntagged}
+                      disabled={isBulkClassifying}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {isBulkClassifying ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Wand2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {isHe
+                          ? `סווג ${untaggedTracks.length} שירים ללא ז׳אנר`
+                          : `Auto-Classify ${untaggedTracks.length} Untagged`}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {bulkClassifyNotice && (
+                  <div className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 text-xs font-semibold">
+                    {bulkClassifyNotice}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
+                  <button
+                    onClick={() => setSelectedGenre(null)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border ${
+                      !selectedGenre
+                        ? 'bg-white text-black border-white shadow-md'
+                        : 'bg-white/[0.05] text-white/80 hover:text-white hover:bg-white/[0.12] border-white/10'
+                    }`}
+                  >
+                    {isHe ? `הכל (${validHomeTracks.length})` : `All (${validHomeTracks.length})`}
+                  </button>
+                  {CANONICAL_GENRES.filter((g) => (genreCounts[g.id] || 0) > 0).map((g) => {
+                    const count = genreCounts[g.id] || 0;
+                    const active = selectedGenre === g.id;
+                    return (
+                      <button
+                        key={g.id}
+                        onClick={() => setSelectedGenre(active ? null : g.id)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border flex items-center gap-1.5 ${
+                          active
+                            ? 'bg-emerald-500 text-black border-emerald-400 shadow-md'
+                            : 'bg-white/[0.05] text-white/85 hover:text-white hover:bg-white/[0.12] border-white/10'
+                        }`}
+                      >
+                        <span>{isHe ? g.labelHe : g.labelEn}</span>
+                        <span className={`text-[10px] ${active ? 'text-black/70' : 'text-white/50'}`}>
+                          ({count})
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
 
               {/* ROW 1: השירים המובילים (Leading Songs by Popularity / Plays) */}
               <section className="space-y-4">
@@ -1235,7 +1386,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                       <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
                         <span className="text-[10px] text-white/50 font-medium truncate">
-                          {track.genre || 'Music'}
+                          {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
                           onClick={(e) => {
@@ -1464,7 +1615,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                       <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
                         <span className="text-white/60 text-[10px] font-medium truncate">
-                          {track.genre || 'Music'}
+                          {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
                           onClick={(e) => {
@@ -1496,201 +1647,156 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 </div>
               </section>
 
-              {/* ROW 5: להיטים עולמיים ומקומיים (Pop & Rock) */}
-              <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                      {isHe ? 'להיטים עולמיים ומקומיים' : 'Global & Local Hits'}
-                    </h2>
-                    <p className="text-xs text-white/60 mt-0.5 font-normal">
-                      {isHe ? 'מקצבים סוחפים, פופ ורוק' : 'Rhythmic pop and rock anthems'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
-                  {popTracks.slice(0, 7).map((track, idx) => (
-                    <div
-                      key={track.id}
-                      onClick={() => openSongPlayer(track)}
-                      onMouseEnter={() => prewarmTrackColor(track)}
-                      className="group relative p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
-                    >
+              {/* AUDIO-CLASSIFIED CURATED GENRE SECTIONS */}
+              {[
+                {
+                  id: 'Mizrahi',
+                  titleHe: 'מזרחית וים-תיכוני',
+                  titleEn: 'Mizrahi & Mediterranean',
+                  subtitleHe: 'סלסולים, מקצבים ים-תיכוניים ולהיטים ישראליים',
+                  subtitleEn: 'Middle Eastern & Mediterranean vocal hits',
+                  tracks: mizrahiTracks,
+                },
+                {
+                  id: 'Pop',
+                  titleHe: 'פופ ולהיטים עכשוויים',
+                  titleEn: 'Pop & Contemporary Hits',
+                  subtitleHe: 'שירים שסווגו כפופ עכשווי וקצבי',
+                  subtitleEn: 'Catchy contemporary pop tracks',
+                  tracks: popTracks,
+                },
+                {
+                  id: 'Hip Hop',
+                  titleHe: 'היפ הופ וראפ',
+                  titleEn: 'Hip Hop & Rap',
+                  subtitleHe: 'ביטים, פלואו ויצירת היפ הופ מקורית',
+                  subtitleEn: 'Beats, rap verses & hip hop flow',
+                  tracks: hipHopTracks,
+                },
+                {
+                  id: 'Rock',
+                  titleHe: 'רוק וגיטרות',
+                  titleEn: 'Rock & Guitars',
+                  subtitleHe: 'סאונד רוק, גיטרות חיות ואנרגיה גבוהה',
+                  subtitleEn: 'Electric guitars & live drums',
+                  tracks: rockTracks,
+                },
+                {
+                  id: 'Chill',
+                  titleHe: 'צ׳יל ואלקטרוני',
+                  titleEn: 'Chill & Electronic',
+                  subtitleHe: 'אווירה, אלקטרוניקה, לו-פיי ומוזיקה לרקע',
+                  subtitleEn: 'Ambient, lo-fi and electronic beats',
+                  tracks: chillTracks,
+                },
+                {
+                  id: 'Acoustic',
+                  titleHe: 'אקוסטי, קלאסי, ג׳אז וקולנועי',
+                  titleEn: 'Acoustic, Classical & Jazz',
+                  subtitleHe: 'יצירות אקוסטיות, תזמורתיות ומוזיקת נשמה',
+                  subtitleEn: 'Acoustic warmth, classical & jazz instrumentation',
+                  tracks: acousticClassicTracks,
+                },
+              ]
+                .filter((sec) => sec.tracks.length > 0)
+                .map((section) => (
+                  <section key={section.id} className="space-y-4">
+                    <div className="flex items-center justify-between">
                       <div>
-                        <div className="relative aspect-square w-full rounded-[8px] overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
-                          <div className="w-full h-full transition-transform duration-300 ease-out group-hover:scale-[1.03]">
-                            <TrackCoverArt
-                              coverUrl={track.coverUrl}
-                              artistName={track.artistName}
-                              trackName={track.name}
-                              genre={track.genre}
-                              priority={idx < 5}
-                            />
-                          </div>
-                          {track.isAiGenerated && (
-                            <div className="absolute top-2 start-2 z-10">
-                              <span className="px-1.5 py-0.5 rounded-md bg-purple-600/90 text-[9px] font-black text-white shadow-md flex items-center gap-0.5 backdrop-blur-sm border border-purple-400/40">
-                                <Sparkles className="w-2.5 h-2.5 text-purple-200" />
-                                AI
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <h3 className="font-semibold text-sm text-white truncate flex-1">
-                            {track.name}
-                          </h3>
-                          {track.isAiGenerated && (
-                            <span className="px-1 py-0.2 rounded bg-purple-900/60 border border-purple-400/40 text-purple-200 text-[9px] font-black shrink-0">
-                              AI
-                            </span>
-                          )}
-                        </div>
-                        <p
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setProfileArtistName(track.artistName);
-                          }}
-                          className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
-                        >
-                          {track.artistName}
+                        <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                          {isHe ? section.titleHe : section.titleEn}
+                        </h2>
+                        <p className="text-xs text-white/60 mt-0.5 font-normal">
+                          {isHe ? section.subtitleHe : section.subtitleEn}
                         </p>
                       </div>
-
-                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                        <span className="text-white/60 text-[10px] font-medium truncate">
-                          {track.genre || 'Music'}
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleFavorite(track.id);
-                          }}
-                          className="hover:scale-110 transition-transform p-1 cursor-pointer"
-                          title={
-                            likedSongIds.includes(track.id)
-                              ? isHe
-                                ? 'נשמר במועדפים'
-                                : 'Liked'
-                              : isHe
-                              ? 'הוסף למועדפים'
-                              : 'Add to Favorites'
-                          }
-                        >
-                          <Heart
-                            className={`w-3.5 h-3.5 ${
-                              likedSongIds.includes(track.id)
-                                ? 'fill-rose-500 text-rose-500'
-                                : 'text-white/40 hover:text-white'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              {/* ROW 6: צ׳יל ומוזיקה מרגיעה (Chill & Electronic) */}
-              {chillTracks.length > 0 && (
-                <section className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                        {isHe ? 'צ׳יל ומוזיקה מרגיעה' : 'Chill & Relaxing'}
-                      </h2>
-                      <p className="text-xs text-white/60 mt-0.5 font-normal">
-                        {isHe ? 'מוזיקה לרוגע, ריכוז ושקט פנימי' : 'Ambient, lo-fi and electronic vibes'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
-                    {chillTracks.slice(0, 7).map((track, idx) => (
-                      <div
-                        key={track.id}
-                        onClick={() => openSongPlayer(track)}
-                        onMouseEnter={() => prewarmTrackColor(track)}
-                        className="group relative p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                      <button
+                        onClick={() => setSelectedGenre(section.id)}
+                        className="text-xs font-medium text-white/60 hover:text-white hover:underline cursor-pointer"
                       >
-                        <div>
-                          <div className="relative aspect-square w-full rounded-[8px] overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
-                            <div className="w-full h-full transition-transform duration-300 ease-out group-hover:scale-[1.03]">
-                              <TrackCoverArt
-                                coverUrl={track.coverUrl}
-                                artistName={track.artistName}
-                                trackName={track.name}
-                                genre={track.genre}
-                                priority={idx < 4}
-                              />
-                            </div>
-                            {track.isAiGenerated && (
-                              <div className="absolute top-2 start-2 z-10">
-                                <span className="px-1.5 py-0.5 rounded-md bg-purple-600/90 text-[9px] font-black text-white shadow-md flex items-center gap-0.5 backdrop-blur-sm border border-purple-400/40">
-                                  <Sparkles className="w-2.5 h-2.5 text-purple-200" />
-                                  AI
-                                </span>
+                        {isHe ? `הכל בז׳אנר (${section.tracks.length})` : `Show all (${section.tracks.length})`}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
+                      {section.tracks.slice(0, 7).map((track, idx) => (
+                        <div
+                          key={track.id}
+                          onClick={() => openSongPlayer(track)}
+                          onMouseEnter={() => prewarmTrackColor(track)}
+                          className="group relative p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                        >
+                          <div>
+                            <div className="relative aspect-square w-full rounded-[8px] overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
+                              <div className="w-full h-full transition-transform duration-300 ease-out group-hover:scale-[1.03]">
+                                <TrackCoverArt
+                                  coverUrl={track.coverUrl}
+                                  artistName={track.artistName}
+                                  trackName={track.name}
+                                  genre={track.genre}
+                                  priority={idx < 4}
+                                />
                               </div>
-                            )}
+                              {track.isAiGenerated && (
+                                <div className="absolute top-2 start-2 z-10">
+                                  <span className="px-1.5 py-0.5 rounded-md bg-purple-600/90 text-[9px] font-black text-white shadow-md flex items-center gap-0.5 backdrop-blur-sm border border-purple-400/40">
+                                    <Sparkles className="w-2.5 h-2.5 text-purple-200" />
+                                    AI
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <h3 className="font-semibold text-sm text-white truncate flex-1">
+                                {track.name}
+                              </h3>
+                            </div>
+                            <p
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setProfileArtistName(track.artistName);
+                              }}
+                              className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                            >
+                              {track.artistName}
+                            </p>
                           </div>
 
-                          <div className="flex items-center gap-1.5">
-                            <h3 className="font-semibold text-sm text-white truncate flex-1">
-                              {track.name}
-                            </h3>
-                            {track.isAiGenerated && (
-                              <span className="px-1 py-0.2 rounded bg-purple-900/60 border border-purple-400/40 text-purple-200 text-[9px] font-black shrink-0">
-                                AI
-                              </span>
-                            )}
-                          </div>
-                          <p
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setProfileArtistName(track.artistName);
-                            }}
-                            className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
-                          >
-                            {track.artistName}
-                          </p>
-                        </div>
-
-                        <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                          <span className="text-white/60 text-[10px] font-medium truncate">
-                            {track.genre || 'Music'}
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFavorite(track.id);
-                            }}
-                            className="hover:scale-110 transition-transform p-1 cursor-pointer"
-                            title={
-                              likedSongIds.includes(track.id)
-                                ? isHe
-                                  ? 'נשמר במועדפים'
-                                  : 'Liked'
-                                : isHe
-                                ? 'הוסף למועדפים'
-                                : 'Add to Favorites'
-                            }
-                          >
-                            <Heart
-                              className={`w-3.5 h-3.5 ${
+                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
+                            <span className="text-emerald-300/80 text-[10px] font-semibold truncate">
+                              {getGenreDisplayLabel(track.genre, isHe)}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFavorite(track.id);
+                              }}
+                              className="hover:scale-110 transition-transform p-1 cursor-pointer"
+                              title={
                                 likedSongIds.includes(track.id)
-                                  ? 'fill-rose-500 text-rose-500'
-                                  : 'text-white/40 hover:text-white'
-                              }`}
-                            />
-                          </button>
+                                  ? isHe
+                                    ? 'נשמר במועדפים'
+                                    : 'Liked'
+                                  : isHe
+                                  ? 'הוסף למועדפים'
+                                  : 'Add to Favorites'
+                              }
+                            >
+                              <Heart
+                                className={`w-3.5 h-3.5 ${
+                                  likedSongIds.includes(track.id)
+                                    ? 'fill-rose-500 text-rose-500'
+                                    : 'text-white/40 hover:text-white'
+                                }`}
+                              />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
+                      ))}
+                    </div>
+                  </section>
+                ))}
             </div>
           )}
 

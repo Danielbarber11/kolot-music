@@ -112,6 +112,20 @@ export interface Album {
   createdDate: string;
 }
 
+export interface SubtitleWord {
+  text: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface SubtitleSegment {
+  id?: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  words?: SubtitleWord[];
+}
+
 export interface JamendoTrack {
   id: string;
   name: string;
@@ -125,6 +139,8 @@ export interface JamendoTrack {
   source?: string;
   legalStatus?: string;
   lyrics?: string;
+  subtitleSegments?: SubtitleSegment[];
+  hasWhisperSubtitles?: boolean;
   artistId?: string;
   albumId?: string;
   genre?: string;

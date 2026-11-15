@@ -207,6 +207,11 @@ export function getEffectiveUserAvatar(
   user: FirebaseUser | null,
   profile?: ArtistProfile | null
 ): string | undefined {
+  // Prefer custom uploaded profile avatar (non-Google default or explicitly stored R2/uploaded image)
+  if (profile?.avatarUrl && !profile.avatarUrl.includes('googleusercontent.com')) {
+    return profile.avatarUrl;
+  }
+
   if (!user) return profile?.avatarUrl;
   const primaryProvider = user.providerData?.[0];
   const providerId = primaryProvider?.providerId || '';
@@ -221,9 +226,8 @@ export function getEffectiveUserAvatar(
     return user.photoURL;
   }
 
-  // If custom avatar set on profile (e.g. uploaded file or Cloud avatar)
+  // If profile avatar is a Google URL while signed in with Google
   if (profile?.avatarUrl) {
-    // If it's a Google picture URL, only return it if current login is Google
     if (profile.avatarUrl.includes('googleusercontent.com')) {
       if (providerId.includes('google')) {
         return profile.avatarUrl;
@@ -405,6 +409,8 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
       albumName: (track.albumName || 'Single').slice(0, 100),
       genre: (track.genre || 'Pop').slice(0, 50),
       lyrics: (track.lyrics || '').slice(0, 8000),
+      subtitleSegments: Array.isArray(track.subtitleSegments) ? track.subtitleSegments.slice(0, 300) : [],
+      hasWhisperSubtitles: !!track.hasWhisperSubtitles || (Array.isArray(track.subtitleSegments) && track.subtitleSegments.length > 0),
       bgColor: track.bgColor || '',
       uploadedByUid: track.uploadedByUid || '',
       uploadedByEmail: track.uploadedByEmail || '',
@@ -468,6 +474,8 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           source: 'Kolot R2 Storage',
           legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
           lyrics: data.lyrics || undefined,
+          subtitleSegments: Array.isArray(data.subtitleSegments) && data.subtitleSegments.length > 0 ? data.subtitleSegments : undefined,
+          hasWhisperSubtitles: !!data.hasWhisperSubtitles || (Array.isArray(data.subtitleSegments) && data.subtitleSegments.length > 0),
           publishedDate: data.createdAt || '2024',
           publisherAccountUrl: data.publisherAccountUrl || 'https://audius.co',
           uploadedByUid: data.uploadedByUid || undefined,

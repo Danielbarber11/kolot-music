@@ -31,9 +31,12 @@ import {
   CheckCircle2,
   Cloud,
   Server,
+  Captions,
+  Loader2,
+  Wand2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, Album } from '../types';
+import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment } from '../types';
 import {
   saveArtistAccountToFirebase,
   saveArtistTrackToFirebase,
@@ -49,12 +52,16 @@ import {
   deleteTrackFromCloud,
   uploadAlbumToCloud,
   deleteAlbumFromCloud,
+  uploadArtistProfileToCloud,
+  saveTrackSubtitlesInCloud,
   getCloudStorageConfig,
   checkR2StorageStatus,
 } from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getTrackInstantColor, getArtistStableTheme, globalTrackColorCache, extractImageColor } from '../services/colorService';
+import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
+import { transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
+import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { getCachedAlbums, saveCachedAlbums, fetchAllRealSongs, getInstantSongPool, saveCachedCloudTracks } from '../services/multiMusicService';
@@ -71,7 +78,12 @@ interface ArtistPortalModalProps {
   onRemoveTrack?: (trackId: string) => void;
 }
 
-export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
+export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
+  if (!props.isOpen) return null;
+  return <ArtistPortalModalContent {...props} />;
+};
+
+const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   isOpen,
   onClose,
   lang,
@@ -81,7 +93,6 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   onPlayTrack,
   onRemoveTrack,
 }) => {
-  if (!isOpen) return null;
   const isHe = lang === 'he';
 
   const [activeTab, setActiveTab] = useState<'profile' | 'manual_upload' | 'account_settings' | 'albums'>(initialTab);
@@ -126,6 +137,11 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   const [coverFileName, setCoverFileName] = useState('');
   const [albumTitle, setAlbumTitle] = useState('');
   const [lyricsInput, setLyricsInput] = useState('');
+  const [whisperDraftSegments, setWhisperDraftSegments] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
+  const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
+  const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
+  const [genreDetectionNotice, setGenreDetectionNotice] = useState<AudioClassificationResult | null>(null);
   const [audioUploadType, setAudioUploadType] = useState<'file' | 'url'>('file');
   const [coverUploadType, setCoverUploadType] = useState<'file' | 'url'>('file');
   const [isPublishing, setIsPublishing] = useState(false);
@@ -645,12 +661,29 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         ? (cleanHandle.startsWith('http') ? cleanHandle : `https://audius.co/${cleanHandle}`)
         : undefined;
 
+      let finalAvatarUrl: string | undefined = artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL || undefined;
+
+      const artistIdForUpload = currentUser ? currentUser.uid : currentArtist.id;
+      if (artistAvatarFile) {
+        const cloudAvatarRes = await uploadArtistProfileToCloud(
+          { ...currentArtist, id: artistIdForUpload, name: finalName },
+          artistAvatarFile
+        );
+        if (cloudAvatarRes.success && cloudAvatarRes.avatarUrl) {
+          finalAvatarUrl = cloudAvatarRes.avatarUrl;
+        }
+      }
+
+      if (finalAvatarUrl) {
+        await extractImageColor(finalAvatarUrl).catch(() => {});
+      }
+
       const updatedArtist: ArtistProfile = {
         ...currentArtist,
-        id: currentUser ? currentUser.uid : currentArtist.id,
+        id: artistIdForUpload,
         name: finalName,
         bio: artistBioInput.trim() || currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
-        avatarUrl: currentUser?.photoURL || currentArtist.avatarUrl,
+        avatarUrl: finalAvatarUrl,
         genre: genreInput || currentArtist.genre,
         audiusHandle: cleanHandle || currentArtist.audiusHandle,
         archiveAccountUrl: accountUrl || currentArtist.archiveAccountUrl,
@@ -663,6 +696,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       };
 
       setCurrentArtist(updatedArtist);
+      setArtistAvatarFile(null);
+      if (finalAvatarUrl) setArtistAvatarPreview(finalAvatarUrl);
       await saveArtistAccountToFirebase(updatedArtist);
       
       setPublishSuccess(true);
@@ -722,6 +757,24 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     if (coverInputRef.current) coverInputRef.current.value = '';
   };
 
+  const handleAutoDetectGenre = async () => {
+    if (!rawAudioFile && !audioStreamUrl.trim() && !songTitle.trim()) return;
+    setIsClassifyingGenre(true);
+    setGenreDetectionNotice(null);
+    const result = await classifyTrackAudio({
+      audioFile: rawAudioFile || undefined,
+      audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
+      songTitle: songTitle.trim(),
+      artistName: performingArtistInput.trim() || currentArtist.name,
+      lyrics: lyricsInput.trim(),
+    });
+    setIsClassifyingGenre(false);
+    setGenreDetectionNotice(result);
+    if (result.success && result.genre) {
+      setGenreInput(result.genre);
+    }
+  };
+
   // Publish Track -> Direct, Verified Commit to Public Cloud Storage
   const handlePublishTrack = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -731,7 +784,24 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
     setPublishErrorMessage(null);
     setPublishProgressStep(isHe ? 'מתחבר לאחסון הענן ומכין את הקבצים...' : 'Connecting to Cloud Storage...');
 
-    const effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
+    let effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
+
+    // Auto-classify genre via Audio Classification when artist leaves genre untagged
+    if (!effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי') {
+      setPublishProgressStep(isHe ? 'מאזין לשיר ומסווג ז׳אנר אוטומטית (Audio Classification)...' : 'Detecting genre from audio...');
+      try {
+        const autoCls = await classifyTrackAudio({
+          audioFile: rawAudioFile || undefined,
+          audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
+          songTitle: songTitle.trim(),
+          artistName: performingArtistInput.trim() || currentArtist.name,
+          lyrics: lyricsInput.trim(),
+        });
+        if (autoCls.success && autoCls.genre) {
+          effectiveGenre = autoCls.genre;
+        }
+      } catch {}
+    }
 
     const trackId = `artist_track_${Date.now()}`;
     const tempTrackForColor: JamendoTrack = {
@@ -783,6 +853,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       source: 'Kolot R2 Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
       lyrics: lyricsInput.trim() || undefined,
+      subtitleSegments: whisperDraftSegments && whisperDraftSegments.length > 0 ? whisperDraftSegments : undefined,
+      hasWhisperSubtitles: !!(whisperDraftSegments && whisperDraftSegments.length > 0),
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(currentUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
@@ -830,6 +902,22 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       // 2. Save metadata to Firebase Firestore
       await saveArtistTrackToFirebase(newTrack).catch(() => {});
 
+      // 2b. Auto-generate Whisper AI subtitles in the background if not manually pre-generated
+      if (!newTrack.subtitleSegments || newTrack.subtitleSegments.length === 0) {
+        transcribeTrackWithWhisperAI({
+          track: newTrack,
+          language: isHe ? 'he' : 'en',
+        }).then((wRes) => {
+          if (wRes.success && wRes.segments && wRes.segments.length > 0) {
+            newTrack.subtitleSegments = wRes.segments;
+            newTrack.hasWhisperSubtitles = true;
+            if (!newTrack.lyrics && wRes.lyrics) newTrack.lyrics = wRes.lyrics;
+            saveTrackSubtitlesInCloud(newTrack, wRes.segments, newTrack.lyrics).catch(() => {});
+            saveArtistTrackToFirebase(newTrack).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+
       // 3. Update session pool and broadcast track to UI
       saveCachedCloudTracks([newTrack, ...getInstantSongPool()]);
       onTrackPublished(newTrack);
@@ -852,6 +940,10 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
       setAlbumTitle('');
       setIsAiGeneratedInput(false);
       setLyricsInput('');
+      setWhisperDraftSegments(undefined);
+      setWhisperUploadNotice(null);
+      setGenreDetectionNotice(null);
+      setGenreInput('ללא סגנון מוזיקלי');
       setCustomGenreText('');
       setHasCertifiedRights(false);
 
@@ -890,8 +982,8 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
   });
 
   const sampleTrack = myUploadedTracks[0] || allTracks[0];
-  const activeAvatar = getEffectiveUserAvatar(currentUser, currentArtist);
-  const themeColor = getArtistStableTheme(currentArtist.name, activeAvatar);
+  const activeAvatar = artistAvatarPreview || getEffectiveUserAvatar(currentUser, currentArtist);
+  const themeColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
 
   if (!currentUser) {
     return (
@@ -1018,42 +1110,45 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
         {/* 1. PUBLIC ARTIST PROFILE SCREEN - COMPACT HEADER, NO DEAD GAP */}
         {activeTab === 'profile' && (
           <div className="w-full flex-1 flex flex-col">
-            <div className="relative w-full overflow-hidden border-b border-white/10">
+            <div
+              className="relative w-full overflow-hidden border-b border-white/10 transition-colors duration-700"
+              style={{
+                background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.52) 0%, rgba(${Math.round(themeColor.r * 0.35)}, ${Math.round(themeColor.g * 0.35)}, ${Math.round(themeColor.b * 0.35)}, 0.45) 55%, #070b14 100%)`,
+              }}
+            >
               <div
                 className="relative w-full h-32 sm:h-40 overflow-hidden"
                 style={{
-                  background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.55) 0%, rgba(7, 11, 20, 0.95) 85%)`,
+                  background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.78) 0%, rgba(${Math.round(themeColor.r * 0.28)}, ${Math.round(themeColor.g * 0.28)}, ${Math.round(themeColor.b * 0.28)}, 0.55) 65%, transparent 100%)`,
                 }}
               >
                 <div
-                  className="absolute -top-12 left-1/4 w-72 h-72 rounded-full blur-[90px] opacity-60 pointer-events-none"
+                  className="absolute -top-12 left-1/4 w-80 h-80 rounded-full blur-[100px] opacity-70 pointer-events-none"
                   style={{ background: `rgb(${themeColor.r}, ${themeColor.g}, ${themeColor.b})` }}
                 />
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/60 to-[#070b14]" />
+                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/35 to-[#070b14]/90" />
               </div>
 
               <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
                   <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#070b14] bg-slate-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
-                    {(() => {
-                      const avatar = getEffectiveUserAvatar(currentUser, currentArtist);
-                      return avatar ? (
-                        <img
-                          src={avatar}
-                          alt={currentArtist.name}
-                          className="w-full h-full rounded-full object-cover"
-                        />
-                      ) : (
-                        <div
-                          className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-inner select-none"
-                          style={{
-                            background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
-                          }}
-                        >
-                          {currentArtist.name?.[0] || 'A'}
-                        </div>
-                      );
-                    })()}
+                    {activeAvatar ? (
+                      <img
+                        src={activeAvatar}
+                        alt={currentArtist.name}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full rounded-full object-cover"
+                      />
+                    ) : (
+                      <div
+                        className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-inner select-none"
+                        style={{
+                          background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
+                        }}
+                      >
+                        {currentArtist.name?.[0] || 'A'}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1755,23 +1850,72 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 3. MUSICAL STYLE SELECTOR */}
+                {/* 3. MUSICAL STYLE SELECTOR WITH AUDIO CLASSIFICATION */}
                 <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
-                  <label className="block text-white font-extrabold text-xs">
-                    {isHe ? 'סגנון מוזיקלי *' : 'Musical Style *'}
-                  </label>
-                  
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-white font-extrabold text-xs flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-emerald-400" />
+                      <span>{isHe ? 'סגנון מוזיקלי *' : 'Musical Style *'}</span>
+                    </label>
+
+                    <button
+                      type="button"
+                      disabled={isClassifyingGenre || (!rawAudioFile && !audioStreamUrl.trim() && !songTitle.trim())}
+                      onClick={handleAutoDetectGenre}
+                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500/25 to-cyan-500/20 hover:from-emerald-500/35 hover:to-cyan-500/30 border border-emerald-400/50 text-emerald-200 text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md"
+                    >
+                      {isClassifyingGenre ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-300" />
+                      ) : (
+                        <Wand2 className="w-3.5 h-3.5 text-emerald-300" />
+                      )}
+                      <span>
+                        {isClassifyingGenre
+                          ? (isHe ? 'מזהה ז׳אנר מהשמע...' : 'Classifying audio...')
+                          : (isHe ? 'מצא ז׳אנר אוטומטי' : 'Auto-Detect Genre')}
+                      </span>
+                    </button>
+                  </div>
+
+                  {genreDetectionNotice && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] flex flex-wrap items-center justify-between gap-2 ${
+                        genreDetectionNotice.success
+                          ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-200'
+                          : 'bg-rose-500/10 border-rose-500/35 text-rose-200'
+                      }`}
+                    >
+                      {genreDetectionNotice.success ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                            <span>
+                              {isHe
+                                ? `זוהה ז׳אנר: ${genreDetectionNotice.hebrewGenre} (${Math.round(genreDetectionNotice.confidence * 100)}% התאמה)`
+                                : `Detected: ${genreDetectionNotice.genre} (${Math.round(genreDetectionNotice.confidence * 100)}%)`}
+                              {genreDetectionNotice.mood ? ` • אווירה: ${genreDetectionNotice.mood}` : ''}
+                              {genreDetectionNotice.bpmEstimate ? ` • ~${genreDetectionNotice.bpmEstimate} BPM` : ''}
+                            </span>
+                          </div>
+                          {genreDetectionNotice.reasonHe && (
+                            <span className="text-[10px] text-emerald-300/80 block w-full ps-6">
+                              {genreDetectionNotice.reasonHe}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span>{genreDetectionNotice.error}</span>
+                      )}
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
-                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'ללא סגנון מוזיקלי' : 'No Style' },
-                      { id: 'Pop', label: isHe ? 'פופ' : 'Pop' },
-                      { id: 'Rock', label: isHe ? 'רוק' : 'Rock' },
-                      { id: 'Mizrahi', label: isHe ? 'מזרחית' : 'Mizrahi' },
-                      { id: 'Electronic', label: isHe ? 'אלקטרוני' : 'Electronic' },
-                      { id: 'Hip Hop', label: isHe ? 'היפ הופ / ראפ' : 'Hip Hop' },
-                      { id: 'Acoustic', label: isHe ? 'אקוסטי' : 'Acoustic' },
-                      { id: 'Chill', label: isHe ? 'צ׳יל' : 'Chill' },
-                      { id: 'Classical', label: isHe ? 'קלאסי' : 'Classical' },
+                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'זיהוי אוטומטי / ללא' : 'Auto / None' },
+                      ...CANONICAL_GENRES.map((g) => ({
+                        id: g.id,
+                        label: isHe ? g.labelHe : g.labelEn,
+                      })),
                       { id: 'אחר', label: isHe ? 'אחר...' : 'Other...' },
                     ].map((g) => {
                       const isSelected = genreInput === g.id;
@@ -1806,22 +1950,70 @@ export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 4. TRACK DESCRIPTION / NOTES */}
+                {/* 4. WHISPER AI SUBTITLES & TRACK LYRICS / NOTES */}
                 <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-extrabold text-white flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'תיאור השיר / הערות (אופציונלי)' : 'Description / Notes (Optional)'}</span>
+                      <Captions className="w-4 h-4 text-emerald-400" />
+                      <span>{isHe ? 'מילות השיר וכתוביות Whisper AI (אופציונלי)' : 'Lyrics & Whisper AI Subtitles (Optional)'}</span>
                     </label>
+
+                    <button
+                      type="button"
+                      disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
+                      onClick={async () => {
+                        setIsTranscribingUpload(true);
+                        setWhisperUploadNotice(null);
+                        const wRes = await transcribeTrackWithWhisperAI({
+                          audioFile: rawAudioFile || undefined,
+                          track: !rawAudioFile && audioStreamUrl.trim() ? {
+                            id: 'draft',
+                            name: songTitle || 'שיר',
+                            artistName: currentArtist.name || 'אמן',
+                            albumName: albumTitle || 'Single',
+                            duration: 180,
+                            audioUrl: audioStreamUrl.trim(),
+                            coverUrl: coverArtUrl.trim(),
+                          } : undefined,
+                          language: isHe ? 'he' : 'en',
+                        });
+                        setIsTranscribingUpload(false);
+                        if (wRes.success && wRes.segments && wRes.segments.length > 0) {
+                          setWhisperDraftSegments(wRes.segments);
+                          if (wRes.lyrics) setLyricsInput(wRes.lyrics);
+                          setWhisperUploadNotice(isHe ? `נוצרו ${wRes.segments.length} כתוביות מסונכרנות בהצלחה!` : `Generated ${wRes.segments.length} synced subtitles!`);
+                        } else {
+                          setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-extrabold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {isTranscribingUpload ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {isTranscribingUpload
+                          ? (isHe ? 'מתמלל כתוביות Whisper AI...' : 'Transcribing with Whisper AI...')
+                          : (isHe ? 'חולל כתוביות Whisper AI מהשמע' : 'Generate Whisper AI Subtitles')}
+                      </span>
+                    </button>
                   </div>
+
+                  {whisperUploadNotice && (
+                    <p className="text-[11px] text-emerald-300 font-bold bg-emerald-950/50 border border-emerald-500/30 px-3 py-1.5 rounded-xl">
+                      {whisperUploadNotice}
+                    </p>
+                  )}
 
                   <textarea
                     rows={3}
                     value={lyricsInput}
                     onChange={(e) => setLyricsInput(e.target.value)}
                     placeholder={isHe
-                      ? 'הקלד תיאור או הערות נוספות על השיר...'
-                      : 'Type description or notes about the track...'}
+                      ? 'הקלד מילות שיר או לחץ על "חולל כתוביות Whisper AI מהשמע" כדי לייצר כתוביות מסונכרנות אוטומטית...'
+                      : 'Type lyrics or click "Generate Whisper AI Subtitles" from your audio file...'}
                     className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 text-xs font-sans leading-relaxed transition-all"
                   />
                 </div>

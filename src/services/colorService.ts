@@ -96,7 +96,54 @@ export function getFormattedPlayCount(track?: Partial<JamendoTrack> | null): str
 }
 
 /**
- * Dynamically samples an image URL via HTML Canvas to extract its dominant vibrant color.
+ * Loads an HTMLImageElement cleanly with CORS support, falling back through /api/proxy-image if tainted/blocked.
+ */
+function loadImageForColorSampling(url: string): Promise<HTMLImageElement | null> {
+  const tryLoad = (src: string, useCrossOrigin: boolean): Promise<HTMLImageElement | null> =>
+    new Promise((resolve) => {
+      const img = new Image();
+      if (useCrossOrigin) {
+        img.crossOrigin = 'anonymous';
+      }
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+
+  return (async () => {
+    const direct = await tryLoad(url, true);
+    if (direct) {
+      // Quick probe whether canvas pixel read is allowed (CORS non-tainted)
+      try {
+        const probeCanvas = document.createElement('canvas');
+        probeCanvas.width = 4;
+        probeCanvas.height = 4;
+        const probeCtx = probeCanvas.getContext('2d');
+        if (probeCtx) {
+          probeCtx.drawImage(direct, 0, 0, 4, 4);
+          probeCtx.getImageData(0, 0, 1, 1);
+          return direct;
+        }
+      } catch {
+        // Canvas tainted — fall back to server CORS image proxy
+      }
+    }
+
+    if (
+      (url.startsWith('https://') || url.startsWith('http://')) &&
+      !url.includes('/api/proxy-image')
+    ) {
+      const proxiedUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
+      const proxied = await tryLoad(proxiedUrl, true);
+      if (proxied) return proxied;
+    }
+
+    return null;
+  })();
+}
+
+/**
+ * Dynamically samples an image URL via HTML Canvas using quantized dominant-color clustering.
  */
 export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: number; b: number }> {
   if (!imageUrl || !imageUrl.trim()) {
@@ -109,66 +156,110 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
 
   const fallbackColor = stringToVibrantRGB(key);
 
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 16;
-        canvas.height = 16;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          globalTrackColorCache.set(key, fallbackColor);
-          resolve(fallbackColor);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, 16, 16);
-        const data = ctx.getImageData(0, 0, 16, 16).data;
+  return loadImageForColorSampling(key).then((img) => {
+    if (!img) {
+      return fallbackColor;
+    }
 
-        let rSum = 0, gSum = 0, bSum = 0, count = 0;
-        let maxSaturation = -1;
-        let bestColor = fallbackColor;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return fallbackColor;
 
+      ctx.drawImage(img, 0, 0, 32, 32);
+      const data = ctx.getImageData(0, 0, 32, 32).data;
+
+      // Quantize pixels into color buckets (step 24) and score by area coverage + vibrancy
+      const buckets = new Map<string, { rSum: number; gSum: number; bSum: number; count: number; satSum: number }>();
+      let totalR = 0, totalG = 0, totalB = 0, totalCount = 0;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const a = data[i + 3];
+        if (a < 180) continue;
+
+        const sum = r + g + b;
+        // Skip near-pure black and near-pure white backgrounds so real subject/theme tones win
+        if (sum <= 45 || sum >= 725) continue;
+
+        totalR += r;
+        totalG += g;
+        totalB += b;
+        totalCount++;
+
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const sat = max === 0 ? 0 : (max - min) / max;
+
+        const qr = Math.floor(r / 24);
+        const qg = Math.floor(g / 24);
+        const qb = Math.floor(b / 24);
+        const bKey = `${qr}_${qg}_${qb}`;
+        const existing = buckets.get(bKey) || { rSum: 0, gSum: 0, bSum: 0, count: 0, satSum: 0 };
+        existing.rSum += r;
+        existing.gSum += g;
+        existing.bSum += b;
+        existing.count += 1;
+        existing.satSum += sat;
+        buckets.set(bKey, existing);
+      }
+
+      if (totalCount === 0) {
+        // Image is purely black/white — extract gentle slate/average from all opaque pixels
+        let allR = 0, allG = 0, allB = 0, allCount = 0;
         for (let i = 0; i < data.length; i += 4) {
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-          const a = data[i + 3];
-          if (a > 180 && (r + g + b > 50) && (r + g + b < 720)) {
-            rSum += r;
-            gSum += g;
-            bSum += b;
-            count++;
-
-            const max = Math.max(r, g, b);
-            const min = Math.min(r, g, b);
-            const sat = max === 0 ? 0 : (max - min) / max;
-            if (sat > maxSaturation) {
-              maxSaturation = sat;
-              bestColor = { r, g, b };
-            }
+          if (data[i + 3] >= 180) {
+            allR += data[i];
+            allG += data[i + 1];
+            allB += data[i + 2];
+            allCount++;
           }
         }
-
-        const finalColor = count > 0 && maxSaturation > 0.15 ? bestColor : (count > 0 ? {
-          r: Math.round(rSum / count),
-          g: Math.round(gSum / count),
-          b: Math.round(bSum / count),
-        } : fallbackColor);
-
-        globalTrackColorCache.set(key, finalColor);
-        resolve(finalColor);
-      } catch {
-        globalTrackColorCache.set(key, fallbackColor);
-        resolve(fallbackColor);
+        const neutral = allCount > 0
+          ? {
+              r: Math.max(35, Math.min(210, Math.round(allR / allCount))),
+              g: Math.max(35, Math.min(210, Math.round(allG / allCount))),
+              b: Math.max(40, Math.min(220, Math.round(allB / allCount))),
+            }
+          : fallbackColor;
+        globalTrackColorCache.set(key, neutral);
+        return neutral;
       }
-    };
-    img.onerror = () => {
-      globalTrackColorCache.set(key, fallbackColor);
-      resolve(fallbackColor);
-    };
-    img.src = key;
+
+      let bestBucket: { rSum: number; gSum: number; bSum: number; count: number; satSum: number } | null = null;
+      let bestScore = -1;
+
+      for (const bucket of buckets.values()) {
+        const avgSat = bucket.satSum / bucket.count;
+        // Favor dominant clusters with noticeable saturation without letting a 1px outlier win
+        const score = bucket.count * (0.4 + avgSat * 2.2);
+        if (score > bestScore) {
+          bestScore = score;
+          bestBucket = bucket;
+        }
+      }
+
+      const finalColor = bestBucket && bestBucket.count >= 2
+        ? {
+            r: Math.round(bestBucket.rSum / bestBucket.count),
+            g: Math.round(bestBucket.gSum / bestBucket.count),
+            b: Math.round(bestBucket.bSum / bestBucket.count),
+          }
+        : {
+            r: Math.round(totalR / totalCount),
+            g: Math.round(totalG / totalCount),
+            b: Math.round(totalB / totalCount),
+          };
+
+      globalTrackColorCache.set(key, finalColor);
+      return finalColor;
+    } catch {
+      return fallbackColor;
+    }
   });
 }
 
@@ -176,35 +267,40 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
  * React Hook that dynamically calculates the matching vibrant color from an image.
  */
 export function useExtractedColor(imageUrl?: string, fallbackGenre: string = 'Acoustic') {
+  const normalizedKey = imageUrl ? getStreamingMediaUrl(imageUrl).trim() : '';
+
   const [color, setColor] = useState<{ r: number; g: number; b: number }>(() => {
-    if (imageUrl && globalTrackColorCache.has(imageUrl)) {
-      return globalTrackColorCache.get(imageUrl)!;
+    if (normalizedKey && globalTrackColorCache.has(normalizedKey)) {
+      return globalTrackColorCache.get(normalizedKey)!;
     }
-    if (imageUrl) {
-      return stringToVibrantRGB(imageUrl);
+    if (normalizedKey) {
+      return stringToVibrantRGB(normalizedKey);
     }
     return GENRE_RGB_MAP[fallbackGenre] || stringToVibrantRGB(fallbackGenre);
   });
 
   useEffect(() => {
-    if (!imageUrl) {
+    let cancelled = false;
+    if (!normalizedKey) {
       setColor(GENRE_RGB_MAP[fallbackGenre] || stringToVibrantRGB(fallbackGenre));
       return;
     }
 
-    if (globalTrackColorCache.has(imageUrl)) {
-      setColor(globalTrackColorCache.get(imageUrl)!);
+    if (globalTrackColorCache.has(normalizedKey)) {
+      setColor(globalTrackColorCache.get(normalizedKey)!);
       return;
     }
 
-    extractImageColor(imageUrl).then((extracted) => {
-      if (extracted) {
+    extractImageColor(normalizedKey).then((extracted) => {
+      if (!cancelled && extracted) {
         setColor(extracted);
-      } else {
-        setColor(stringToVibrantRGB(imageUrl));
       }
     });
-  }, [imageUrl, fallbackGenre]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedKey, fallbackGenre]);
 
   return color;
 }
@@ -236,14 +332,15 @@ export const ARTIST_CURATED_PALETTES: { r: number; g: number; b: number }[] = [
 ];
 
 /**
- * Returns a permanent, 100% deterministic color palette for an artist matching avatar image.
+ * Returns a deterministic/cached color palette for an artist matching avatar image.
  */
 export function getArtistStableTheme(artistName?: string, avatarUrl?: string): { r: number; g: number; b: number } {
-  if (avatarUrl && globalTrackColorCache.has(avatarUrl)) {
-    return globalTrackColorCache.get(avatarUrl)!;
+  const normalized = avatarUrl ? getStreamingMediaUrl(avatarUrl).trim() : '';
+  if (normalized && globalTrackColorCache.has(normalized)) {
+    return globalTrackColorCache.get(normalized)!;
   }
-  if (avatarUrl && avatarUrl.trim().length > 0) {
-    return stringToVibrantRGB(avatarUrl);
+  if (normalized) {
+    return stringToVibrantRGB(normalized);
   }
 
   const cleanName = (artistName || '').trim().toLowerCase();

@@ -20,7 +20,9 @@ import { getDeletedSongIds } from './deletedTracksService';
 export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
 
 export const ALL_MUSIC_GENRES = [
+  'Mizrahi',
   'Pop',
+  'Hip Hop',
   'Rock',
   'Electronic',
   'Chill',

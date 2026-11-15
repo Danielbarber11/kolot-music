@@ -13,17 +13,31 @@ export interface CloudStorageConfig {
  */
 async function safeJson(res: Response, context: string): Promise<any> {
   const text = await res.text();
+  const trimmed = (text || '').trim();
+
+  if (!trimmed) {
+    if (res.status === 404 || res.status === 405) {
+      throw new Error(`${context}: נתיב השרת (/api/storage) לא נמצא (${res.status}). יש לחבר Worker/שרת פעיל ולפרוס מחדש.`);
+    }
+    throw new Error(`${context}: השרת החזיר תגובה ריקה (HTTP ${res.status}). ודא ששרת Cloudflare R2 / Express זמין.`);
+  }
+
+  if (trimmed.startsWith('<')) {
+    throw new Error(`${context}: השרת החזיר עמוד HTML במקום JSON (HTTP ${res.status}). בדוק שניתוב ה-API (/api/*) מחובר לשרת.`);
+  }
+
   if (!res.ok) {
-    let errDetail = text;
+    let errDetail = trimmed;
     try {
-      const parsed = JSON.parse(text);
-      errDetail = parsed.error || parsed.message || text;
+      const parsed = JSON.parse(trimmed);
+      errDetail = parsed.error || parsed.message || trimmed;
     } catch {}
     throw new Error(`${context}: ${errDetail}`);
   }
+
   try {
-    return JSON.parse(text);
-  } catch (e) {
+    return JSON.parse(trimmed);
+  } catch {
     throw new Error(`${context}: תגובת השרת אינה בפורמט JSON תקין`);
   }
 }
@@ -69,8 +83,8 @@ export function getR2AuthHeaders(): Record<string, string> {
 
 export async function checkR2StorageStatus(): Promise<{ configured: boolean; bucket?: string; error?: string }> {
   try {
-    const res = await fetch('/api/storage/status');
-    const data = await res.json();
+    const res = await fetch('/api/storage/status', { cache: 'no-store' });
+    const data = await safeJson(res, 'בדיקת חיבור Cloudflare R2 נכשלה');
     return {
       configured: !!data.configured,
       bucket: data.bucket,
@@ -121,8 +135,8 @@ export async function uploadTrackToCloudStorage(
         method: 'POST',
         body: audioFormData,
       });
-      const audioData = await audioRes.json();
-      if (audioRes.ok && audioData.success && audioData.url) {
+      const audioData = await safeJson(audioRes, 'העלאת קובץ השמע ל-Cloudflare R2 נכשלה');
+      if (audioData.success && audioData.url) {
         audioUrl = audioData.url;
       } else {
         return {
@@ -135,7 +149,7 @@ export async function uploadTrackToCloudStorage(
     } catch (err: any) {
       return {
         success: false,
-        error: `תקלת רשת בחיבור ל-Cloudflare R2: ${err?.message || 'אנא נסה שוב'}`,
+        error: err?.message || 'תקלת רשת בחיבור ל-Cloudflare R2. אנא נסה שוב.',
       };
     }
   }
@@ -168,8 +182,8 @@ export async function uploadTrackToCloudStorage(
         method: 'POST',
         body: coverFormData,
       });
-      const coverData = await coverRes.json();
-      if (coverRes.ok && coverData.success && coverData.url) {
+      const coverData = await safeJson(coverRes, 'העלאת תמונת העטיפה ל-Cloudflare R2 נכשלה');
+      if (coverData.success && coverData.url) {
         coverUrl = coverData.url;
       } else {
         return {
@@ -180,7 +194,7 @@ export async function uploadTrackToCloudStorage(
     } catch (err: any) {
       return {
         success: false,
-        error: `שגיאה בהעלאת תמונת העטיפה ל-R2: ${err?.message || 'אנא נסה שוב'}`,
+        error: err?.message || 'שגיאה בהעלאת תמונת העטיפה ל-R2.',
       };
     }
   }
@@ -210,8 +224,8 @@ export async function uploadTrackToCloudStorage(
         content: JSON.stringify(trackToSave, null, 2),
       }),
     });
-    const metaData = await metaRes.json();
-    if (!metaRes.ok || !metaData.success) {
+    const metaData = await safeJson(metaRes, 'שמירת נתוני השיר ב-Cloudflare R2 נכשלה');
+    if (!metaData.success) {
       return {
         success: false,
         error: metaData.error || 'שגיאה בשמירת נתוני השיר ב-Cloudflare R2.',
@@ -220,7 +234,7 @@ export async function uploadTrackToCloudStorage(
   } catch (err: any) {
     return {
       success: false,
-      error: `שגיאה בשמירת נתוני השיר ב-R2: ${err?.message || 'אנא נסה שוב'}`,
+      error: err?.message || 'שגיאה בשמירת נתוני השיר ב-R2.',
     };
   }
 
@@ -268,7 +282,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
       cache: 'no-store',
     });
     if (res.ok) {
-      const data = await res.json();
+      const data = await safeJson(res, 'טעינת שירים מ-R2');
       if (data.success && Array.isArray(data.files) && data.files.length > 0) {
         const jsonFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
         const loaded = await Promise.all(
@@ -276,7 +290,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
             try {
               const itemRes = await fetch(f.url, { cache: 'no-store' });
               if (itemRes.ok) {
-                return await itemRes.json();
+                return await safeJson(itemRes, 'קריאת שיר מ-R2');
               }
             } catch {}
             return null;
@@ -298,12 +312,12 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
       cache: 'no-store',
     });
     if (res.ok) {
-      const data = await res.json();
+      const data = await safeJson(res, 'טעינת אינדקס שירים מ-R2');
       if (data.success && data.files?.length > 0) {
         const indexUrl = data.files[0].url;
         const indexRes = await fetch(indexUrl, { cache: 'no-store' });
         if (indexRes.ok) {
-          const indexTracks = await indexRes.json();
+          const indexTracks = await safeJson(indexRes, 'קריאת אינדקס שירים מ-R2');
           if (Array.isArray(indexTracks)) {
             indexTracks.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
               if (!trackMap.has(t.id)) {
@@ -432,6 +446,55 @@ export async function updateTrackColorInCloud(trackId: string, bgColor: string, 
     })
   });
   return true;
+}
+
+export async function saveTrackSubtitlesInCloud(
+  track: JamendoTrack,
+  subtitleSegments: NonNullable<JamendoTrack['subtitleSegments']>,
+  lyrics?: string
+): Promise<boolean> {
+  try {
+    const updatedTrack: JamendoTrack = {
+      ...track,
+      subtitleSegments,
+      hasWhisperSubtitles: subtitleSegments.length > 0,
+      ...(lyrics ? { lyrics } : {}),
+    };
+    const res = await fetch('/api/storage/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: `tracks/${track.id}.json`,
+        content: JSON.stringify(updatedTrack, null, 2),
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function saveTrackGenreInCloud(
+  track: JamendoTrack,
+  genre: string
+): Promise<boolean> {
+  try {
+    const updatedTrack: JamendoTrack = {
+      ...track,
+      genre,
+    };
+    const res = await fetch('/api/storage/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: `tracks/${track.id}.json`,
+        content: JSON.stringify(updatedTrack, null, 2),
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function incrementTrackPlaysInCloud(track: JamendoTrack): Promise<number> {

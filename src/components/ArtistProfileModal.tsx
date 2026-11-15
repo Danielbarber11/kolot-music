@@ -90,30 +90,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     artistTracks = [currentTrack];
   }
 
-  // Profile modal opens even if track count is currently 0 (reliable loading)
-  if (!isOpen || !effectiveArtistName) return null;
-
-  // Retrieve albums for this artist from cloud session albums
-  const artistAlbums: Album[] = (() => {
-    try {
-      const parsed: Album[] = getCachedAlbums();
-      if (!parsed.length) return [];
-      const validTrackIds = new Set(artistTracks.map((t) => t.id));
-      return parsed
-        .filter((a) => {
-          const aArtist = (a.artistName || '').toLowerCase().trim();
-          return aArtist === cleanQuery || cleanQuery.includes(aArtist) || aArtist.includes(cleanQuery);
-        })
-        .map((a) => ({
-          ...a,
-          trackIds: (a.trackIds || []).filter((id) => validTrackIds.has(id)),
-        }))
-        .filter((a) => a.trackIds.length > 0);
-    } catch {
-      return [];
-    }
-  })();
-
   const sampleTrack = artistTracks[0] || currentTrack || fullPool[0];
 
   const artistBio = artistInfo?.bio || '';
@@ -150,7 +126,31 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   }
 
   const avatarUrl = rawAvatarUrl ? getStreamingMediaUrl(rawAvatarUrl) : undefined;
-  const themeColor = useExtractedColor(avatarUrl, 'Pop');
+  const themeColor = useExtractedColor(avatarUrl, artistInfo?.genre || sampleTrack?.genre || 'Pop');
+
+  // Profile modal opens even if track count is currently 0 (reliable loading)
+  if (!isOpen || !effectiveArtistName) return null;
+
+  // Retrieve albums for this artist from cloud session albums
+  const artistAlbums: Album[] = (() => {
+    try {
+      const parsed: Album[] = getCachedAlbums();
+      if (!parsed.length) return [];
+      const validTrackIds = new Set(artistTracks.map((t) => t.id));
+      return parsed
+        .filter((a) => {
+          const aArtist = (a.artistName || '').toLowerCase().trim();
+          return aArtist === cleanQuery || cleanQuery.includes(aArtist) || aArtist.includes(cleanQuery);
+        })
+        .map((a) => ({
+          ...a,
+          trackIds: (a.trackIds || []).filter((id) => validTrackIds.has(id)),
+        }))
+        .filter((a) => a.trackIds.length > 0);
+    } catch {
+      return [];
+    }
+  })();
 
   const canDeleteTrack = (track: JamendoTrack) => {
     if (!onRemoveTrack) return false;
@@ -242,19 +242,24 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           </button>
         </div>
 
-        {/* HERO HEADER: CLEAR ELEGANT LAYOUT */}
-        <div className="relative w-full border-b border-white/10 bg-slate-950/80">
+        {/* HERO HEADER: CLEAR ELEGANT LAYOUT MATCHING PROFILE IMAGE COLOR */}
+        <div
+          className="relative w-full border-b border-white/10 transition-colors duration-700"
+          style={{
+            background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.52) 0%, rgba(${Math.round(themeColor.r * 0.35)}, ${Math.round(themeColor.g * 0.35)}, ${Math.round(themeColor.b * 0.35)}, 0.45) 55%, #070b14 100%)`,
+          }}
+        >
           <div
             className="relative w-full h-36 sm:h-44 overflow-hidden"
             style={{
-              background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.6) 0%, rgba(7, 11, 20, 0.98) 85%)`,
+              background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.78) 0%, rgba(${Math.round(themeColor.r * 0.28)}, ${Math.round(themeColor.g * 0.28)}, ${Math.round(themeColor.b * 0.28)}, 0.6) 65%, transparent 100%)`,
             }}
           >
             <div
-              className="absolute -top-12 left-1/4 w-80 h-80 rounded-full blur-[100px] opacity-60 pointer-events-none"
+              className="absolute -top-12 left-1/4 w-96 h-96 rounded-full blur-[110px] opacity-70 pointer-events-none"
               style={{ background: `rgb(${themeColor.r}, ${themeColor.g}, ${themeColor.b})` }}
             />
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/50 to-[#070b14]" />
+            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/35 to-[#070b14]/90" />
           </div>
 
           {/* PROFILE CARD */}
