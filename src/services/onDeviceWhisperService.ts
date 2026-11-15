@@ -4,6 +4,9 @@ import { SubtitleSegment } from '../types';
 // Configure Transformers.js to run 100% in browser via Cache API + WASM/WebGPU (0 server cost, 0 API keys)
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+if (env.backends?.onnx?.wasm) {
+  env.backends.onnx.wasm.proxy = false;
+}
 
 let whisperPipelinePromise: Promise<any> | null = null;
 let audioClassifierPipelinePromise: Promise<any> | null = null;

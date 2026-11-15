@@ -1,11 +1,30 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, Plugin} from 'vite';
+
+/**
+ * Cloudflare Workers Static Assets has a 25 MiB per-file limit.
+ * @huggingface/transformers automatically loads its matched ONNX Runtime WASM from jsDelivr CDN at runtime,
+ * so excluding oversized ort-wasm-*.wasm binaries from dist/assets keeps client builds under ~5 MB.
+ */
+function excludeOversizedOnnxWasmPlugin(): Plugin {
+  return {
+    name: 'exclude-oversized-onnx-wasm',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      for (const fileName of Object.keys(bundle)) {
+        if (fileName.endsWith('.wasm') && fileName.includes('ort-wasm')) {
+          delete bundle[fileName];
+        }
+      }
+    },
+  };
+}
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), excludeOversizedOnnxWasmPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(process.cwd(), '.'),
