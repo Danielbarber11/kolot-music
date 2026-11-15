@@ -11,8 +11,10 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   ListBucketsCommand,
-  CreateBucketCommand
+  CreateBucketCommand,
+  PutBucketCorsCommand
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import multer from 'multer';
 
 // Load environment variables immediately
@@ -24,10 +26,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configure Multer for memory storage
+// Configure Multer for memory storage (supports large audio files up to 1GB)
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+  limits: { fileSize: 1024 * 1024 * 1024 },
 });
 
 export interface R2Config {
@@ -131,6 +133,33 @@ function createR2Client(cfg: R2Config): S3Client | null {
   });
 }
 
+let corsConfiguredBucket: string | null = null;
+async function ensureR2BucketCors(client: S3Client, bucket: string) {
+  if (corsConfiguredBucket === bucket) return;
+  corsConfiguredBucket = bucket;
+  try {
+    await client.send(
+      new PutBucketCorsCommand({
+        Bucket: bucket,
+        CORSConfiguration: {
+          CORSRules: [
+            {
+              AllowedOrigins: ['*'],
+              AllowedMethods: ['GET', 'PUT', 'POST', 'HEAD', 'DELETE'],
+              AllowedHeaders: ['*'],
+              ExposeHeaders: ['ETag', 'Content-Length'],
+              MaxAgeSeconds: 86400,
+            },
+          ],
+        },
+      })
+    );
+    console.log(`[R2 Storage] CORS enabled on bucket '${bucket}' for direct fast uploads`);
+  } catch (e: any) {
+    console.warn('[R2 Storage] Bucket CORS setup notice:', e?.message);
+  }
+}
+
 async function getR2Context(req?: express.Request): Promise<{ client: S3Client; bucket: string; publicUrl?: string; config: R2Config }> {
   const cfg = resolveR2Config(req);
   if (!cfg.endpoint || !cfg.accessKeyId || !cfg.secretAccessKey) {
@@ -162,6 +191,9 @@ async function getR2Context(req?: express.Request): Promise<{ client: S3Client; 
       console.warn('[R2 Storage] ListBuckets discovery notice:', e?.message);
     }
   }
+
+  // Ensure CORS asynchronously without blocking request latency
+  void ensureR2BucketCors(client, bucket);
 
   return {
     client,
@@ -611,6 +643,43 @@ app.get('/api/storage/status', async (req, res) => {
       success: false,
       configured: false,
       error: err?.message || 'Failed to connect to Cloudflare R2',
+    });
+  }
+});
+
+// 0. Generate Direct-to-R2 Presigned PUT URL for instant browser -> R2 uploads (supports up to 1GB+)
+app.post('/api/storage/presign', async (req: any, res) => {
+  try {
+    const rawPath = String(req.body?.path || '').trim().replace(/^\/+/, '');
+    const contentType = String(req.body?.contentType || 'application/octet-stream').trim();
+
+    if (!rawPath) {
+      return res.status(400).json({ success: false, error: 'Missing path' });
+    }
+
+    const { client, bucket, publicUrl } = await getR2Context(req);
+    await ensureR2BucketCors(client, bucket);
+
+    const command = new PutObjectCommand({
+      Bucket: bucket,
+      Key: rawPath,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(client, command, { expiresIn: 900 });
+    const fileUrl = publicUrl ? `${publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
+
+    return res.json({
+      success: true,
+      uploadUrl,
+      url: fileUrl,
+      path: rawPath,
+      bucket,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to create presigned upload URL',
     });
   }
 });

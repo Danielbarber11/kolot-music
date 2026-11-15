@@ -1,4 +1,5 @@
 import { JamendoTrack, SubtitleSegment } from './types';
+import { transcribeAudioOnDevice } from './services/onDeviceWhisperService';
 
 export interface LyricWord {
   text: string;
@@ -138,12 +139,12 @@ export function generateSynchronizedLyrics(
 
     if (isHebrew) {
       rawLines = [
-        `לחץ על "כתוביות Whisper AI" לתמלול אוטומטי מהשמע`,
+        `לחץ על "צור כתוביות על המכשיר" לתמלול חינמי אוטומטי`,
         `שיר: ${songName} • ${artistName}`,
       ];
     } else {
       rawLines = [
-        `Click "Whisper AI Subtitles" to transcribe synced captions from audio`,
+        `Click "Generate Local Whisper Subtitles" to transcribe on-device for free`,
         `Track: ${songName} • ${artistName}`,
       ];
     }
@@ -175,13 +176,15 @@ export function generateSynchronizedLyrics(
 }
 
 /**
- * Calls server-side Whisper AI audio transcription (/api/ai/transcribe) for a track or raw audio File.
+ * Runs 100% On-Device Whisper AI transcription directly inside the browser (WASM/WebGPU).
+ * Zero API keys, zero Gemini/OpenAI charges, unlimited free usage.
  */
 export async function transcribeTrackWithWhisperAI(
   options: {
     track?: JamendoTrack;
     audioFile?: File | Blob;
     language?: 'he' | 'en';
+    onProgress?: (statusText: string, percent?: number) => void;
   }
 ): Promise<{
   success: boolean;
@@ -190,65 +193,11 @@ export async function transcribeTrackWithWhisperAI(
   provider?: string;
   error?: string;
 }> {
-  try {
-    let res: Response;
-
-    if (options.audioFile) {
-      const formData = new FormData();
-      formData.append('file', options.audioFile);
-      formData.append('language', options.language || 'he');
-      if (options.track?.name) formData.append('songTitle', options.track.name);
-      if (options.track?.artistName) formData.append('artistName', options.track.artistName);
-      if (options.track?.duration) formData.append('duration', String(options.track.duration));
-
-      res = await fetch('/api/ai/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-    } else if (options.track?.audioUrl) {
-      res = await fetch('/api/ai/transcribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trackId: options.track.id,
-          audioUrl: options.track.audioUrl,
-          songTitle: options.track.name,
-          artistName: options.track.artistName,
-          duration: options.track.duration || 180,
-          language: options.language || 'he',
-        }),
-      });
-    } else {
-      return { success: false, error: 'אין קובץ שמע זמין לתמלול.' };
-    }
-
-    const rawText = await res.text();
-    const trimmed = (rawText || '').trim();
-    if (!trimmed || trimmed.startsWith('<')) {
-      return {
-        success: false,
-        error: `שירות התמלול אינו זמין כרגע (HTTP ${res.status}). ודא ששרת ה-API מחובר.`,
-      };
-    }
-
-    const data = JSON.parse(trimmed);
-    if (!res.ok || !data.success) {
-      return {
-        success: false,
-        error: data.error || 'שגיאה בתמלול הכתוביות מהשמע.',
-      };
-    }
-
-    return {
-      success: true,
-      segments: Array.isArray(data.segments) ? data.segments : [],
-      lyrics: data.lyrics || '',
-      provider: data.provider || 'whisper-ai',
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      error: err?.message || 'שגיאת תקשורת בעת תמלול Whisper AI.',
-    };
-  }
+  return transcribeAudioOnDevice({
+    audioFile: options.audioFile,
+    audioUrl: options.track?.audioUrl,
+    language: options.language || 'he',
+    trackDuration: options.track?.duration || 180,
+    onProgress: options.onProgress,
+  });
 }

@@ -106,6 +106,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [whisperSegments, setWhisperSegments] = useState<SubtitleSegment[] | undefined>(track.subtitleSegments);
   const [whisperLyrics, setWhisperLyrics] = useState<string | undefined>(track.lyrics);
   const [isTranscribingWhisper, setIsTranscribingWhisper] = useState(false);
+  const [whisperProgressText, setWhisperProgressText] = useState<string>('');
   const [whisperError, setWhisperError] = useState<string | null>(null);
   const [showLiveCaptions, setShowLiveCaptions] = useState<boolean>(
     !!(track.subtitleSegments && track.subtitleSegments.length > 0)
@@ -115,6 +116,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setWhisperSegments(track.subtitleSegments);
     setWhisperLyrics(track.lyrics);
     setWhisperError(null);
+    setWhisperProgressText('');
     setShowLiveCaptions(!!(track.subtitleSegments && track.subtitleSegments.length > 0));
   }, [track.id]);
 
@@ -142,13 +144,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
     setIsTranscribingWhisper(true);
     setWhisperError(null);
+    setWhisperProgressText(isHe ? 'מכין תמלול מקומי במכשיר (100% חינם)...' : 'Preparing on-device transcription...');
 
     const res = await transcribeTrackWithWhisperAI({
       track,
       language: isHe ? 'he' : 'en',
+      onProgress: (txt) => setWhisperProgressText(txt),
     });
 
     setIsTranscribingWhisper(false);
+    setWhisperProgressText('');
 
     if (!res.success || !res.segments || res.segments.length === 0) {
       setWhisperError(res.error || (isHe ? 'לא ניתן לתמלל שמע זה כרגע.' : 'Could not transcribe this track.'));
@@ -599,7 +604,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                   }`}
                 >
                   <Captions className="w-3.5 h-3.5" />
-                  <span>{isHe ? (showLiveCaptions ? 'כתוביות Whisper AI פעילות' : 'הצג כתוביות Whisper AI') : (showLiveCaptions ? 'Whisper AI Captions On' : 'Show Whisper AI Captions')}</span>
+                  <span>{isHe ? (showLiveCaptions ? 'כתוביות מקומיות פעילות' : 'הצג כתוביות') : (showLiveCaptions ? 'Captions On' : 'Show Captions')}</span>
                 </button>
               ) : (
                 <button
@@ -615,8 +620,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                   )}
                   <span>
                     {isTranscribingWhisper
-                      ? (isHe ? 'מתמלל כתוביות Whisper AI...' : 'Transcribing with Whisper AI...')
-                      : (isHe ? 'צור כתוביות Whisper AI לשיר' : 'Generate Whisper AI Subtitles')}
+                      ? (whisperProgressText || (isHe ? 'מתמלל במכשיר (100% חינם)...' : 'Transcribing on-device (Free)...'))
+                      : (isHe ? 'צור כתוביות על המכשיר (100% חינם ללא מפתח)' : 'Generate On-Device Subtitles (Free)')}
                   </span>
                 </button>
               )}

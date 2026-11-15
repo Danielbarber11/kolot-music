@@ -342,6 +342,50 @@ export default {
       }
     }
 
+    // 1b. Presign / Direct streaming upload URL for fast browser uploads
+    if (pathname === '/api/storage/presign' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const rawPath = String(body?.path || '').trim().replace(/^\/+/, '');
+        if (!rawPath) return jsonResponse({ success: false, error: 'Missing path' }, 400);
+        const fileUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
+        return jsonResponse({
+          success: true,
+          uploadUrl: `/api/storage/stream-upload?path=${encodeURIComponent(rawPath)}`,
+          method: 'PUT',
+          url: fileUrl,
+          path: rawPath,
+          bucket: creds.bucket,
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Presign failed' }, 500);
+      }
+    }
+
+    if (pathname === '/api/storage/stream-upload' && request.method === 'PUT') {
+      try {
+        const rawPath = (url.searchParams.get('path') || '').trim().replace(/^\/+/, '');
+        if (!rawPath || !request.body) {
+          return jsonResponse({ success: false, error: 'Missing path or stream body' }, 400);
+        }
+        const contentType = request.headers.get('content-type') || 'application/octet-stream';
+        if (env.R2_BUCKET) {
+          await env.R2_BUCKET.put(rawPath, request.body, { httpMetadata: { contentType } });
+        } else {
+          const bytes = new Uint8Array(await request.arrayBuffer());
+          const s3Path = `/${creds.bucket}/${encodeS3Path(rawPath)}`;
+          const putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bytes, { 'Content-Type': contentType });
+          if (!putRes.ok) {
+            return jsonResponse({ success: false, error: `R2 HTTP ${putRes.status}` }, 500);
+          }
+        }
+        const outUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
+        return jsonResponse({ success: true, url: outUrl, path: rawPath, bucket: creds.bucket, mode: 'r2' });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Stream upload failed' }, 500);
+      }
+    }
+
     // 2. Upload file (multipart or JSON)
     if (pathname === '/api/storage/upload' && request.method === 'POST') {
       try {

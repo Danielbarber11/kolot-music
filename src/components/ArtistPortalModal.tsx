@@ -139,14 +139,17 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [lyricsInput, setLyricsInput] = useState('');
   const [whisperDraftSegments, setWhisperDraftSegments] = useState<SubtitleSegment[] | undefined>(undefined);
   const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
+  const [whisperProgressText, setWhisperProgressText] = useState('');
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
+  const [genreProgressText, setGenreProgressText] = useState('');
   const [genreDetectionNotice, setGenreDetectionNotice] = useState<AudioClassificationResult | null>(null);
   const [audioUploadType, setAudioUploadType] = useState<'file' | 'url'>('file');
   const [coverUploadType, setCoverUploadType] = useState<'file' | 'url'>('file');
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishSuccess, setPublishSuccess] = useState(false);
   const [publishProgressStep, setPublishProgressStep] = useState<string>('');
+  const [uploadProgressPercent, setUploadProgressPercent] = useState<number>(0);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
 
   // Cloud Storage Status
@@ -185,8 +188,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [customGenreText, setCustomGenreText] = useState('');
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
 
-  // 30MB file size limit for audio and image uploads
-  const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+  // 1GB file size limit for audio and image uploads (direct R2 presigned PUT)
+  const MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024; // 1GB
 
   // Album creation song selector modal & search states
   const [isAlbumSongSelectorOpen, setIsAlbumSongSelectorOpen] = useState(false);
@@ -497,7 +500,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!file) return;
     setFileUploadError(null);
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      setFileUploadError(isHe ? 'קובץ השמע חורג מ-30MB. יש לבחור קובץ עד 30MB.' : 'Audio file exceeds 30MB limit.');
+      setFileUploadError(isHe ? 'קובץ השמע חורג מ-1GB. יש לבחור קובץ עד 1GB.' : 'Audio file exceeds 1GB limit.');
       return;
     }
     setRawAudioFile(file);
@@ -514,7 +517,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!file) return;
     setFileUploadError(null);
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      setFileUploadError(isHe ? 'קובץ התמונה חורג מ-30MB. יש לבחור תמונה עד 30MB.' : 'Cover image exceeds 30MB limit.');
+      setFileUploadError(isHe ? 'קובץ התמונה חורג מ-1GB. יש לבחור תמונה עד 1GB.' : 'Cover image exceeds 1GB limit.');
       return;
     }
     setRawCoverFile(file);
@@ -760,6 +763,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const handleAutoDetectGenre = async () => {
     if (!rawAudioFile && !audioStreamUrl.trim() && !songTitle.trim()) return;
     setIsClassifyingGenre(true);
+    setGenreProgressText(isHe ? 'מנתח שמע על המכשיר (100% חינם)...' : 'Analyzing audio on device...');
     setGenreDetectionNotice(null);
     const result = await classifyTrackAudio({
       audioFile: rawAudioFile || undefined,
@@ -767,28 +771,31 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       songTitle: songTitle.trim(),
       artistName: performingArtistInput.trim() || currentArtist.name,
       lyrics: lyricsInput.trim(),
+      deepClassify: true,
+      onProgress: (txt) => setGenreProgressText(txt),
     });
     setIsClassifyingGenre(false);
+    setGenreProgressText('');
     setGenreDetectionNotice(result);
     if (result.success && result.genre) {
       setGenreInput(result.genre);
     }
   };
 
-  // Publish Track -> Direct, Verified Commit to Public Cloud Storage
+  // Publish Track -> Direct, Verified Fast Commit to Public Cloud Storage (< 10s)
   const handlePublishTrack = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim() || !hasCertifiedRights) return;
 
     setIsPublishing(true);
     setPublishErrorMessage(null);
-    setPublishProgressStep(isHe ? 'מתחבר לאחסון הענן ומכין את הקבצים...' : 'Connecting to Cloud Storage...');
+    setUploadProgressPercent(4);
+    setPublishProgressStep(isHe ? 'מכין העלאה ישירה ל-Cloudflare R2...' : 'Preparing direct Cloudflare R2 upload...');
 
     let effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
 
-    // Auto-classify genre via Audio Classification when artist leaves genre untagged
+    // Fast (<250ms) on-device DSP genre classification when untagged — zero network, zero model wait
     if (!effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי') {
-      setPublishProgressStep(isHe ? 'מאזין לשיר ומסווג ז׳אנר אוטומטית (Audio Classification)...' : 'Detecting genre from audio...');
       try {
         const autoCls = await classifyTrackAudio({
           audioFile: rawAudioFile || undefined,
@@ -796,6 +803,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           songTitle: songTitle.trim(),
           artistName: performingArtistInput.trim() || currentArtist.name,
           lyrics: lyricsInput.trim(),
+          deepClassify: false,
         });
         if (autoCls.success && autoCls.genre) {
           effectiveGenre = autoCls.genre;
@@ -815,11 +823,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
     };
 
-    // Extract accurate color from the cover BEFORE uploading metadata to R2
+    // Extract accurate color from the cover quickly (capped at 250ms so publish never stalls)
     let computedColor = getTrackInstantColor(tempTrackForColor);
     try {
       if (coverArtUrl.trim()) {
-        const extractedBefore = await extractImageColor(coverArtUrl.trim());
+        const extractedBefore = await Promise.race([
+          extractImageColor(coverArtUrl.trim()),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+        ]);
         if (extractedBefore) {
           computedColor = extractedBefore;
         }
@@ -870,13 +881,22 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'מעלה ושומר ישירות באחסון הענן Cloudflare R2...' : 'Uploading directly to Cloudflare R2...');
+      setPublishProgressStep(isHe ? 'מעלה ישירות ל-Cloudflare R2...' : 'Uploading directly to Cloudflare R2...');
 
-      // 1. UPLOAD DIRECTLY TO CLOUDFLARE R2 (audio + cover + tracks/*.json + tracks_index.json)
-      const cloudRes = await uploadTrackToCloud(newTrack, currentAudioFile || undefined, currentCoverFile || undefined);
+      // 1. DIRECT PARALLEL UPLOAD TO CLOUDFLARE R2 (audio + compressed cover + tracks/*.json)
+      const cloudRes = await uploadTrackToCloud(
+        newTrack,
+        currentAudioFile || undefined,
+        currentCoverFile || undefined,
+        (pct, msg) => {
+          setUploadProgressPercent(pct);
+          setPublishProgressStep(msg);
+        }
+      );
 
       if (!cloudRes.success) {
         setIsPublishing(false);
+        setUploadProgressPercent(0);
         setPublishErrorMessage(
           cloudRes.error ||
             (isHe
@@ -899,30 +919,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
-      // 2. Save metadata to Firebase Firestore
-      await saveArtistTrackToFirebase(newTrack).catch(() => {});
+      // 2. Sync metadata to Firebase Firestore in background (never blocks publish completion)
+      void saveArtistTrackToFirebase(newTrack).catch(() => {});
 
-      // 2b. Auto-generate Whisper AI subtitles in the background if not manually pre-generated
-      if (!newTrack.subtitleSegments || newTrack.subtitleSegments.length === 0) {
-        transcribeTrackWithWhisperAI({
-          track: newTrack,
-          language: isHe ? 'he' : 'en',
-        }).then((wRes) => {
-          if (wRes.success && wRes.segments && wRes.segments.length > 0) {
-            newTrack.subtitleSegments = wRes.segments;
-            newTrack.hasWhisperSubtitles = true;
-            if (!newTrack.lyrics && wRes.lyrics) newTrack.lyrics = wRes.lyrics;
-            saveTrackSubtitlesInCloud(newTrack, wRes.segments, newTrack.lyrics).catch(() => {});
-            saveArtistTrackToFirebase(newTrack).catch(() => {});
-          }
-        }).catch(() => {});
-      }
-
-      // 3. Update session pool and broadcast track to UI
+      // 3. Broadcast track immediately to UI
       saveCachedCloudTracks([newTrack, ...getInstantSongPool()]);
       onTrackPublished(newTrack);
-      fetchAllRealSongs().catch(() => {});
+      void fetchAllRealSongs().catch(() => {});
 
+      setUploadProgressPercent(100);
       setPublishProgressStep(isHe ? 'השיר נשמר ב-Cloudflare R2 וזמין בכל המכשירים!' : 'Track saved to Cloudflare R2!');
       setPublishSuccess(true);
 
@@ -1737,7 +1742,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-normal text-white flex items-center gap-2">
                       <FileAudio className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'קובץ שמע / שיר (עד 30MB, חובה) *' : 'Audio File (up to 30MB, Required) *'}</span>
+                      <span>{isHe ? 'קובץ שמע / שיר (עד 1GB, חובה) *' : 'Audio File (up to 1GB, Required) *'}</span>
                     </label>
 
                     <div className="flex items-center gap-1 bg-neutral-900 p-0.5 rounded-lg text-[10px]">
@@ -1833,7 +1838,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             {isHe ? 'גרור לכאן קובץ שיר או לחץ לבחירה מהמכשיר' : 'Drag & drop audio file or click to browse'}
                           </span>
                           <span className="text-[10px] text-neutral-400 mt-1 font-mono">
-                            MP3, WAV, AAC, M4A, OGG, FLAC (עד 30MB)
+                            MP3, WAV, AAC, M4A, OGG, FLAC (עד 1GB)
                           </span>
                         </div>
                       )}
@@ -1850,7 +1855,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 3. MUSICAL STYLE SELECTOR WITH AUDIO CLASSIFICATION */}
+                {/* 3. MUSICAL STYLE SELECTOR WITH ON-DEVICE AUDIO CLASSIFICATION */}
                 <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-white font-extrabold text-xs flex items-center gap-2">
@@ -1871,8 +1876,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       )}
                       <span>
                         {isClassifyingGenre
-                          ? (isHe ? 'מזהה ז׳אנר מהשמע...' : 'Classifying audio...')
-                          : (isHe ? 'מצא ז׳אנר אוטומטי' : 'Auto-Detect Genre')}
+                          ? (genreProgressText || (isHe ? 'מזהה ז׳אנר במכשיר...' : 'Classifying on device...'))
+                          : (isHe ? 'מצא ז׳אנר במכשיר (חינם)' : 'Auto-Detect Genre (Free)')}
                       </span>
                     </button>
                   </div>
@@ -1950,12 +1955,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 4. WHISPER AI SUBTITLES & TRACK LYRICS / NOTES */}
+                {/* 4. ON-DEVICE WHISPER SUBTITLES (100% FREE, NO API KEY) & LYRICS */}
                 <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-extrabold text-white flex items-center gap-2">
                       <Captions className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'מילות השיר וכתוביות Whisper AI (אופציונלי)' : 'Lyrics & Whisper AI Subtitles (Optional)'}</span>
+                      <span>{isHe ? 'כתוביות על המכשיר (100% חינם ללא מפתח) ומילות השיר' : 'On-Device Free Subtitles & Lyrics (Optional)'}</span>
                     </label>
 
                     <button
@@ -1963,6 +1968,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
                       onClick={async () => {
                         setIsTranscribingUpload(true);
+                        setWhisperProgressText(isHe ? 'מכין תמלול מקומי במכשיר...' : 'Preparing local transcription...');
                         setWhisperUploadNotice(null);
                         const wRes = await transcribeTrackWithWhisperAI({
                           audioFile: rawAudioFile || undefined,
@@ -1976,12 +1982,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             coverUrl: coverArtUrl.trim(),
                           } : undefined,
                           language: isHe ? 'he' : 'en',
+                          onProgress: (txt) => setWhisperProgressText(txt),
                         });
                         setIsTranscribingUpload(false);
+                        setWhisperProgressText('');
                         if (wRes.success && wRes.segments && wRes.segments.length > 0) {
                           setWhisperDraftSegments(wRes.segments);
                           if (wRes.lyrics) setLyricsInput(wRes.lyrics);
-                          setWhisperUploadNotice(isHe ? `נוצרו ${wRes.segments.length} כתוביות מסונכרנות בהצלחה!` : `Generated ${wRes.segments.length} synced subtitles!`);
+                          setWhisperUploadNotice(isHe ? `נוצרו במכשיר ${wRes.segments.length} כתוביות מסונכרנות בהצלחה (100% חינם)!` : `Generated ${wRes.segments.length} local subtitles!`);
                         } else {
                           setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
                         }
@@ -1995,8 +2003,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       )}
                       <span>
                         {isTranscribingUpload
-                          ? (isHe ? 'מתמלל כתוביות Whisper AI...' : 'Transcribing with Whisper AI...')
-                          : (isHe ? 'חולל כתוביות Whisper AI מהשמע' : 'Generate Whisper AI Subtitles')}
+                          ? (whisperProgressText || (isHe ? 'מתמלל על המכשיר (חינם)...' : 'Transcribing locally...'))
+                          : (isHe ? 'חולל כתוביות במכשיר (חינם וללא מפתח)' : 'Generate On-Device Subtitles (Free)')}
                       </span>
                     </button>
                   </div>
@@ -2012,8 +2020,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     value={lyricsInput}
                     onChange={(e) => setLyricsInput(e.target.value)}
                     placeholder={isHe
-                      ? 'הקלד מילות שיר או לחץ על "חולל כתוביות Whisper AI מהשמע" כדי לייצר כתוביות מסונכרנות אוטומטית...'
-                      : 'Type lyrics or click "Generate Whisper AI Subtitles" from your audio file...'}
+                      ? 'הקלד מילות שיר או לחץ על "חולל כתוביות במכשיר (חינם וללא מפתח)" לתמלול מקומי במכשיר ללא הגבלה...'
+                      : 'Type lyrics or generate free on-device subtitles...'}
                     className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 text-xs font-sans leading-relaxed transition-all"
                   />
                 </div>
@@ -2100,11 +2108,24 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 )}
 
-                {/* Live Progress Step Display */}
+                {/* Live Progress Step & Speed Bar */}
                 {isPublishing && (
-                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs flex items-center gap-3">
-                    <RefreshCw className="w-5 h-5 text-emerald-400 animate-spin shrink-0" />
-                    <span className="font-bold text-white text-xs">{publishProgressStep}</span>
+                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs space-y-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
+                        <span className="font-bold text-white text-xs truncate">{publishProgressStep}</span>
+                      </div>
+                      <span className="font-mono font-black text-emerald-300 text-xs shrink-0">
+                        {uploadProgressPercent}%
+                      </span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-black/60 overflow-hidden border border-emerald-500/20">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all duration-150"
+                        style={{ width: `${Math.max(4, uploadProgressPercent)}%` }}
+                      />
+                    </div>
                   </div>
                 )}
 

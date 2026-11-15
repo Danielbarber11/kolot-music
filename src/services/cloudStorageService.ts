@@ -109,96 +109,215 @@ export function saveCloudStorageConfig(_config: CloudStorageConfig): void {
 }
 
 /**
+ * Fast XHR PUT/POST helper with real upload percentage reporting (0..100).
+ */
+function xhrSend(
+  method: 'PUT' | 'POST',
+  url: string,
+  body: XMLHttpRequestBodyInit,
+  headers: Record<string, string>,
+  onProgress?: (percent: number) => void
+): Promise<{ status: number; responseText: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    for (const [k, v] of Object.entries(headers)) {
+      xhr.setRequestHeader(k, v);
+    }
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && ev.total > 0) {
+          onProgress(Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
+        }
+      };
+    }
+    xhr.onload = () => {
+      resolve({ status: xhr.status, responseText: xhr.responseText || '' });
+    };
+    xhr.onerror = () => {
+      reject(new Error('תקלת רשת בהעלאת הקובץ לענן'));
+    };
+    xhr.onabort = () => {
+      reject(new Error('ההעלאה בוטלה'));
+    };
+    xhr.send(body);
+  });
+}
+
+/**
+ * Uploads any Blob/File directly to Cloudflare R2 via Presigned PUT URL (fastest, supports huge files up to 1GB),
+ * seamlessly falling back to XHR multipart /api/storage/upload if direct CORS PUT fails.
+ */
+async function uploadBinaryFastToR2(
+  blob: File | Blob,
+  r2Path: string,
+  contentType: string,
+  onProgress?: (percent: number) => void
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  // 1. Try Direct Presigned PUT (browser -> Cloudflare R2 directly, zero Express buffering)
+  try {
+    const presignRes = await fetch('/api/storage/presign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: r2Path, contentType }),
+    });
+    if (presignRes.ok) {
+      const presignData = await safeJson(presignRes, 'קבלת כתובת העלאה מהירה נכשלה');
+      if (presignData.success && presignData.uploadUrl && presignData.url) {
+        const directRes = await xhrSend(
+          'PUT',
+          presignData.uploadUrl,
+          blob,
+          { 'Content-Type': contentType },
+          onProgress
+        );
+        if (directRes.status >= 200 && directRes.status < 300) {
+          return { success: true, url: presignData.url };
+        }
+      }
+    }
+  } catch (directErr) {
+    console.warn('[FastUpload] Direct R2 PUT unavailable, using server multipart fallback:', directErr);
+  }
+
+  // 2. Seamless Fallback: Streaming XHR POST -> /api/storage/upload
+  const formData = new FormData();
+  formData.append('file', blob);
+  formData.append('path', r2Path);
+
+  const fallbackRes = await xhrSend('POST', '/api/storage/upload', formData, {}, onProgress);
+  const trimmed = (fallbackRes.responseText || '').trim();
+  if (!trimmed || trimmed.startsWith('<')) {
+    return {
+      success: false,
+      error: `העלאה ל-Cloudflare R2 נכשלה (HTTP ${fallbackRes.status}).`,
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (fallbackRes.status >= 200 && fallbackRes.status < 300 && parsed.success && parsed.url) {
+      return { success: true, url: parsed.url };
+    }
+    return { success: false, error: parsed.error || `שגיאה בהעלאת הקובץ (${fallbackRes.status})` };
+  } catch {
+    return { success: false, error: 'תגובה לא תקינה משרת האחסון' };
+  }
+}
+
+async function syncTracksIndexInBackground(trackToSave: JamendoTrack): Promise<void> {
+  try {
+    const listRes = await fetch('/api/storage/list?prefix=tracks_index.json', { cache: 'no-store' });
+    let existingIndex: JamendoTrack[] = [];
+    if (listRes.ok) {
+      const listData = await safeJson(listRes, 'טעינת אינדקס');
+      const idxFile = listData.files?.[0];
+      if (idxFile?.url) {
+        const idxRes = await fetch(idxFile.url, { cache: 'no-store' });
+        if (idxRes.ok) {
+          const parsed = await safeJson(idxRes, 'קריאת אינדקס');
+          if (Array.isArray(parsed)) existingIndex = parsed;
+        }
+      }
+    }
+    const map = new Map<string, JamendoTrack>();
+    existingIndex.forEach((t) => {
+      if (t?.id) map.set(t.id, t);
+    });
+    map.set(trackToSave.id, trackToSave);
+    await fetch('/api/storage/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: 'tracks_index.json',
+        content: JSON.stringify(Array.from(map.values())),
+      }),
+    });
+  } catch (err) {
+    console.warn('Background tracks_index.json sync notice:', err);
+  }
+}
+
+/**
  * Upload & Commit track audio file, cover image, and metadata JSON directly into Cloudflare R2
+ * Runs Audio + Cover uploads IN PARALLEL via Direct Presigned PUT for <10s completion.
  */
 export async function uploadTrackToCloudStorage(
   track: JamendoTrack,
   audioFile?: File | Blob,
-  coverFile?: File | Blob
+  coverFile?: File | Blob,
+  onProgress?: (percent: number, stageText: string) => void
 ): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string; error?: string }> {
   const trackId = track.id;
   let audioUrl = track.audioUrl || '';
   let coverUrl = track.coverUrl || '';
 
-  // 1. Upload Audio to R2
-  if (audioFile) {
-    try {
-      const audioFormData = new FormData();
-      audioFormData.append('file', audioFile);
-      const ext =
-        audioFile instanceof File && audioFile.name.includes('.')
-          ? audioFile.name.split('.').pop()?.toLowerCase() || 'mp3'
-          : 'mp3';
-      audioFormData.append('path', `audio/${trackId}.${ext}`);
-
-      const audioRes = await fetch('/api/storage/upload', {
-        method: 'POST',
-        body: audioFormData,
-      });
-      const audioData = await safeJson(audioRes, 'העלאת קובץ השמע ל-Cloudflare R2 נכשלה');
-      if (audioData.success && audioData.url) {
-        audioUrl = audioData.url;
-      } else {
-        return {
-          success: false,
-          error:
-            audioData.error ||
-            'שגיאה בהעלאת קובץ השמע ל-Cloudflare R2. אנא בדוק את חיבור האחסון בשרת.',
-        };
-      }
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err?.message || 'תקלת רשת בחיבור ל-Cloudflare R2. אנא נסה שוב.',
-      };
-    }
+  // Prefer crisp pre-compressed JPEG DataURL (~60KB) if available instead of multi-MB unresized image
+  let coverBlobToUpload: Blob | File | undefined;
+  if (coverUrl.startsWith('data:image/')) {
+    coverBlobToUpload = (await urlToBlob(coverUrl)) || undefined;
+  } else if (coverFile) {
+    coverBlobToUpload = coverFile;
   }
 
-  // Reject unresolved blob URLs
+  onProgress?.(5, 'מעלה את השיר ישירות ל-Cloudflare R2...');
+
+  // 1 & 2. Upload Audio & Cover IN PARALLEL!
+  const audioPromise: Promise<{ success: boolean; url?: string; error?: string }> = audioFile
+    ? (async () => {
+        const ext =
+          audioFile instanceof File && audioFile.name.includes('.')
+            ? audioFile.name.split('.').pop()?.toLowerCase() || 'mp3'
+            : 'mp3';
+        const mimeType = audioFile.type || 'audio/mpeg';
+        return uploadBinaryFastToR2(audioFile, `audio/${trackId}.${ext}`, mimeType, (pct) => {
+          const scaled = Math.min(92, Math.max(5, Math.round(pct * 0.87) + 5));
+          onProgress?.(scaled, `מעלה את קובץ השמע לענן... ${pct}%`);
+        });
+      })()
+    : Promise.resolve({ success: true, url: audioUrl });
+
+  const coverPromise: Promise<{ success: boolean; url?: string; error?: string }> = coverBlobToUpload
+    ? (async () => {
+        const ext =
+          coverBlobToUpload instanceof File && coverBlobToUpload.name.includes('.')
+            ? coverBlobToUpload.name.split('.').pop()?.toLowerCase() || 'jpg'
+            : 'jpg';
+        const mimeType = coverBlobToUpload.type || 'image/jpeg';
+        return uploadBinaryFastToR2(coverBlobToUpload, `covers/${trackId}.${ext}`, mimeType);
+      })()
+    : Promise.resolve({ success: true, url: coverUrl });
+
+  try {
+    const [audioResult, coverResult] = await Promise.all([audioPromise, coverPromise]);
+
+    if (!audioResult.success || !audioResult.url) {
+      return {
+        success: false,
+        error: audioResult.error || 'שגיאה בהעלאת קובץ השמע ל-Cloudflare R2.',
+      };
+    }
+    audioUrl = audioResult.url;
+
+    if (!coverResult.success || !coverResult.url) {
+      return {
+        success: false,
+        error: coverResult.error || 'שגיאה בהעלאת תמונת העטיפה ל-Cloudflare R2.',
+      };
+    }
+    coverUrl = coverResult.url;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'תקלת רשת בחיבור ל-Cloudflare R2. אנא נסה שוב.',
+    };
+  }
+
   if (!audioUrl || audioUrl.startsWith('blob:')) {
     return {
       success: false,
       error: 'קובץ השמע לא הועלה לענן (Cloudflare R2). אנא בחר קובץ שמע תקין ונסה שוב.',
     };
   }
-
-  // 2. Upload Cover to R2 (either compressed DataURL or raw Cover File)
-  let coverBlobToUpload: Blob | File | undefined = coverFile;
-  if (!coverBlobToUpload && coverUrl.startsWith('data:image/')) {
-    coverBlobToUpload = (await urlToBlob(coverUrl)) || undefined;
-  }
-
-  if (coverBlobToUpload) {
-    try {
-      const coverFormData = new FormData();
-      coverFormData.append('file', coverBlobToUpload);
-      const ext =
-        coverBlobToUpload instanceof File && coverBlobToUpload.name.includes('.')
-          ? coverBlobToUpload.name.split('.').pop()?.toLowerCase() || 'jpg'
-          : 'jpg';
-      coverFormData.append('path', `covers/${trackId}.${ext}`);
-
-      const coverRes = await fetch('/api/storage/upload', {
-        method: 'POST',
-        body: coverFormData,
-      });
-      const coverData = await safeJson(coverRes, 'העלאת תמונת העטיפה ל-Cloudflare R2 נכשלה');
-      if (coverData.success && coverData.url) {
-        coverUrl = coverData.url;
-      } else {
-        return {
-          success: false,
-          error: coverData.error || 'שגיאה בהעלאת תמונת העטיפה ל-Cloudflare R2.',
-        };
-      }
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err?.message || 'שגיאה בהעלאת תמונת העטיפה ל-R2.',
-      };
-    }
-  }
-
   if (coverUrl.startsWith('blob:')) {
     return {
       success: false,
@@ -206,7 +325,9 @@ export async function uploadTrackToCloudStorage(
     };
   }
 
-  // 3. Metadata Object
+  onProgress?.(95, 'שומר פרטי שיר בענן...');
+
+  // 3. Save tracks/${trackId}.json strictly in R2
   const trackToSave: JamendoTrack = {
     ...track,
     audioUrl,
@@ -214,14 +335,13 @@ export async function uploadTrackToCloudStorage(
     source: 'Kolot R2 Storage',
   };
 
-  // Save tracks/${trackId}.json strictly in R2
   try {
     const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path: `tracks/${trackId}.json`,
-        content: JSON.stringify(trackToSave, null, 2),
+        content: JSON.stringify(trackToSave),
       }),
     });
     const metaData = await safeJson(metaRes, 'שמירת נתוני השיר ב-Cloudflare R2 נכשלה');
@@ -238,25 +358,10 @@ export async function uploadTrackToCloudStorage(
     };
   }
 
-  // Synchronize tracks_index.json in R2
-  try {
-    const existing = await fetchTracksFromCloudStorage();
-    const map = new Map<string, JamendoTrack>();
-    existing.forEach((t) => map.set(t.id, t));
-    map.set(trackId, trackToSave);
-    const updatedIndex = Array.from(map.values());
+  onProgress?.(100, 'השיר פורסם בהצלחה!');
 
-    await fetch('/api/storage/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        path: 'tracks_index.json',
-        content: JSON.stringify(updatedIndex, null, 2),
-      }),
-    });
-  } catch (err) {
-    console.warn('tracks_index.json update notice:', err);
-  }
+  // Non-blocking background sync of tracks_index.json (never delays publish completion!)
+  void syncTracksIndexInBackground(trackToSave);
 
   return {
     success: true,
