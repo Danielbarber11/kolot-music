@@ -1,5 +1,5 @@
 import { JamendoTrack, SubtitleSegment } from './types';
-import { transcribeAudioOnDevice } from './services/onDeviceWhisperService';
+import { transcribeAudioOnDevice, sanitizeSubtitleLettersOnly } from './services/onDeviceWhisperService';
 
 export interface LyricWord {
   text: string;
@@ -22,7 +22,8 @@ export interface SynchronizedLyrics {
 }
 
 function buildWordsForSegment(text: string, startTime: number, endTime: number): LyricWord[] {
-  const wordsRaw = text.split(/\s+/).filter((w) => w.length > 0);
+  const clean = sanitizeSubtitleLettersOnly(text);
+  const wordsRaw = clean.split(/\s+/).filter((w) => w.length > 0);
   const wordCount = Math.max(1, wordsRaw.length);
   const span = Math.max(0.5, endTime - startTime);
   const timePerWord = span / wordCount;
@@ -47,63 +48,84 @@ function parseLrcTimestamp(ts: string): number {
 
 /**
  * Smart Whisper AI Subtitles & Karaoke Sync Generator
- * Prioritizes real Whisper AI timestamped segments -> LRC timestamps -> distributed lyrics -> fallback.
+ * Reads saved timestamped segments and enforces clean letters-only subtitles.
  */
 export function generateSynchronizedLyrics(
   track: JamendoTrack,
-  overrideSegments?: SubtitleSegment[]
+  overrideSegments?: SubtitleSegment[],
+  preferredLang: 'he' | 'en' = 'he'
 ): SynchronizedLyrics {
   const segments =
     overrideSegments && overrideSegments.length > 0
       ? overrideSegments
-      : track.subtitleSegments && track.subtitleSegments.length > 0
-        ? track.subtitleSegments
-        : undefined;
+      : preferredLang === 'en' && track.subtitleSegmentsEn && track.subtitleSegmentsEn.length > 0
+        ? track.subtitleSegmentsEn
+        : preferredLang === 'he' && track.subtitleSegmentsHe && track.subtitleSegmentsHe.length > 0
+          ? track.subtitleSegmentsHe
+          : track.subtitleSegments && track.subtitleSegments.length > 0
+            ? track.subtitleSegments
+            : undefined;
 
   if (segments && segments.length > 0) {
-    const lines: SynchronizedLine[] = segments.map((seg, idx) => {
-      const startTime = Math.max(0, Number(seg.startTime) || 0);
-      const endTime = Math.max(startTime + 0.8, Number(seg.endTime) || startTime + 4);
-      const words =
-        seg.words && seg.words.length > 0
-          ? seg.words
-          : buildWordsForSegment(seg.text, startTime, endTime);
+    const lines: SynchronizedLine[] = segments
+      .map((seg, idx) => {
+        const cleanText = sanitizeSubtitleLettersOnly(seg.text);
+        if (!cleanText) return null;
+        const startTime = Math.max(0, Number(seg.startTime) || 0);
+        const endTime = Math.max(startTime + 0.8, Number(seg.endTime) || startTime + 4);
+        const words =
+          seg.words && seg.words.length > 0
+            ? seg.words
+                .map((w) => ({
+                  ...w,
+                  text: sanitizeSubtitleLettersOnly(w.text),
+                }))
+                .filter((w) => w.text.length > 0)
+            : buildWordsForSegment(cleanText, startTime, endTime);
 
+        return {
+          id: seg.id || `whisper_line_${idx}`,
+          startTime,
+          endTime,
+          text: cleanText,
+          words,
+        };
+      })
+      .filter((l): l is SynchronizedLine => !!l);
+
+    if (lines.length > 0) {
       return {
-        id: seg.id || `whisper_line_${idx}`,
-        startTime,
-        endTime,
-        text: seg.text,
-        words,
+        lines,
+        previewText: lines.slice(0, 2).map((l) => l.text).join(' '),
+        isWhisperSynced: true,
       };
-    });
-
-    return {
-      lines,
-      previewText: lines.slice(0, 2).map((l) => l.text).join(' • '),
-      isWhisperSynced: true,
-    };
+    }
   }
 
   const duration = Math.max(30, track.duration || 180);
-  const songName = track.name || 'שיר';
-  const artistName = track.artistName || 'אמן';
+  const songName = sanitizeSubtitleLettersOnly(track.name || 'שיר');
+  const artistName = sanitizeSubtitleLettersOnly(track.artistName || 'אמן');
+
+  const sourceLyrics =
+    preferredLang === 'en'
+      ? track.lyricsEn || track.lyrics
+      : track.lyricsHe || track.lyrics;
 
   let rawLines: string[] = [];
 
-  if (track.lyrics && typeof track.lyrics === 'string' && track.lyrics.trim().length > 0) {
-    rawLines = track.lyrics
+  if (sourceLyrics && typeof sourceLyrics === 'string' && sourceLyrics.trim().length > 0) {
+    const splitRaw = sourceLyrics
       .split('\n')
       .map((l: string) => l.trim())
       .filter((l: string) => l.length > 0);
 
-    // Parse [MM:SS] LRC timestamps if present inside track.lyrics
+    // Parse [MM:SS] LRC timestamps if present inside lyrics
     const lrcParsed: SynchronizedLine[] = [];
-    rawLines.forEach((line, idx) => {
+    splitRaw.forEach((line, idx) => {
       const match = line.match(/^\[(\d{1,2}:\d{2}(?:\.\d{1,2})?)\]\s*(.+)$/);
       if (match) {
         const startTime = parseLrcTimestamp(match[1]);
-        const text = match[2].trim();
+        const text = sanitizeSubtitleLettersOnly(match[2]);
         if (text) {
           lrcParsed.push({
             id: `lrc_${idx}`,
@@ -128,24 +150,24 @@ export function generateSynchronizedLyrics(
       });
       return {
         lines: finalized,
-        previewText: finalized.slice(0, 2).map((l) => l.text).join(' • '),
+        previewText: finalized.slice(0, 2).map((l) => l.text).join(' '),
         isWhisperSynced: true,
       };
     }
+
+    rawLines = splitRaw.map(sanitizeSubtitleLettersOnly).filter(Boolean);
   }
 
   if (rawLines.length === 0) {
-    const isHebrew = /[\u0590-\u05FF]/.test(songName) || /[\u0590-\u05FF]/.test(artistName);
-
-    if (isHebrew) {
+    if (preferredLang === 'en') {
       rawLines = [
-        `לחץ על "צור כתוביות על המכשיר" לתמלול חינמי אוטומטי`,
-        `שיר: ${songName} • ${artistName}`,
+        'Click Generate Subtitles to transcribe locally for free',
+        `${songName} ${artistName}`.trim(),
       ];
     } else {
       rawLines = [
-        `Click "Generate Local Whisper Subtitles" to transcribe on-device for free`,
-        `Track: ${songName} • ${artistName}`,
+        'לחץ על צור כתוביות על המכשיר לתמלול אוטומטי',
+        `${songName} ${artistName}`.trim(),
       ];
     }
   }
@@ -170,14 +192,14 @@ export function generateSynchronizedLyrics(
 
   return {
     lines,
-    previewText: rawLines.slice(0, 2).join(' • '),
+    previewText: rawLines.slice(0, 2).join(' '),
     isWhisperSynced: false,
   };
 }
 
 /**
- * Runs 100% On-Device Whisper AI transcription directly inside the browser (WASM/WebGPU).
- * Zero API keys, zero Gemini/OpenAI charges, unlimited free usage.
+ * Runs 100% On-Device Whisper AI transcription directly inside the browser (WASM).
+ * Produces BOTH Hebrew and English letters-only subtitle tracks.
  */
 export async function transcribeTrackWithWhisperAI(
   options: {
@@ -189,7 +211,11 @@ export async function transcribeTrackWithWhisperAI(
 ): Promise<{
   success: boolean;
   segments?: SubtitleSegment[];
+  segmentsHe?: SubtitleSegment[];
+  segmentsEn?: SubtitleSegment[];
   lyrics?: string;
+  lyricsHe?: string;
+  lyricsEn?: string;
   provider?: string;
   error?: string;
 }> {
@@ -198,6 +224,7 @@ export async function transcribeTrackWithWhisperAI(
     audioUrl: options.track?.audioUrl,
     language: options.language || 'he',
     trackDuration: options.track?.duration || 180,
+    hintTitle: options.track?.name,
     onProgress: options.onProgress,
   });
 }

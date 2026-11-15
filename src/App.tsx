@@ -3,28 +3,46 @@ import { AnimatePresence } from 'motion/react';
 import { SongsView } from './components/SongsView';
 import { SongPlayerPage } from './components/SongPlayerPage';
 import { SplashScreen } from './components/SplashScreen';
-import { Language, JamendoTrack } from './types';
-import { getInstantSongPool, fetchAllRealSongs } from './services/multiMusicService';
+import { Language, JamendoTrack, ArtistProfile } from './types';
+import {
+  getInstantSongPool,
+  fetchAllRealSongs,
+  getCachedArtistProfiles,
+  fetchAllArtistProfiles,
+} from './services/multiMusicService';
 import { SecurityGuard } from './components/SecurityGuard';
 
 export default function App() {
   const [lang] = useState<Language>('he');
   const [activePlayerTrack, setActivePlayerTrack] = useState<JamendoTrack | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
+  const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
 
   const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('wikiarchive_liked_songs');
       return saved ? JSON.parse(saved) : [];
-    } catch (e) {
+    } catch {
       return [];
     }
   });
 
-  // Perform critical initialization before showing the UI
+  // Start non-blocking progressive fetch immediately on load
   useEffect(() => {
-    // Start fetching in background immediately
-    fetchAllRealSongs().catch(() => {});
+    fetchAllRealSongs(undefined, (batch) => {
+      if (batch.length > 0) setAllTracks(batch);
+    })
+      .then((tracks) => {
+        if (tracks.length > 0) setAllTracks(tracks);
+      })
+      .catch(() => {});
+
+    fetchAllArtistProfiles()
+      .then((profiles) => {
+        if (profiles.length > 0) setAllArtists(profiles);
+      })
+      .catch(() => {});
 
     // Hide splash screen within 200ms max for instant loading
     const timer = setTimeout(() => {
@@ -67,7 +85,8 @@ export default function App() {
                 isLiked={likedSongIds.includes(activePlayerTrack.id)}
                 onToggleLike={handleToggleLikeSong}
                 lang={lang}
-                allTracks={getInstantSongPool()}
+                allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
+                allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
                 onPlayTrack={(t) => setActivePlayerTrack(t)}
               />
             )}
@@ -77,4 +96,3 @@ export default function App() {
     </SecurityGuard>
   );
 }
-

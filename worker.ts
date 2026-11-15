@@ -484,6 +484,60 @@ export default {
       }
     }
 
+    // 3b. Fast Single-Roundtrip Tracks Feed (reads tracks_index.json + tracks/*.json directly inside Worker)
+    if (pathname === '/api/storage/tracks-feed' && request.method === 'GET') {
+      try {
+        const trackMap = new Map<string, any>();
+        const readJsonKey = async (key: string) => {
+          try {
+            if (env.R2_BUCKET) {
+              const obj = await env.R2_BUCKET.get(key);
+              return obj ? JSON.parse(await obj.text()) : null;
+            }
+            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+            return r.ok ? await r.json() : null;
+          } catch {
+            return null;
+          }
+        };
+
+        const indexData = await readJsonKey('tracks_index.json');
+        if (Array.isArray(indexData)) {
+          indexData.forEach((t: any) => {
+            if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+          });
+        }
+
+        const keys: string[] = [];
+        if (env.R2_BUCKET) {
+          const listed = await env.R2_BUCKET.list({ prefix: 'tracks/' });
+          listed.objects.forEach((o) => {
+            if (o.key.endsWith('.json')) keys.push(o.key);
+          });
+        } else {
+          const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, { 'list-type': '2', prefix: 'tracks/' });
+          if (listRes.ok) {
+            const xml = await listRes.text();
+            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
+              if (it.Key?.endsWith('.json')) keys.push(it.Key);
+            });
+          }
+        }
+
+        for (let i = 0; i < keys.length; i += 25) {
+          const slice = keys.slice(i, i + 25);
+          const items = await Promise.all(slice.map((k) => readJsonKey(k)));
+          items.forEach((t: any) => {
+            if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+          });
+        }
+
+        return jsonResponse({ success: true, tracks: Array.from(trackMap.values()) });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Tracks feed failed' }, 500);
+      }
+    }
+
     // 4. Delete file
     if (pathname === '/api/storage/delete' && request.method === 'DELETE') {
       try {

@@ -14,14 +14,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
-import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums } from '../services/multiMusicService';
+import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums, getCachedArtistProfiles, fetchAllArtistProfiles } from '../services/multiMusicService';
 import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteArtistTrackFromFirebase } from '../services/firebaseService';
+import { deleteArtistTrackFromFirebase, getEffectiveArtistAvatarForTrack } from '../services/firebaseService';
 
 interface ArtistProfileModalProps {
   artistName: string;
+  artistUid?: string;
   isOpen: boolean;
   onClose: () => void;
   allTracks: JamendoTrack[];
@@ -37,6 +38,7 @@ interface ArtistProfileModalProps {
 
 export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   artistName,
+  artistUid,
   isOpen,
   onClose,
   allTracks,
@@ -60,10 +62,61 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [avatarImgError, setAvatarImgError] = useState(false);
+  const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
 
+  useEffect(() => {
+    setAvatarImgError(false);
+    if (isOpen) {
+      fetchAllArtistProfiles()
+        .then((profiles) => {
+          if (Array.isArray(profiles) && profiles.length > 0) {
+            setLoadedArtists(profiles);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, artistName, artistUid]);
+
+  // Merge passed allArtists with cached/fetched artist profiles
+  const mergedArtists = React.useMemo(() => {
+    const map = new Map<string, ArtistProfile>();
+    [...getCachedArtistProfiles(), ...loadedArtists, ...allArtists].forEach((a) => {
+      if (!a) return;
+      const key = (a.googleUid || a.id || a.name || '').replace(/^artist_/, '').toLowerCase().trim();
+      if (!key) return;
+      const prev = map.get(key);
+      map.set(key, prev ? { ...prev, ...a, avatarUrl: a.avatarUrl || prev.avatarUrl, bio: a.bio || prev.bio } : a);
+    });
+    return Array.from(map.values());
+  }, [allArtists, loadedArtists]);
+
+  const rawUid = (artistUid || currentTrack?.uploadedByUid || '').trim();
+  const cleanTargetUid = rawUid.replace(/^artist_/, '').toLowerCase().trim();
+  const cleanTargetEmail = (currentTrack?.uploadedByEmail || '').toLowerCase().trim();
   const cleanQuery = (artistName || currentTrack?.artistName || '').toLowerCase().trim();
-  const artistInfo = allArtists.find(a => (a.name || '').toLowerCase().trim() === cleanQuery);
-  const effectiveArtistName = artistName || currentTrack?.artistName || artistInfo?.name || (isHe ? 'אמן' : 'Artist');
+
+  // Resolve artist account by UID / Email FIRST, then normalized artist name
+  const artistInfo =
+    (cleanTargetUid
+      ? mergedArtists.find((a) => {
+          const aId = (a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+          const aGoogleUid = (a.googleUid || '').replace(/^artist_/, '').toLowerCase().trim();
+          return aId === cleanTargetUid || aGoogleUid === cleanTargetUid;
+        })
+      : undefined) ||
+    (cleanTargetEmail
+      ? mergedArtists.find((a) => (a.googleEmail || '').toLowerCase().trim() === cleanTargetEmail)
+      : undefined) ||
+    (cleanQuery
+      ? mergedArtists.find((a) => (a.name || '').toLowerCase().trim() === cleanQuery)
+      : undefined);
+
+  const effectiveArtistName = artistInfo?.name || artistName || currentTrack?.artistName || (isHe ? 'אמן' : 'Artist');
+  const effectiveCleanName = effectiveArtistName.toLowerCase().trim();
+
+  // Canonical UID & email set for the resolved artist
+  const canonicalUid = (artistInfo?.googleUid || artistInfo?.id || rawUid || '').replace(/^artist_/, '').toLowerCase().trim();
+  const canonicalEmail = (artistInfo?.googleEmail || cleanTargetEmail || '').toLowerCase().trim();
 
   // Merge currentTrack, allTracks, and instant song pool strictly filtering for valid owner tracks
   const poolBase = Array.isArray(allTracks) ? allTracks : [];
@@ -76,13 +129,25 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   let artistTracks = fullPool.filter((t) => {
     if (!isValidTrackWithOwner(t)) return false;
     if (deletedTrackIds.includes(t.id)) return false;
+
+    const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+    const tEmail = (t.uploadedByEmail || '').toLowerCase().trim();
     const tArtist = (t.artistName || '').toLowerCase().trim();
+
+    // 1. Direct match by artist account UID or Email
+    if (canonicalUid && tUid && tUid === canonicalUid) return true;
+    if (canonicalEmail && tEmail && tEmail === canonicalEmail) return true;
+
+    // 2. Fallback match by artist name (skip if track is explicitly owned by another account UID)
+    if (canonicalUid && tUid && tUid !== canonicalUid) return false;
     if (!tArtist) return false;
-    return (
-      tArtist === cleanQuery ||
-      tArtist.includes(cleanQuery) ||
-      cleanQuery.includes(tArtist) ||
-      (cleanQuery.length > 3 && tArtist.slice(0, 4) === cleanQuery.slice(0, 4))
+    const queries = [cleanQuery, effectiveCleanName].filter(Boolean);
+    return queries.some(
+      (q) =>
+        tArtist === q ||
+        tArtist.includes(q) ||
+        q.includes(tArtist) ||
+        (q.length > 3 && tArtist.slice(0, 4) === q.slice(0, 4))
     );
   });
 
@@ -92,13 +157,19 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const sampleTrack = artistTracks[0] || currentTrack || fullPool[0];
 
-  const artistBio = artistInfo?.bio || '';
+  const artistBio = artistInfo?.bio || sampleTrack?.artistBio || '';
 
-  // Dedicated artist avatar with authentic image resolution
+  // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl -> localStorage -> Track coverUrl
   let rawAvatarUrl: string | undefined = artistInfo?.avatarUrl;
 
+  if (!isAuthenticCover(rawAvatarUrl) && sampleTrack) {
+    rawAvatarUrl = getEffectiveArtistAvatarForTrack(sampleTrack, mergedArtists);
+  }
+
   if (!isAuthenticCover(rawAvatarUrl)) {
-    const trackWithAvatar = artistTracks.find((t) => isAuthenticCover(t.artistAvatarUrl)) || (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
+    const trackWithAvatar =
+      artistTracks.find((t) => isAuthenticCover(t.artistAvatarUrl)) ||
+      (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
     if (trackWithAvatar?.artistAvatarUrl) {
       rawAvatarUrl = trackWithAvatar.artistAvatarUrl;
     } else {
@@ -106,11 +177,10 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
         const saved = localStorage.getItem('wikiarchive_artist_account') || localStorage.getItem('kolot_artist_account_v1');
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (
-            parsed.name?.toLowerCase().trim() === cleanQuery &&
-            parsed.avatarUrl &&
-            isAuthenticCover(parsed.avatarUrl)
-          ) {
+          const parsedUid = (parsed.googleUid || parsed.id || '').replace(/^artist_/, '').toLowerCase().trim();
+          const uidMatch = canonicalUid && parsedUid && canonicalUid === parsedUid;
+          const nameMatch = parsed.name?.toLowerCase().trim() === effectiveCleanName;
+          if ((uidMatch || nameMatch) && parsed.avatarUrl && isAuthenticCover(parsed.avatarUrl)) {
             rawAvatarUrl = parsed.avatarUrl;
           }
         }
@@ -140,7 +210,12 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
       return parsed
         .filter((a) => {
           const aArtist = (a.artistName || '').toLowerCase().trim();
-          return aArtist === cleanQuery || cleanQuery.includes(aArtist) || aArtist.includes(cleanQuery);
+          return (
+            aArtist === effectiveCleanName ||
+            aArtist === cleanQuery ||
+            effectiveCleanName.includes(aArtist) ||
+            aArtist.includes(effectiveCleanName)
+          );
         })
         .map((a) => ({
           ...a,

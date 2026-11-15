@@ -139,7 +139,11 @@ export interface JamendoTrack {
   source?: string;
   legalStatus?: string;
   lyrics?: string;
+  lyricsHe?: string;
+  lyricsEn?: string;
   subtitleSegments?: SubtitleSegment[];
+  subtitleSegmentsHe?: SubtitleSegment[];
+  subtitleSegmentsEn?: SubtitleSegment[];
   hasWhisperSubtitles?: boolean;
   artistId?: string;
   albumId?: string;

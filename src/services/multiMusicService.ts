@@ -163,6 +163,16 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         audioUrl: bestAudio,
         coverUrl: bestCover || '',
         bgColor: existing.bgColor || t.bgColor || computeTrackBgColor(existing),
+        artistAvatarUrl: existing.artistAvatarUrl || t.artistAvatarUrl,
+        uploadedByUid: existing.uploadedByUid || t.uploadedByUid,
+        uploadedByEmail: existing.uploadedByEmail || t.uploadedByEmail,
+        subtitleSegments: existing.subtitleSegments?.length ? existing.subtitleSegments : t.subtitleSegments,
+        subtitleSegmentsHe: existing.subtitleSegmentsHe?.length ? existing.subtitleSegmentsHe : t.subtitleSegmentsHe,
+        subtitleSegmentsEn: existing.subtitleSegmentsEn?.length ? existing.subtitleSegmentsEn : t.subtitleSegmentsEn,
+        lyrics: existing.lyrics || t.lyrics,
+        lyricsHe: existing.lyricsHe || t.lyricsHe,
+        lyricsEn: existing.lyricsEn || t.lyricsEn,
+        hasWhisperSubtitles: !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
       };
       trackMap.set(canonicalKey, merged);
@@ -191,6 +201,10 @@ export function getInstantSongPool(): JamendoTrack[] {
   );
 }
 
+export function getCachedArtistProfiles(): any[] {
+  return memorySessionProfiles;
+}
+
 export async function fetchAllArtistProfiles(): Promise<any[]> {
   try {
     const [fbAccounts, cloudAccounts] = await Promise.all([
@@ -198,13 +212,19 @@ export async function fetchAllArtistProfiles(): Promise<any[]> {
       fetchArtistProfilesFromCloud().catch(() => []),
     ]);
 
-    const combined = [...fbAccounts];
+    const profileMap = new Map<string, any>();
+    fbAccounts.forEach((a) => {
+      const key = (a.googleUid || a.id || '').replace(/^artist_/, '');
+      if (key) profileMap.set(key, a);
+    });
     cloudAccounts.forEach((ca) => {
-      if (ca && ca.id && !combined.some((a) => a.id === ca.id)) {
-        combined.push(ca);
-      }
+      const key = (ca?.googleUid || ca?.id || '').replace(/^artist_/, '');
+      if (!key) return;
+      const existing = profileMap.get(key);
+      profileMap.set(key, existing ? { ...existing, ...ca, bio: ca.bio || existing.bio, avatarUrl: ca.avatarUrl || existing.avatarUrl } : ca);
     });
 
+    const combined = Array.from(profileMap.values());
     memorySessionProfiles = combined;
     return combined;
   } catch {
@@ -240,32 +260,63 @@ export async function saveTermsAcceptedToFirestore(uid: string, name: string): P
   }
 }
 
+let inFlightSongsPromise: Promise<JamendoTrack[]> | null = null;
+const batchListeners = new Set<(tracks: JamendoTrack[]) => void>();
+
 /**
- * Fetches all saved tracks live from Cloudflare R2 & Firebase Firestore (100% Cloud-Native).
+ * Fetches all saved tracks live from Cloudflare R2 & Firebase Firestore (100% Cloud-Native)
+ * and streams the fastest source immediately (< 1s) without blocking on the slower one.
  */
 export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
   onBatch?: (tracks: JamendoTrack[]) => void
 ): Promise<JamendoTrack[]> {
-  const [cloudResult, firebaseResult] = await Promise.allSettled([
-    fetchTracksFromCloud(),
-    getArtistTracksFromFirebase(),
-  ]);
+  if (onBatch) batchListeners.add(onBatch);
 
-  const cloudTracks = cloudResult.status === 'fulfilled' ? cloudResult.value : [];
-  const firebaseTracks = firebaseResult.status === 'fulfilled' ? firebaseResult.value : [];
+  if (inFlightSongsPromise) {
+    const result = await inFlightSongsPromise;
+    if (onBatch) batchListeners.delete(onBatch);
+    if (onProgress) onProgress(result.length);
+    return result;
+  }
 
-  const deletedIds = getDeletedSongIds();
-  const combined = deduplicateTracks([...cloudTracks, ...firebaseTracks]).filter(
-    (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
-  );
+  let latestMerged: JamendoTrack[] = [...memorySessionTracks];
+  const mergeAndEmit = (incoming: JamendoTrack[]) => {
+    if (!incoming || incoming.length === 0) return;
+    const deletedIds = getDeletedSongIds();
+    latestMerged = deduplicateTracks([...latestMerged, ...incoming]).filter(
+      (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
+    );
+    saveCachedCloudTracks(latestMerged);
+    if (onProgress) onProgress(latestMerged.length);
+    batchListeners.forEach((cb) => {
+      try {
+        cb(latestMerged);
+      } catch {}
+    });
+  };
 
-  saveCachedCloudTracks(combined);
+  inFlightSongsPromise = (async () => {
+    try {
+      await Promise.allSettled([
+        getArtistTracksFromFirebase().then((fb) => {
+          mergeAndEmit(fb);
+          return fb;
+        }),
+        fetchTracksFromCloud().then((r2) => {
+          mergeAndEmit(r2);
+          return r2;
+        }),
+      ]);
+      if (onProgress) onProgress(latestMerged.length);
+      return latestMerged;
+    } finally {
+      inFlightSongsPromise = null;
+      if (onBatch) batchListeners.delete(onBatch);
+    }
+  })();
 
-  if (onProgress) onProgress(combined.length);
-  if (onBatch) onBatch(combined);
-
-  return combined;
+  return inFlightSongsPromise;
 }
 
 export async function fetchLiveAudioFromArchive(_genreQuery?: string, _page?: number): Promise<JamendoTrack[]> {

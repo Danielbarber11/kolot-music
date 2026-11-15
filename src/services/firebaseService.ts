@@ -207,36 +207,57 @@ export function getEffectiveUserAvatar(
   user: FirebaseUser | null,
   profile?: ArtistProfile | null
 ): string | undefined {
-  // Prefer custom uploaded profile avatar (non-Google default or explicitly stored R2/uploaded image)
-  if (profile?.avatarUrl && !profile.avatarUrl.includes('googleusercontent.com')) {
-    return profile.avatarUrl;
+  // 1. Prefer explicitly uploaded/saved non-Google custom avatar first
+  if (profile?.avatarUrl && profile.avatarUrl.trim() && !profile.avatarUrl.includes('googleusercontent.com')) {
+    return profile.avatarUrl.trim();
   }
 
-  if (!user) return profile?.avatarUrl;
-  const primaryProvider = user.providerData?.[0];
-  const providerId = primaryProvider?.providerId || '';
-
-  // Provider-specific photo from providerData (Facebook, Yahoo, Microsoft, Google, etc.)
-  if (primaryProvider?.photoURL) {
-    return primaryProvider.photoURL;
-  }
-
-  // If logged in via Google, top-level user.photoURL is valid
-  if (providerId.includes('google') && user.photoURL) {
-    return user.photoURL;
-  }
-
-  // If profile avatar is a Google URL while signed in with Google
-  if (profile?.avatarUrl) {
-    if (profile.avatarUrl.includes('googleusercontent.com')) {
-      if (providerId.includes('google')) {
-        return profile.avatarUrl;
-      }
-      return undefined;
+  // 2. Fallback to Google / OAuth account photoURL
+  if (user) {
+    if (user.photoURL && user.photoURL.trim()) {
+      return user.photoURL.trim();
     }
-    return profile.avatarUrl;
+    const primaryPhoto = user.providerData?.find((p) => !!p?.photoURL)?.photoURL;
+    if (primaryPhoto && primaryPhoto.trim()) {
+      return primaryPhoto.trim();
+    }
   }
 
+  // 3. Fallback to any stored profile avatarUrl (including stored Google photo URL)
+  if (profile?.avatarUrl && profile.avatarUrl.trim()) {
+    return profile.avatarUrl.trim();
+  }
+
+  return undefined;
+}
+
+export function getEffectiveArtistAvatarForTrack(
+  track: JamendoTrack,
+  artists: ArtistProfile[] = []
+): string | undefined {
+  const uid = (track.uploadedByUid || '').replace(/^artist_/, '').trim();
+  const email = (track.uploadedByEmail || '').toLowerCase().trim();
+  const normName = (track.artistName || '').toLowerCase().trim();
+
+  const matchedArtist =
+    (uid
+      ? artists.find(
+          (a) =>
+            a.id === uid ||
+            a.id === `artist_${uid}` ||
+            a.googleUid === uid ||
+            a.id.replace(/^artist_/, '') === uid
+        )
+      : undefined) ||
+    (email ? artists.find((a) => (a.googleEmail || '').toLowerCase().trim() === email) : undefined) ||
+    (normName ? artists.find((a) => (a.name || '').toLowerCase().trim() === normName) : undefined);
+
+  if (matchedArtist?.avatarUrl && matchedArtist.avatarUrl.trim()) {
+    return matchedArtist.avatarUrl.trim();
+  }
+  if (track.artistAvatarUrl && track.artistAvatarUrl.trim()) {
+    return track.artistAvatarUrl.trim();
+  }
   return undefined;
 }
 
@@ -260,11 +281,12 @@ export async function saveArtistAccountToFirebase(artist: ArtistProfile): Promis
     const payload = {
       id: docId,
       name: artist.name.slice(0, 100),
+      bio: (artist.bio || '').slice(0, 1000),
       avatarUrl: (artist.avatarUrl || '').slice(0, 500000),
       genre: (artist.genre || 'General').slice(0, 50),
       accountUrl: accountUrl.slice(0, 500),
       connectionCode: (artist.connectionCode || '').slice(0, 50),
-      googleUid: artist.googleUid || '',
+      googleUid: artist.googleUid || docId,
       googleEmail: artist.googleEmail || '',
       audiusHandle: (artist.audiusHandle || '').slice(0, 80),
       isConnected: true,
@@ -272,7 +294,7 @@ export async function saveArtistAccountToFirebase(artist: ArtistProfile): Promis
       acceptedTermsAt: artist.acceptedTermsAt || new Date().toISOString(),
       isPrivate: artist.isPrivate ?? false,
       tracksCount: artist.tracksCount ?? 0,
-      providerPlatform: artist.providerPlatform || 'Audius Protocol (Decentralized Open Audio)',
+      providerPlatform: artist.providerPlatform || 'Kolot Google Auth',
       createdAt: artist.joinedDate || new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
     };
@@ -409,8 +431,16 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
       albumName: (track.albumName || 'Single').slice(0, 100),
       genre: (track.genre || 'Pop').slice(0, 50),
       lyrics: (track.lyrics || '').slice(0, 8000),
-      subtitleSegments: Array.isArray(track.subtitleSegments) ? track.subtitleSegments.slice(0, 300) : [],
-      hasWhisperSubtitles: !!track.hasWhisperSubtitles || (Array.isArray(track.subtitleSegments) && track.subtitleSegments.length > 0),
+      lyricsHe: (track.lyricsHe || '').slice(0, 6000),
+      lyricsEn: (track.lyricsEn || '').slice(0, 6000),
+      subtitleSegments: Array.isArray(track.subtitleSegments) ? track.subtitleSegments.slice(0, 250) : [],
+      subtitleSegmentsHe: Array.isArray(track.subtitleSegmentsHe) ? track.subtitleSegmentsHe.slice(0, 250) : [],
+      subtitleSegmentsEn: Array.isArray(track.subtitleSegmentsEn) ? track.subtitleSegmentsEn.slice(0, 250) : [],
+      hasWhisperSubtitles:
+        !!track.hasWhisperSubtitles ||
+        (Array.isArray(track.subtitleSegments) && track.subtitleSegments.length > 0) ||
+        (Array.isArray(track.subtitleSegmentsHe) && track.subtitleSegmentsHe.length > 0) ||
+        (Array.isArray(track.subtitleSegmentsEn) && track.subtitleSegmentsEn.length > 0),
       bgColor: track.bgColor || '',
       uploadedByUid: track.uploadedByUid || '',
       uploadedByEmail: track.uploadedByEmail || '',
@@ -474,8 +504,16 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           source: 'Kolot R2 Storage',
           legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
           lyrics: data.lyrics || undefined,
+          lyricsHe: data.lyricsHe || undefined,
+          lyricsEn: data.lyricsEn || undefined,
           subtitleSegments: Array.isArray(data.subtitleSegments) && data.subtitleSegments.length > 0 ? data.subtitleSegments : undefined,
-          hasWhisperSubtitles: !!data.hasWhisperSubtitles || (Array.isArray(data.subtitleSegments) && data.subtitleSegments.length > 0),
+          subtitleSegmentsHe: Array.isArray(data.subtitleSegmentsHe) && data.subtitleSegmentsHe.length > 0 ? data.subtitleSegmentsHe : undefined,
+          subtitleSegmentsEn: Array.isArray(data.subtitleSegmentsEn) && data.subtitleSegmentsEn.length > 0 ? data.subtitleSegmentsEn : undefined,
+          hasWhisperSubtitles:
+            !!data.hasWhisperSubtitles ||
+            (Array.isArray(data.subtitleSegments) && data.subtitleSegments.length > 0) ||
+            (Array.isArray(data.subtitleSegmentsHe) && data.subtitleSegmentsHe.length > 0) ||
+            (Array.isArray(data.subtitleSegmentsEn) && data.subtitleSegmentsEn.length > 0),
           publishedDate: data.createdAt || '2024',
           publisherAccountUrl: data.publisherAccountUrl || 'https://audius.co',
           uploadedByUid: data.uploadedByUid || undefined,
@@ -492,6 +530,38 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
     handleFirestoreError(error, OperationType.GET, 'artistTracks');
     return [];
   }
+}
+
+export async function syncArtistAvatarToTracks(
+  artistUid: string,
+  artistEmail: string | undefined,
+  avatarUrl: string | undefined,
+  tracks: JamendoTrack[]
+): Promise<void> {
+  if (!avatarUrl || (!artistUid && !artistEmail)) return;
+  const cleanUid = artistUid.replace(/^artist_/, '').trim();
+  const cleanEmail = (artistEmail || '').toLowerCase().trim();
+
+  const ownedTracks = tracks.filter((t) => {
+    const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').trim();
+    const tEmail = (t.uploadedByEmail || '').toLowerCase().trim();
+    return (cleanUid && tUid === cleanUid) || (cleanEmail && tEmail === cleanEmail);
+  });
+
+  await Promise.allSettled(
+    ownedTracks.map(async (t) => {
+      const updated = { ...t, artistAvatarUrl: avatarUrl };
+      await saveArtistTrackToFirebase(updated);
+      await fetch('/api/storage/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: `tracks/${t.id}.json`,
+          content: JSON.stringify(updated, null, 2),
+        }),
+      }).catch(() => {});
+    })
+  );
 }
 
 // -------------------------------------------------------------

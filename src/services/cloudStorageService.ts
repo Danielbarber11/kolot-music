@@ -378,9 +378,25 @@ function isCloudPlayableTrack(t: any): t is JamendoTrack {
 }
 
 export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
+  // 1. Fast single-roundtrip feed from server/Worker (reads tracks_index.json + tracks/*.json server-side)
+  try {
+    const feedRes = await fetch('/api/storage/tracks-feed', {
+      headers: getR2AuthHeaders(),
+      cache: 'no-store',
+    });
+    if (feedRes.ok) {
+      const feedData = await safeJson(feedRes, 'טעינה מהירה מ-R2');
+      if (feedData.success && Array.isArray(feedData.tracks)) {
+        return feedData.tracks.filter(isCloudPlayableTrack);
+      }
+    }
+  } catch (feedErr) {
+    console.warn('Fast tracks-feed fallback to list:', feedErr);
+  }
+
   const trackMap = new Map<string, JamendoTrack>();
 
-  // 1. Fetch tracks directory strictly from Cloudflare R2 (no cache)
+  // 2. Fallback: Fetch tracks directory strictly from Cloudflare R2 (no cache)
   try {
     const res = await fetch('/api/storage/list?prefix=tracks/', {
       headers: getR2AuthHeaders(),
@@ -410,7 +426,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
     console.warn('Failed to list tracks/ from R2:', err);
   }
 
-  // 2. Fetch tracks_index.json from R2 as supplementary catalog (only if tracks/ didn't already include it)
+  // 3. Fetch tracks_index.json from R2 as supplementary catalog
   try {
     const res = await fetch('/api/storage/list?prefix=tracks_index.json', {
       headers: getR2AuthHeaders(),
@@ -495,10 +511,10 @@ export async function uploadArtistProfileToCloud(artist: any, avatarFile?: File 
     if (avatarFile) {
       const formData = new FormData();
       formData.append('file', avatarFile);
-      formData.append('path', `avatars/${artist.id}.jpg`);
+      formData.append('path', `avatars/${artist.id}_${Date.now()}.jpg`);
       const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
       const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
-      if (data.success) avatarUrl = data.url;
+      if (data.success && data.url) avatarUrl = data.url;
     }
 
     const profileToSave = { ...artist, avatarUrl };
@@ -556,14 +572,24 @@ export async function updateTrackColorInCloud(trackId: string, bgColor: string, 
 export async function saveTrackSubtitlesInCloud(
   track: JamendoTrack,
   subtitleSegments: NonNullable<JamendoTrack['subtitleSegments']>,
-  lyrics?: string
+  lyrics?: string,
+  extra?: {
+    subtitleSegmentsHe?: JamendoTrack['subtitleSegmentsHe'];
+    subtitleSegmentsEn?: JamendoTrack['subtitleSegmentsEn'];
+    lyricsHe?: string;
+    lyricsEn?: string;
+  }
 ): Promise<boolean> {
   try {
     const updatedTrack: JamendoTrack = {
       ...track,
       subtitleSegments,
-      hasWhisperSubtitles: subtitleSegments.length > 0,
+      hasWhisperSubtitles: subtitleSegments.length > 0 || !!(extra?.subtitleSegmentsHe?.length || extra?.subtitleSegmentsEn?.length),
       ...(lyrics ? { lyrics } : {}),
+      ...(extra?.subtitleSegmentsHe?.length ? { subtitleSegmentsHe: extra.subtitleSegmentsHe } : {}),
+      ...(extra?.subtitleSegmentsEn?.length ? { subtitleSegmentsEn: extra.subtitleSegmentsEn } : {}),
+      ...(extra?.lyricsHe ? { lyricsHe: extra.lyricsHe } : {}),
+      ...(extra?.lyricsEn ? { lyricsEn: extra.lyricsEn } : {}),
     };
     const res = await fetch('/api/storage/upload', {
       method: 'POST',
@@ -573,6 +599,9 @@ export async function saveTrackSubtitlesInCloud(
         content: JSON.stringify(updatedTrack, null, 2),
       }),
     });
+    if (res.ok) {
+      void syncTracksIndexInBackground(updatedTrack);
+    }
     return res.ok;
   } catch {
     return false;

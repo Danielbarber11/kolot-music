@@ -33,6 +33,7 @@ import {
   deduplicateTracks,
   searchModern21stCenturyTracks,
   fetchAllArtistProfiles,
+  getCachedArtistProfiles,
   fetchRealAlbums,
   getCachedAlbums,
   checkTermsAcceptedInFirestore,
@@ -62,6 +63,7 @@ import {
   loginWithGoogle,
   deleteArtistTrackFromFirebase,
   getEffectiveUserAvatar,
+  getEffectiveArtistAvatarForTrack,
 } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
@@ -315,11 +317,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [artistFilter, setArtistFilter] = useState<string | null>(null);
   const [profileArtistName, setProfileArtistName] = useState<string | null>(null);
+  const [profileArtistUid, setProfileArtistUid] = useState<string | undefined>(undefined);
   const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
+
+  const openArtistProfile = (name: string, uid?: string) => {
+    setProfileArtistName(name);
+    setProfileArtistUid(uid);
+  };
+
+  const closeArtistProfile = () => {
+    setProfileArtistName(null);
+    setProfileArtistUid(undefined);
+  };
 
   // Song Pool (Filtered strictly for tracks with authentic account owners)
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool().filter(isValidTrackWithOwner));
-  const [allArtists, setAllArtists] = useState<ArtistProfile[]>([]);
+  const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [remoteAlbums, setRemoteAlbums] = useState<Album[]>(getCachedAlbums);
   const [visibleSearchCount] = useState(150);
 
@@ -343,26 +356,39 @@ export const SongsView: React.FC<SongsViewProps> = ({
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
 
-  // Mount effect - 100% Live Cloud Load (Cloudflare R2 + Firebase Firestore)
+  // Mount effect - Independent progressive Cloud Load (< 1s first paint, zero Promise.all blocking)
   useEffect(() => {
-    Promise.allSettled([
-      getArtistAccountsFromFirebase(),
-      fetchAllRealSongs(),
-      fetchRealAlbums(),
-    ]).then(([fbAccountsRes, allSongsRes, albumsRes]) => {
-      if (fbAccountsRes.status === 'fulfilled' && Array.isArray(fbAccountsRes.value)) {
-        setAllArtists(fbAccountsRes.value.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
-      }
+    let active = true;
 
-      if (allSongsRes.status === 'fulfilled') {
-        const validSongs = (allSongsRes.value || []).filter(isValidTrackWithOwner);
+    fetchAllRealSongs(undefined, (batch) => {
+      if (!active) return;
+      const valid = (batch || []).filter(isValidTrackWithOwner);
+      if (valid.length > 0) setAllTracks(valid);
+    })
+      .then((finalSongs) => {
+        if (!active) return;
+        const validSongs = (finalSongs || []).filter(isValidTrackWithOwner);
         setAllTracks(validSongs);
-      }
+      })
+      .catch(() => {});
 
-      if (albumsRes.status === 'fulfilled') {
-        setRemoteAlbums(albumsRes.value || []);
-      }
-    });
+    fetchAllArtistProfiles()
+      .then((profiles) => {
+        if (!active || !Array.isArray(profiles)) return;
+        setAllArtists(profiles.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+      })
+      .catch(() => {});
+
+    fetchRealAlbums()
+      .then((albums) => {
+        if (!active || !Array.isArray(albums)) return;
+        setRemoteAlbums(albums);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const openSongPlayer = (track: JamendoTrack) => {
@@ -435,23 +461,28 @@ export const SongsView: React.FC<SongsViewProps> = ({
     ? allArtists.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : allArtists;
 
-  // Extract unique popular artists from both tracks and accounts with authentic imagery
+  // Extract unique popular artists keyed canonically by UID first, then normalized name
   const popularArtists = React.useMemo(() => {
-    const map = new Map<string, { name: string; avatarUrl?: string; genre?: string; count: number }>();
+    const map = new Map<string, { uid?: string; name: string; avatarUrl?: string; genre?: string; count: number }>();
 
     allArtists.forEach((a) => {
       if (a.name) {
-        const key = a.name.toLowerCase().trim();
-        const trackForCover = allTracks.find(
-          (t) =>
-            t.artistName?.toLowerCase().trim() === key &&
+        const cleanUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+        const nameKey = a.name.toLowerCase().trim();
+        const key = cleanUid || nameKey;
+        const trackForCover = allTracks.find((t) => {
+          const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+          return (
+            ((cleanUid && tUid === cleanUid) || t.artistName?.toLowerCase().trim() === nameKey) &&
             (t.artistAvatarUrl || t.coverUrl)
-        );
+          );
+        });
         const resolved = getStreamingMediaUrl(
           a.avatarUrl || trackForCover?.artistAvatarUrl || trackForCover?.coverUrl
         );
 
         map.set(key, {
+          uid: a.googleUid || a.id,
           name: a.name,
           avatarUrl: resolved || undefined,
           genre: a.genre || 'אמן',
@@ -462,11 +493,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     allTracks.filter(isValidTrackWithOwner).forEach((t) => {
       if (!t.artistName) return;
-      const key = t.artistName.toLowerCase().trim();
+      const cleanUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+      const nameKey = t.artistName.toLowerCase().trim();
+      const key = (cleanUid && map.has(cleanUid) ? cleanUid : nameKey);
       const trackImage = getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl);
 
       if (!map.has(key)) {
+        // Also check if an existing entry matches by artist name
+        const byNameEntry = Array.from(map.values()).find((v) => v.name.toLowerCase().trim() === nameKey);
+        if (byNameEntry) {
+          byNameEntry.count += 1;
+          if (!byNameEntry.avatarUrl && trackImage) byNameEntry.avatarUrl = trackImage;
+          if (!byNameEntry.uid && t.uploadedByUid) byNameEntry.uid = t.uploadedByUid;
+          return;
+        }
         map.set(key, {
+          uid: t.uploadedByUid,
           name: t.artistName,
           avatarUrl: trackImage || undefined,
           genre: t.genre || 'אמן',
@@ -920,7 +962,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   return (
                     <div
                       key={artist.id}
-                      onClick={() => setProfileArtistName(artist.name)}
+                      onClick={() => openArtistProfile(artist.name, artist.googleUid || artist.id)}
                       className="group p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                     >
                       <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
@@ -1023,7 +1065,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           <p
                             onClick={(e) => {
                               e.stopPropagation();
-                              setProfileArtistName(track.artistName);
+                              openArtistProfile(track.artistName, track.uploadedByUid);
                             }}
                             className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                           >
@@ -1075,12 +1117,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 const featuredTrack = leadingTracks[featuredTrackIndex % leadingTracks.length] || leadingTracks[0];
                 if (!featuredTrack) return null;
 
-                const artistProfileObj = allArtists.find(
-                  (a) => a.name?.toLowerCase().trim() === featuredTrack.artistName?.toLowerCase().trim()
-                );
-                const artistAvatarImg = getStreamingMediaUrl(
-                  artistProfileObj?.avatarUrl || featuredTrack.artistAvatarUrl || featuredTrack.coverUrl
-                );
+                const resolvedFeaturedAvatar =
+                  getEffectiveArtistAvatarForTrack(featuredTrack, allArtists) || featuredTrack.coverUrl;
+                const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
 
                 return (
                   <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-white/[0.08] via-white/[0.03] to-black border border-white/15 p-5 sm:p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
@@ -1102,8 +1141,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                         <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 text-xs sm:text-sm text-white/70">
                           <button
-                            onClick={() => setProfileArtistName(featuredTrack.artistName)}
-                            className="font-medium text-white hover:underline flex items-center gap-1.5"
+                            onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
+                            className="font-medium text-white hover:underline flex items-center gap-1.5 cursor-pointer"
                           >
                             <span>{featuredTrack.artistName}</span>
                             <span className="w-1.5 h-1.5 rounded-full bg-white/40" />
@@ -1144,12 +1183,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                           {/* Artist Profile Avatar Button */}
                           <button
-                            onClick={() => setProfileArtistName(featuredTrack.artistName)}
+                            onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
                             className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-xs sm:text-sm font-medium text-white transition-all cursor-pointer shadow-md active:scale-95"
                           >
                             <div className="w-6 h-6 rounded-full overflow-hidden bg-white/20 shrink-0 border border-white/30 flex items-center justify-center">
                               {artistAvatarImg ? (
-                                <img src={artistAvatarImg} alt="" className="w-full h-full object-cover" />
+                                <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                               ) : (
                                 <User className="w-3.5 h-3.5 text-white" />
                               )}
@@ -1376,7 +1415,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <p
                           onClick={(e) => {
                             e.stopPropagation();
-                            setProfileArtistName(track.artistName);
+                            openArtistProfile(track.artistName, track.uploadedByUid);
                           }}
                           className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                         >
@@ -1503,19 +1542,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                   <div className="flex gap-4 overflow-x-auto pb-3 custom-scrollbar select-none flex-nowrap">
                     {popularArtists.slice(0, 12).map((artist, idx) => {
-                      const trackForCover = allTracks.find(
-                        (t) =>
-                          t.artistName?.toLowerCase().trim() === artist.name?.toLowerCase().trim() &&
+                      const artistCleanUid = (artist.uid || '').replace(/^artist_/, '').toLowerCase().trim();
+                      const trackForCover = allTracks.find((t) => {
+                        const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+                        return (
+                          ((artistCleanUid && tUid === artistCleanUid) ||
+                            t.artistName?.toLowerCase().trim() === artist.name?.toLowerCase().trim()) &&
                           (t.artistAvatarUrl || t.coverUrl)
-                      );
+                        );
+                      });
                       const effectiveImg = getStreamingMediaUrl(
                         artist.avatarUrl || trackForCover?.artistAvatarUrl || trackForCover?.coverUrl
                       );
 
                       return (
                         <div
-                          key={idx}
-                          onClick={() => setProfileArtistName(artist.name)}
+                          key={artist.uid || artist.name || idx}
+                          onClick={() => openArtistProfile(artist.name, artist.uid)}
                           className="group w-36 sm:w-40 shrink-0 p-3.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                         >
                           {/* Circular Avatar */}
@@ -1605,7 +1648,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <p
                           onClick={(e) => {
                             e.stopPropagation();
-                            setProfileArtistName(track.artistName);
+                            openArtistProfile(track.artistName, track.uploadedByUid);
                           }}
                           className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                         >
@@ -1755,7 +1798,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             <p
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setProfileArtistName(track.artistName);
+                                openArtistProfile(track.artistName, track.uploadedByUid);
                               }}
                               className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                             >
@@ -1824,6 +1867,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             onToggleLike={toggleFavorite}
             lang={lang}
             allTracks={allTracks}
+            allArtists={allArtists}
             onPlayTrack={(track) => setPlayerTrack(track)}
             onRemoveTrack={async (trackId) => {
               markSongAsDeleted(trackId);
@@ -1846,8 +1890,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
         {profileArtistName && (
           <ArtistProfileModal
             artistName={profileArtistName}
+            artistUid={profileArtistUid}
             isOpen={!!profileArtistName}
-            onClose={() => setProfileArtistName(null)}
+            onClose={closeArtistProfile}
             allTracks={Array.isArray(allTracks) ? allTracks : []}
             allArtists={allArtists}
             onPlayTrack={(track) => openSongPlayer(track)}
@@ -1855,7 +1900,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             onToggleLike={toggleFavorite}
             likedSongIds={likedSongIds}
             onOpenPortal={() => {
-              setProfileArtistName(null);
+              closeArtistProfile();
               setIsArtistPortalOpen(true);
             }}
             onRemoveTrack={async (trackId) => {
@@ -1891,6 +1936,38 @@ export const SongsView: React.FC<SongsViewProps> = ({
             return next;
           });
         }}
+        onArtistUpdated={(updatedArtist) => {
+          setActiveArtistProfile(updatedArtist);
+          const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+          setAllArtists((prev) => {
+            const idx = prev.findIndex((a) => {
+              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+              return cleanUpdatedUid && aUid === cleanUpdatedUid;
+            });
+            if (idx >= 0) {
+              const copy = [...prev];
+              copy[idx] = { ...copy[idx], ...updatedArtist };
+              return copy;
+            }
+            return [updatedArtist, ...prev];
+          });
+          if (updatedArtist.avatarUrl) {
+            setAllTracks((prev) => {
+              const next = prev.map((t) => {
+                const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+                const emailMatch =
+                  updatedArtist.googleEmail &&
+                  t.uploadedByEmail?.toLowerCase().trim() === updatedArtist.googleEmail.toLowerCase().trim();
+                if ((cleanUpdatedUid && tUid === cleanUpdatedUid) || emailMatch) {
+                  return { ...t, artistAvatarUrl: updatedArtist.avatarUrl };
+                }
+                return t;
+              });
+              saveCachedCloudTracks(next);
+              return next;
+            });
+          }
+        }}
         allTracks={allTracks}
         onPlayTrack={(track) => openSongPlayer(track)}
         onRemoveTrack={async (trackId) => {
@@ -1914,7 +1991,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
         lang={lang}
         onToggleLike={toggleFavorite}
         likedSongIds={likedSongIds}
-        onOpenArtistProfile={(artistName) => setProfileArtistName(artistName)}
+        onOpenArtistProfile={(artistName) => openArtistProfile(artistName)}
       />
 
       {/* SECRET 10-CLICK ADMIN PANEL MODAL */}

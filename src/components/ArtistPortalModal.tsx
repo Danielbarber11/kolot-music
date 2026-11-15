@@ -46,6 +46,7 @@ import {
   onAuthUserChanged,
   getArtistAccountByGoogleUid,
   getEffectiveUserAvatar,
+  syncArtistAvatarToTracks,
 } from '../services/firebaseService';
 import {
   uploadTrackToCloud,
@@ -61,10 +62,11 @@ import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
+import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
-import { getCachedAlbums, saveCachedAlbums, fetchAllRealSongs, getInstantSongPool, saveCachedCloudTracks } from '../services/multiMusicService';
+import { getCachedAlbums, saveCachedAlbums, fetchAllRealSongs, getInstantSongPool, saveCachedCloudTracks, fetchAllArtistProfiles } from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
 
 interface ArtistPortalModalProps {
@@ -76,6 +78,7 @@ interface ArtistPortalModalProps {
   initialTab?: 'profile' | 'manual_upload' | 'account_settings' | 'albums';
   onPlayTrack?: (track: JamendoTrack) => void;
   onRemoveTrack?: (trackId: string) => void;
+  onArtistUpdated?: (artist: ArtistProfile) => void;
 }
 
 export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
@@ -92,6 +95,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   initialTab = 'profile',
   onPlayTrack,
   onRemoveTrack,
+  onArtistUpdated,
 }) => {
   const isHe = lang === 'he';
 
@@ -138,6 +142,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [albumTitle, setAlbumTitle] = useState('');
   const [lyricsInput, setLyricsInput] = useState('');
   const [whisperDraftSegments, setWhisperDraftSegments] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [whisperDraftSegmentsHe, setWhisperDraftSegmentsHe] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [whisperDraftSegmentsEn, setWhisperDraftSegmentsEn] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [whisperDraftLyricsHe, setWhisperDraftLyricsHe] = useState('');
+  const [whisperDraftLyricsEn, setWhisperDraftLyricsEn] = useState('');
+  const [uploadSubtitleLangTab, setUploadSubtitleLangTab] = useState<'he' | 'en'>('he');
   const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
   const [whisperProgressText, setWhisperProgressText] = useState('');
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
@@ -373,12 +382,23 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   });
 
   useEffect(() => {
+    const hydrateFields = (artist: ArtistProfile, user: FirebaseUser) => {
+      setArtistNameInput(artist.name || user.displayName || '');
+      if (artist.bio) setArtistBioInput(artist.bio);
+      if (artist.genre) setGenreInput(artist.genre);
+      if (artist.audiusHandle || artist.connectionCode) {
+        setConnectionCodeInput(artist.audiusHandle || artist.connectionCode || '');
+      }
+      const effAvatar = getEffectiveUserAvatar(user, artist);
+      if (effAvatar) setArtistAvatarPreview(effAvatar);
+    };
+
     const unsubscribe = onAuthUserChanged(async (user) => {
       setCurrentUser(user);
       setIsAuthLoading(false);
 
       if (user) {
-        // Load user-partitioned profile
+        // Check remote Firestore/Cloud first or hydrated local cache
         let localUserArtist: ArtistProfile | null = null;
         try {
           const userKey = `wikiarchive_artist_account_${user.uid}`;
@@ -386,48 +406,71 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           if (saved) localUserArtist = JSON.parse(saved);
         } catch {}
 
-        if (localUserArtist) {
-          setCurrentArtist(localUserArtist);
-          setArtistNameInput(localUserArtist.name || user.displayName || '');
-        } else {
-          try {
-            const remoteArtist = await getArtistAccountByGoogleUid(user.uid);
-            if (remoteArtist) {
-              setCurrentArtist(remoteArtist);
-              setArtistNameInput(remoteArtist.name || user.displayName || '');
-              localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(remoteArtist));
-            } else {
-              const providerId = user.providerData?.[0]?.providerId || '';
-              const cleanProvider = providerId.includes('facebook')
-                ? 'Facebook'
-                : providerId.includes('microsoft')
-                ? 'Microsoft'
-                : providerId.includes('google')
-                ? 'Google'
-                : 'אימייל';
-
-              const autoPrivateArtist: ArtistProfile = {
-                id: 'artist_' + user.uid,
-                name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן חדש' : 'New Artist'),
-                bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
-                avatarUrl: user.photoURL || undefined,
-                joinedDate: new Date().getFullYear().toString(),
-                googleUid: user.uid,
-                googleEmail: user.email || undefined,
-                isConnected: true,
-                hasAcceptedTerms: true,
-                acceptedTermsAt: new Date().toISOString(),
-                isPrivate: false,
-                tracksCount: 0,
-                providerPlatform: `חשבון ${cleanProvider}`,
-              };
-              setCurrentArtist(autoPrivateArtist);
-              setArtistNameInput(autoPrivateArtist.name);
-              localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(autoPrivateArtist));
-              await saveArtistAccountToFirebase(autoPrivateArtist);
+        try {
+          const remoteArtist = await getArtistAccountByGoogleUid(user.uid);
+          if (remoteArtist) {
+            const mergedAvatar = remoteArtist.avatarUrl || user.photoURL || localUserArtist?.avatarUrl || undefined;
+            const syncedArtist: ArtistProfile = {
+              ...localUserArtist,
+              ...remoteArtist,
+              avatarUrl: mergedAvatar,
+              googleUid: user.uid,
+              googleEmail: user.email || remoteArtist.googleEmail,
+            };
+            setCurrentArtist(syncedArtist);
+            hydrateFields(syncedArtist, user);
+            localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(syncedArtist));
+            if (!remoteArtist.avatarUrl && mergedAvatar) {
+              void saveArtistAccountToFirebase(syncedArtist);
+              void uploadArtistProfileToCloud(syncedArtist);
             }
-          } catch (e) {
-            console.warn('Could not fetch artist profile for user:', e);
+          } else if (localUserArtist) {
+            const withPhoto: ArtistProfile = {
+              ...localUserArtist,
+              avatarUrl: localUserArtist.avatarUrl || user.photoURL || undefined,
+              googleUid: user.uid,
+              googleEmail: user.email || localUserArtist.googleEmail,
+            };
+            setCurrentArtist(withPhoto);
+            hydrateFields(withPhoto, user);
+            void saveArtistAccountToFirebase(withPhoto);
+            void uploadArtistProfileToCloud(withPhoto);
+          } else {
+            const providerId = user.providerData?.[0]?.providerId || '';
+            const cleanProvider = providerId.includes('facebook')
+              ? 'Facebook'
+              : providerId.includes('microsoft')
+              ? 'Microsoft'
+              : providerId.includes('google')
+              ? 'Google'
+              : 'אימייל';
+
+            const autoPrivateArtist: ArtistProfile = {
+              id: user.uid,
+              name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן חדש' : 'New Artist'),
+              bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
+              avatarUrl: user.photoURL || undefined,
+              joinedDate: new Date().getFullYear().toString(),
+              googleUid: user.uid,
+              googleEmail: user.email || undefined,
+              isConnected: true,
+              hasAcceptedTerms: true,
+              acceptedTermsAt: new Date().toISOString(),
+              isPrivate: false,
+              tracksCount: 0,
+              providerPlatform: `חשבון ${cleanProvider}`,
+            };
+            setCurrentArtist(autoPrivateArtist);
+            hydrateFields(autoPrivateArtist, user);
+            localStorage.setItem(`wikiarchive_artist_account_${user.uid}`, JSON.stringify(autoPrivateArtist));
+            await saveArtistAccountToFirebase(autoPrivateArtist);
+            await uploadArtistProfileToCloud(autoPrivateArtist);
+          }
+        } catch (e) {
+          console.warn('Could not fetch artist profile for user:', e);
+          if (localUserArtist) {
+            setCurrentArtist(localUserArtist);
+            hydrateFields(localUserArtist, user);
           }
         }
       }
@@ -455,7 +498,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         const existing = await getArtistAccountByGoogleUid(user.uid);
         if (existing) {
-          setCurrentArtist(existing);
+          const synced = {
+            ...existing,
+            avatarUrl: existing.avatarUrl || user.photoURL || undefined,
+            googleUid: user.uid,
+            googleEmail: user.email || existing.googleEmail,
+          };
+          setCurrentArtist(synced);
+          if (synced.bio) setArtistBioInput(synced.bio);
+          if (synced.avatarUrl) setArtistAvatarPreview(synced.avatarUrl);
         } else {
           const autoPrivateArtist: ArtistProfile = {
             id: user.uid,
@@ -468,12 +519,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             isConnected: true,
             hasAcceptedTerms: true,
             acceptedTermsAt: new Date().toISOString(),
-            isPrivate: true,
+            isPrivate: false,
             tracksCount: 0,
-            providerPlatform: 'חשבון גוגל (מצב פרטי)',
+            providerPlatform: 'חשבון גוגל',
           };
           setCurrentArtist(autoPrivateArtist);
+          if (autoPrivateArtist.avatarUrl) setArtistAvatarPreview(autoPrivateArtist.avatarUrl);
           await saveArtistAccountToFirebase(autoPrivateArtist);
+          await uploadArtistProfileToCloud(autoPrivateArtist);
         }
       }
     } catch (err: any) {
@@ -650,6 +703,47 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     }
   };
 
+  const compressAvatarBlob = (file: File): Promise<Blob> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 400;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(file);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob(
+            (blob) => resolve(blob || file),
+            'image/jpeg',
+            0.85
+          );
+        };
+        img.onerror = () => resolve(file);
+        img.src = typeof ev.target?.result === 'string' ? ev.target.result : '';
+      };
+      reader.onerror = () => resolve(file);
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSaveArtistAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     const finalName = artistNameInput.trim() || currentArtist.name || currentUser?.displayName || 'אמן מוזיקלי';
@@ -667,21 +761,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       let finalAvatarUrl: string | undefined = artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL || undefined;
 
       const artistIdForUpload = currentUser ? currentUser.uid : currentArtist.id;
+      let avatarBlobToUpload: Blob | undefined;
       if (artistAvatarFile) {
-        const cloudAvatarRes = await uploadArtistProfileToCloud(
-          { ...currentArtist, id: artistIdForUpload, name: finalName },
-          artistAvatarFile
-        );
-        if (cloudAvatarRes.success && cloudAvatarRes.avatarUrl) {
-          finalAvatarUrl = cloudAvatarRes.avatarUrl;
-        }
+        avatarBlobToUpload = await compressAvatarBlob(artistAvatarFile);
       }
 
-      if (finalAvatarUrl) {
-        await extractImageColor(finalAvatarUrl).catch(() => {});
-      }
-
-      const updatedArtist: ArtistProfile = {
+      const updatedArtistDraft: ArtistProfile = {
         ...currentArtist,
         id: artistIdForUpload,
         name: finalName,
@@ -695,14 +780,43 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         isConnected: true,
         hasAcceptedTerms: true,
         acceptedTermsAt: new Date().toISOString(),
+        isPrivate: false,
         customServerUrl: customServerUrlInput.trim() || undefined,
+      };
+
+      const cloudProfileRes = await uploadArtistProfileToCloud(updatedArtistDraft, avatarBlobToUpload);
+      if (cloudProfileRes.success && cloudProfileRes.avatarUrl) {
+        finalAvatarUrl = cloudProfileRes.avatarUrl;
+      }
+
+      if (finalAvatarUrl) {
+        await extractImageColor(finalAvatarUrl).catch(() => {});
+      }
+
+      const updatedArtist: ArtistProfile = {
+        ...updatedArtistDraft,
+        avatarUrl: finalAvatarUrl,
       };
 
       setCurrentArtist(updatedArtist);
       setArtistAvatarFile(null);
       if (finalAvatarUrl) setArtistAvatarPreview(finalAvatarUrl);
-      await saveArtistAccountToFirebase(updatedArtist);
-      
+
+      await Promise.allSettled([
+        saveArtistAccountToFirebase(updatedArtist),
+        syncArtistAvatarToTracks(
+          currentUser?.uid || artistIdForUpload,
+          currentUser?.email || updatedArtist.googleEmail,
+          finalAvatarUrl,
+          allTracks
+        ),
+        fetchAllArtistProfiles(),
+      ]);
+
+      if (onArtistUpdated) {
+        onArtistUpdated(updatedArtist);
+      }
+
       setPublishSuccess(true);
       setTimeout(() => setPublishSuccess(false), 2500);
       setActiveTab('profile');
@@ -848,6 +962,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || 'דניאל ברבר';
 
+    const hasAnyDraftSubtitles =
+      !!(whisperDraftSegments && whisperDraftSegments.length > 0) ||
+      !!(whisperDraftSegmentsHe && whisperDraftSegmentsHe.length > 0) ||
+      !!(whisperDraftSegmentsEn && whisperDraftSegmentsEn.length > 0);
+
+    const sanitizedManualLyrics = lyricsInput.trim() ? sanitizeSubtitleLettersOnly(lyricsInput.trim()) : '';
+
     const newTrack: JamendoTrack = {
       id: trackId,
       name: songTitle.trim(),
@@ -863,14 +984,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       source: 'Kolot R2 Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-      lyrics: lyricsInput.trim() || undefined,
-      subtitleSegments: whisperDraftSegments && whisperDraftSegments.length > 0 ? whisperDraftSegments : undefined,
-      hasWhisperSubtitles: !!(whisperDraftSegments && whisperDraftSegments.length > 0),
+      lyrics: sanitizedManualLyrics || whisperDraftLyricsHe || whisperDraftLyricsEn || undefined,
+      lyricsHe: whisperDraftLyricsHe || sanitizedManualLyrics || undefined,
+      lyricsEn: whisperDraftLyricsEn || undefined,
+      subtitleSegments: whisperDraftSegments && whisperDraftSegments.length > 0 ? whisperDraftSegments : whisperDraftSegmentsHe,
+      subtitleSegmentsHe: whisperDraftSegmentsHe && whisperDraftSegmentsHe.length > 0 ? whisperDraftSegmentsHe : undefined,
+      subtitleSegmentsEn: whisperDraftSegmentsEn && whisperDraftSegmentsEn.length > 0 ? whisperDraftSegmentsEn : undefined,
+      hasWhisperSubtitles: hasAnyDraftSubtitles,
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(currentUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      uploadedByUid: currentUser?.uid || 'dw6CNg28cUXQw47Ib1SSKcHuZiN2',
-      uploadedByEmail: currentUser?.email?.toLowerCase().trim() || 'danielbarber1246@gmail.com',
+      uploadedByUid: currentUser?.uid || currentArtist.googleUid || currentArtist.id,
+      uploadedByEmail: currentUser?.email?.toLowerCase().trim() || currentArtist.googleEmail || '',
       isPrivate: false,
       customServerUrl: customServerUrlInput.trim() || undefined,
       bgColor: cachedBgColor,
@@ -919,13 +1044,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
-      // 2. Sync metadata to Firebase Firestore in background (never blocks publish completion)
+      // 2. Sync artist profile + track metadata to Firebase Firestore in background
+      void saveArtistAccountToFirebase(updatedArtist).catch(() => {});
+      void uploadArtistProfileToCloud(updatedArtist).catch(() => {});
       void saveArtistTrackToFirebase(newTrack).catch(() => {});
 
       // 3. Broadcast track immediately to UI
       saveCachedCloudTracks([newTrack, ...getInstantSongPool()]);
       onTrackPublished(newTrack);
       void fetchAllRealSongs().catch(() => {});
+      void fetchAllArtistProfiles().catch(() => {});
 
       setUploadProgressPercent(100);
       setPublishProgressStep(isHe ? 'השיר נשמר ב-Cloudflare R2 וזמין בכל המכשירים!' : 'Track saved to Cloudflare R2!');
@@ -946,6 +1074,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setIsAiGeneratedInput(false);
       setLyricsInput('');
       setWhisperDraftSegments(undefined);
+      setWhisperDraftSegmentsHe(undefined);
+      setWhisperDraftSegmentsEn(undefined);
+      setWhisperDraftLyricsHe('');
+      setWhisperDraftLyricsEn('');
       setWhisperUploadNotice(null);
       setGenreDetectionNotice(null);
       setGenreInput('ללא סגנון מוזיקלי');
@@ -969,17 +1101,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (deletedTrackIds.includes(t.id)) return false;
     if (!currentUser) return false;
     const userEmail = currentUser.email?.toLowerCase().trim() || '';
+    const cleanUserUid = (currentUser.uid || '').replace(/^artist_/, '').toLowerCase().trim();
+    const cleanTrackUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
 
-    // Must have a valid owner ID
     if (!t.uploadedByEmail && !t.uploadedByUid) return false;
 
-    // 1. Direct match by uploadedByEmail
     if (t.uploadedByEmail && userEmail && t.uploadedByEmail.toLowerCase().trim() === userEmail) {
       return true;
     }
 
-    // 2. Direct match by uploadedByUid
-    if (t.uploadedByUid && t.uploadedByUid === currentUser.uid) {
+    if (cleanTrackUid && cleanUserUid && cleanTrackUid === cleanUserUid) {
       return true;
     }
 
@@ -1955,12 +2086,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 4. ON-DEVICE WHISPER SUBTITLES (100% FREE, NO API KEY) & LYRICS */}
+                {/* 4. ON-DEVICE WHISPER SUBTITLES (DUAL LANGUAGE HEBREW & ENGLISH, LETTERS ONLY, SAVED IN CLOUD) */}
                 <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-extrabold text-white flex items-center gap-2">
                       <Captions className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'כתוביות על המכשיר (100% חינם ללא מפתח) ומילות השיר' : 'On-Device Free Subtitles & Lyrics (Optional)'}</span>
+                      <span>{isHe ? 'כתוביות על המכשיר (עברית ואנגלית, אותיות בלבד) • נשמרות באחסון' : 'On-Device Dual Subtitles (He + En, Letters Only)'}</span>
                     </label>
 
                     <button
@@ -1986,10 +2117,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         });
                         setIsTranscribingUpload(false);
                         setWhisperProgressText('');
-                        if (wRes.success && wRes.segments && wRes.segments.length > 0) {
-                          setWhisperDraftSegments(wRes.segments);
-                          if (wRes.lyrics) setLyricsInput(wRes.lyrics);
-                          setWhisperUploadNotice(isHe ? `נוצרו במכשיר ${wRes.segments.length} כתוביות מסונכרנות בהצלחה (100% חינם)!` : `Generated ${wRes.segments.length} local subtitles!`);
+                        if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
+                          setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
+                          setWhisperDraftSegmentsHe(wRes.segmentsHe);
+                          setWhisperDraftSegmentsEn(wRes.segmentsEn);
+                          setWhisperDraftLyricsHe(wRes.lyricsHe || '');
+                          setWhisperDraftLyricsEn(wRes.lyricsEn || '');
+                          setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
+                          setWhisperUploadNotice(
+                            isHe
+                              ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית (אותיות בלבד ויישמרו בפרסום)`
+                              : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
+                          );
                         } else {
                           setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
                         }
@@ -2003,8 +2142,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       )}
                       <span>
                         {isTranscribingUpload
-                          ? (whisperProgressText || (isHe ? 'מתמלל על המכשיר (חינם)...' : 'Transcribing locally...'))
-                          : (isHe ? 'חולל כתוביות במכשיר (חינם וללא מפתח)' : 'Generate On-Device Subtitles (Free)')}
+                          ? (whisperProgressText || (isHe ? 'מתמלל על המכשיר...' : 'Transcribing locally...'))
+                          : (isHe ? 'צור כתוביות עברית + אנגלית במכשיר' : 'Generate Hebrew + English Subtitles')}
                       </span>
                     </button>
                   </div>
@@ -2015,13 +2154,54 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </p>
                   )}
 
+                  {(whisperDraftLyricsHe || whisperDraftLyricsEn) && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadSubtitleLangTab('he');
+                            if (whisperDraftLyricsHe) setLyricsInput(whisperDraftLyricsHe);
+                          }}
+                          className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                            uploadSubtitleLangTab === 'he'
+                              ? 'bg-emerald-500 text-black border-emerald-400'
+                              : 'bg-neutral-900 text-neutral-300 border-neutral-700'
+                          }`}
+                        >
+                          עברית ({whisperDraftSegmentsHe?.length || 0})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUploadSubtitleLangTab('en');
+                            if (whisperDraftLyricsEn) setLyricsInput(whisperDraftLyricsEn);
+                          }}
+                          className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                            uploadSubtitleLangTab === 'en'
+                              ? 'bg-emerald-500 text-black border-emerald-400'
+                              : 'bg-neutral-900 text-neutral-300 border-neutral-700'
+                          }`}
+                        >
+                          English ({whisperDraftSegmentsEn?.length || 0})
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <textarea
                     rows={3}
-                    value={lyricsInput}
-                    onChange={(e) => setLyricsInput(e.target.value)}
+                    value={uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput}
+                    onChange={(e) => {
+                      if (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn) {
+                        setWhisperDraftLyricsEn(e.target.value);
+                      } else {
+                        setLyricsInput(e.target.value);
+                      }
+                    }}
                     placeholder={isHe
-                      ? 'הקלד מילות שיר או לחץ על "חולל כתוביות במכשיר (חינם וללא מפתח)" לתמלול מקומי במכשיר ללא הגבלה...'
-                      : 'Type lyrics or generate free on-device subtitles...'}
+                      ? 'הקלד מילים או לחץ על צור כתוביות עברית + אנגלית במכשיר לתמלול נקי מאותיות בלבד שיישמר אוטומטית בענן'
+                      : 'Type lyrics or generate dual Hebrew and English subtitles'}
                     className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 text-xs font-sans leading-relaxed transition-all"
                   />
                 </div>
@@ -2651,10 +2831,24 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         <Pencil className="w-3 h-3 text-white" />
                       </div>
                     </div>
-                    <div className="space-y-1 text-center sm:text-right">
+                    <div className="space-y-1.5 text-center sm:text-right flex-1">
                       <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
-                      <p className="text-[10px] text-neutral-400">{isHe ? 'תמונה זו תוצג בעמוד האמן שלך ובחיפושים.' : 'This photo will be shown on your profile and search results.'}</p>
-                      <p className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר באחסון ענן מאובטח' : 'Stored in Secure Cloud'}</p>
+                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר בכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save everywhere.'}</p>
+                      <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
+                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר בענן ובפרופיל האמן' : 'Saved to Cloud & Profile'}</span>
+                        {currentUser?.photoURL && (artistAvatarPreview !== currentUser.photoURL || artistAvatarFile) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setArtistAvatarFile(null);
+                              setArtistAvatarPreview(currentUser.photoURL || null);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold border border-white/15 cursor-pointer transition-all"
+                          >
+                            {isHe ? 'החזר לתמונת Google' : 'Use Google Photo'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 

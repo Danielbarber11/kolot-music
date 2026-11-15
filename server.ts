@@ -822,6 +822,66 @@ app.get('/api/storage/list', async (req, res) => {
   }
 });
 
+// 2b. Fast Single-Roundtrip Tracks Feed (reads tracks/*.json + tracks_index.json in parallel server-side)
+app.get('/api/storage/tracks-feed', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const trackMap = new Map<string, any>();
+
+    const readJsonKey = async (key: string) => {
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (!obj.Body) return null;
+        const text = await obj.Body.transformToString('utf-8');
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+
+    // Fetch list of tracks/*.json and tracks_index.json in parallel
+    const [listData, indexData] = await Promise.all([
+      client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'tracks/' })).catch(() => null),
+      readJsonKey('tracks_index.json'),
+    ]);
+
+    if (Array.isArray(indexData)) {
+      indexData.forEach((t: any) => {
+        if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+      });
+    }
+
+    const keys = (listData?.Contents || [])
+      .map((item) => item.Key || '')
+      .filter((k) => k.endsWith('.json'));
+
+    if (keys.length > 0) {
+      // Read individual track JSONs in fast parallel batches (batch size 25)
+      const batchSize = 25;
+      for (let i = 0; i < keys.length; i += batchSize) {
+        const slice = keys.slice(i, i + batchSize);
+        const items = await Promise.all(slice.map((k) => readJsonKey(k)));
+        items.forEach((t: any) => {
+          if (t?.id && t?.name && t?.audioUrl) {
+            trackMap.set(t.id, t);
+          }
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      tracks: Array.from(trackMap.values()),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load tracks feed',
+    });
+  }
+});
+
 // 3. Delete File - 100% Pure Cloudflare R2
 app.delete('/api/storage/delete', async (req, res) => {
   try {
