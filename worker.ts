@@ -34,10 +34,6 @@ export interface Env {
   OPENAI_API_KEY?: string;
 }
 
-const DEFAULT_R2_ENDPOINT = 'https://005434972f224c499cd04d73150a9e80.eu.r2.cloudflarestorage.com';
-const DEFAULT_R2_ACCESS_KEY = '4be7ca8a92428a559e216b40a4c92b04';
-const DEFAULT_R2_SECRET_KEY = '4cf636c4141f35944adda0bacb8c164eb45cb6359db78767de4c79ad50eab094';
-
 function sanitizeEndpoint(raw?: string): string {
   if (!raw) return '';
   let cleaned = raw.trim().replace(/^["']|["']$/g, '');
@@ -52,9 +48,9 @@ function sanitizeEndpoint(raw?: string): string {
 
 function getR2Creds(env: Env) {
   return {
-    endpoint: sanitizeEndpoint(env.R2_ENDPOINT) || DEFAULT_R2_ENDPOINT,
-    accessKeyId: (env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY).trim(),
-    secretAccessKey: (env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY).trim(),
+    endpoint: sanitizeEndpoint(env.R2_ENDPOINT),
+    accessKeyId: (env.R2_ACCESS_KEY_ID || '').trim(),
+    secretAccessKey: (env.R2_SECRET_ACCESS_KEY || '').trim(),
     bucket: (env.R2_BUCKET_NAME || 'kolot-music').trim(),
     publicUrl: (env.R2_PUBLIC_URL || '').trim().replace(/\/+$/, ''),
   };
@@ -122,6 +118,9 @@ async function signedR2Fetch(
   body?: Uint8Array | null,
   extraHeaders: Record<string, string> = {}
 ): Promise<Response> {
+  if (!creds.endpoint || !creds.accessKeyId || !creds.secretAccessKey) {
+    throw new Error('R2 S3 credentials are not configured in Worker secrets.');
+  }
   const endpointUrl = new URL(creds.endpoint);
   const now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
@@ -836,13 +835,144 @@ export default {
       }
     }
 
-    // Fallback to static Vite assets & SPA index.html
-    if (env.ASSETS) {
-      const assetRes = await env.ASSETS.fetch(request);
-      if (assetRes.status !== 404 || pathname.startsWith('/api/')) {
-        return assetRes;
+    // 9. Same-origin HuggingFace model proxy (avoids browser CORS/redirect Failed to fetch for Whisper WASM)
+    if (pathname.startsWith('/api/hf-proxy/') && (request.method === 'GET' || request.method === 'HEAD')) {
+      const subPath = pathname.replace(/^\/api\/hf-proxy\//, '');
+      if (!subPath || subPath.includes('..') || !/^[a-zA-Z0-9._\-\/@]+$/.test(subPath)) {
+        return new Response('Invalid model path', { status: 400 });
       }
-      return env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+      const targetUrl = `https://huggingface.co/${subPath}${url.search || ''}`;
+      const fetchHeaders = new Headers();
+      fetchHeaders.set('User-Agent', 'Kolot-Whisper-Client/1.0');
+      const rangeHdr = request.headers.get('range');
+      if (rangeHdr) fetchHeaders.set('Range', rangeHdr);
+      const upstream = await fetch(targetUrl, {
+        method: request.method,
+        headers: fetchHeaders,
+        redirect: 'follow',
+      });
+      if (!upstream.ok && upstream.status !== 206) {
+        return new Response('Upstream HuggingFace error', { status: upstream.status });
+      }
+      const outHeaders = new Headers();
+      const ct = upstream.headers.get('content-type');
+      const cl = upstream.headers.get('content-length');
+      const cr = upstream.headers.get('content-range');
+      if (ct) outHeaders.set('Content-Type', ct);
+      if (cl) outHeaders.set('Content-Length', cl);
+      if (cr) outHeaders.set('Content-Range', cr);
+      outHeaders.set('Accept-Ranges', 'bytes');
+      outHeaders.set('Access-Control-Allow-Origin', '*');
+      outHeaders.set('Cache-Control', 'public, max-age=86400');
+      return new Response(request.method === 'HEAD' ? null : upstream.body, { status: upstream.status, headers: outHeaders });
+    }
+
+    // 10. Same-origin ONNX Runtime Web WASM proxy (keeps dist under 25 MiB while preventing CDN fetch blocks)
+    if (pathname.startsWith('/api/onnx-wasm/') && (request.method === 'GET' || request.method === 'HEAD')) {
+      const fileName = pathname.replace(/^\/api\/onnx-wasm\//, '').split('?')[0];
+      if (!fileName || !/^[a-zA-Z0-9._\-]+$/.test(fileName)) {
+        return new Response('Invalid WASM asset', { status: 400 });
+      }
+      const cdnUrl = `https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/${fileName}`;
+      const upstream = await fetch(cdnUrl, { method: request.method, redirect: 'follow' });
+      if (!upstream.ok) return new Response('WASM asset not found', { status: upstream.status });
+      const outHeaders = new Headers();
+      outHeaders.set(
+        'Content-Type',
+        fileName.endsWith('.wasm')
+          ? 'application/wasm'
+          : fileName.endsWith('.mjs') || fileName.endsWith('.js')
+            ? 'application/javascript; charset=utf-8'
+            : (upstream.headers.get('content-type') || 'application/octet-stream')
+      );
+      outHeaders.set('Access-Control-Allow-Origin', '*');
+      outHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
+      outHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return new Response(request.method === 'HEAD' ? null : upstream.body, { status: upstream.status, headers: outHeaders });
+    }
+
+    // 11. Free Unlimited Subtitle Translator (Hebrew <-> English, zero API keys)
+    if (pathname === '/api/ai/translate-subtitles' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const lines: string[] = Array.isArray(body?.lines) ? body.lines.map((x: any) => String(x || '').trim()).slice(0, 120) : [];
+        const sl = body?.source === 'he' ? 'he' : 'en';
+        const tl = body?.target === 'en' ? 'en' : 'he';
+        if (lines.length === 0) return jsonResponse({ success: true, translations: [] });
+
+        const joined = lines.join('\n');
+        const gtUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(joined)}`;
+        const gtRes = await fetch(gtUrl, { headers: { 'User-Agent': 'Kolot-Subtitles/1.0' } });
+        if (!gtRes.ok) {
+          return jsonResponse({ success: false, translations: [] }, 502);
+        }
+        const rawData: any = await gtRes.json();
+        const translatedFull = Array.isArray(rawData?.[0])
+          ? rawData[0].map((part: any) => String(part?.[0] || '')).join('')
+          : '';
+        const splitLines = translatedFull.split('\n').map((l: string) => l.trim());
+        const normalized = lines.map((_, idx) => splitLines[idx] || '');
+        return jsonResponse({ success: true, translations: normalized });
+      } catch (err: any) {
+        return jsonResponse({ success: false, translations: [], error: err?.message || 'Translate failed' }, 500);
+      }
+    }
+
+    // 12. Public Track Report fallback endpoint (saves directly in R2 reports/)
+    if (pathname === '/api/storage/report' && request.method === 'POST') {
+      try {
+        const rep: any = await request.json();
+        if (!rep?.id || !rep?.trackId || !rep?.trackName) {
+          return jsonResponse({ success: false, error: 'Missing report fields' }, 400);
+        }
+        const key = `reports/${String(rep.id).replace(/[^a-zA-Z0-9_\-]/g, '')}.json`;
+        const bodyBytes = encoder.encode(JSON.stringify(rep));
+        if (env.R2_BUCKET) {
+          await env.R2_BUCKET.put(key, bodyBytes, { httpMetadata: { contentType: 'application/json' } });
+        } else {
+          await signedR2Fetch(creds, 'PUT', `/${creds.bucket}/${encodeS3Path(key)}`, {}, bodyBytes, {
+            'Content-Type': 'application/json',
+          });
+        }
+        return jsonResponse({ success: true });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Report save failed' }, 500);
+      }
+    }
+
+    // Fallback to static Vite assets & SPA index.html (NEVER return cached index.html or HTML for missing JS/CSS assets)
+    if (env.ASSETS) {
+      const isDocumentRequest = pathname === '/' || pathname === '/index.html';
+      const isStaticAssetPath =
+        pathname.startsWith('/assets/') ||
+        /\.(?:js|mjs|css|wasm|map|json|svg|png|jpg|jpeg|webp|ico|woff2?)$/i.test(pathname);
+
+      if (isDocumentRequest) {
+        const docRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+        const headers = new Headers(docRes.headers);
+        headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+        headers.set('Pragma', 'no-cache');
+        return new Response(docRes.body, { status: docRes.status, headers });
+      }
+
+      const assetRes = await env.ASSETS.fetch(request);
+      if (assetRes.status === 404) {
+        if (pathname.startsWith('/api/') || isStaticAssetPath) {
+          return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+        }
+        const spaRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+        const headers = new Headers(spaRes.headers);
+        headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+        return new Response(spaRes.body, { status: spaRes.status, headers });
+      }
+
+      if (pathname.startsWith('/assets/')) {
+        const headers = new Headers(assetRes.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        return new Response(assetRes.body, { status: assetRes.status, headers });
+      }
+
+      return assetRes;
     }
 
     return new Response('Not Found', { status: 404 });

@@ -165,6 +165,8 @@ export interface JamendoTrack {
   writers?: string;
 }
 
+export const CURRENT_TERMS_VERSION = 1;
+
 export interface ArtistProfile {
   id: string;
   name: string;
@@ -181,6 +183,7 @@ export interface ArtistProfile {
   googleEmail?: string;
   isConnected?: boolean;
   hasAcceptedTerms?: boolean;
+  termsVersionAccepted?: number;
   acceptedTermsAt?: string;
   isPrivate?: boolean;
   tracksCount?: number;

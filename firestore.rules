@@ -2,31 +2,207 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny
+    // Global default deny
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Artist Accounts collection
-    match /artistAccounts/{artistId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.id is string
-        && request.resource.data.name is string
-        && request.resource.data.name.size() <= 100;
-      allow delete: if false;
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    // Artist Tracks collection
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email_verified == true && request.auth.token.email == 'danielbarber1246@gmail.com')
+      );
+    }
+
+    function isArtistOwner(artistId) {
+      return isSignedIn() && (
+        artistId == request.auth.uid ||
+        artistId == 'artist_' + request.auth.uid ||
+        (resource != null && existing().get('googleUid', '') == request.auth.uid)
+      );
+    }
+
+    function isValidArtistAccount(data) {
+      return data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 1000))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500000))
+        && (!('genre' in data) || (data.genre is string && data.genre.size() <= 50))
+        && (!('accountUrl' in data) || (data.accountUrl is string && data.accountUrl.size() <= 500))
+        && (!('connectionCode' in data) || (data.connectionCode is string && data.connectionCode.size() <= 50))
+        && (!('audiusHandle' in data) || (data.audiusHandle is string && data.audiusHandle.size() <= 100))
+        && (!('googleUid' in data) || (data.googleUid is string && data.googleUid.size() <= 128))
+        && (!('providerPlatform' in data) || (data.providerPlatform is string && data.providerPlatform.size() <= 100))
+        && (!('isConnected' in data) || data.isConnected is bool)
+        && (!('hasAcceptedTerms' in data) || data.hasAcceptedTerms is bool)
+        && (!('termsVersionAccepted' in data) || (data.termsVersionAccepted is number && data.termsVersionAccepted >= 0 && data.termsVersionAccepted <= 1000))
+        && (!('acceptedTermsAt' in data) || (data.acceptedTermsAt is string && data.acceptedTermsAt.size() <= 50))
+        && (!('isPrivate' in data) || data.isPrivate is bool)
+        && (!('tracksCount' in data) || (data.tracksCount is number && data.tracksCount >= 0 && data.tracksCount <= 100000))
+        && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 50));
+    }
+
+    function isValidArtistTrack(data) {
+      return data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
+        && data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 100
+        && data.audioUrl is string && data.audioUrl.size() >= 1 && data.audioUrl.size() <= 2000
+        && (!('featuredArtist' in data) || (data.featuredArtist is string && data.featuredArtist.size() <= 100))
+        && (!('writers' in data) || (data.writers is string && data.writers.size() <= 500))
+        && (!('coverUrl' in data) || (data.coverUrl is string && data.coverUrl.size() <= 500000))
+        && (!('albumName' in data) || (data.albumName is string && data.albumName.size() <= 100))
+        && (!('genre' in data) || (data.genre is string && data.genre.size() <= 50))
+        && (!('lyrics' in data) || (data.lyrics is string && data.lyrics.size() <= 8000))
+        && (!('lyricsHe' in data) || (data.lyricsHe is string && data.lyricsHe.size() <= 6000))
+        && (!('lyricsEn' in data) || (data.lyricsEn is string && data.lyricsEn.size() <= 6000))
+        && (!('subtitleSegments' in data) || (data.subtitleSegments is list && data.subtitleSegments.size() <= 300))
+        && (!('subtitleSegmentsHe' in data) || (data.subtitleSegmentsHe is list && data.subtitleSegmentsHe.size() <= 300))
+        && (!('subtitleSegmentsEn' in data) || (data.subtitleSegmentsEn is list && data.subtitleSegmentsEn.size() <= 300))
+        && (!('hasWhisperSubtitles' in data) || data.hasWhisperSubtitles is bool)
+        && (!('bgColor' in data) || (data.bgColor is string && data.bgColor.size() <= 500))
+        && (!('uploadedByUid' in data) || (data.uploadedByUid is string && data.uploadedByUid.size() <= 128))
+        && (!('artistAvatarUrl' in data) || (data.artistAvatarUrl is string && data.artistAvatarUrl.size() <= 500000))
+        && (!('publisherAccountUrl' in data) || (data.publisherAccountUrl is string && data.publisherAccountUrl.size() <= 500))
+        && (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 50))
+        && (!('isAiGenerated' in data) || data.isAiGenerated is bool)
+        && (!('isPrivate' in data) || data.isPrivate is bool)
+        && (!('isDeleted' in data) || data.isDeleted is bool)
+        && (!('playsCount' in data) || (data.playsCount is number && data.playsCount >= 0 && data.playsCount <= 1000000000))
+        && (!('customServerUrl' in data) || (data.customServerUrl is string && data.customServerUrl.size() <= 500));
+    }
+
+    function isValidTrackReport(data) {
+      return data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.trackId is string && data.trackId.size() >= 1 && data.trackId.size() <= 128
+        && data.trackName is string && data.trackName.size() >= 1 && data.trackName.size() <= 200
+        && data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 100
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 200
+        && (!('details' in data) || (data.details is string && data.details.size() <= 2000))
+        && data.reportedAt is string && data.reportedAt.size() >= 1 && data.reportedAt.size() <= 50
+        && data.status in ['pending', 'reviewed', 'dismissed']
+        && data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128;
+    }
+
+    // Artist Accounts (Public profile data only — NO PII emails stored on public docs)
+    match /artistAccounts/{artistId} {
+      allow get: if isValidId(artistId);
+      allow list: if true;
+      allow create: if isSignedIn()
+        && isValidId(artistId)
+        && (artistId == request.auth.uid || artistId == 'artist_' + request.auth.uid)
+        && isValidArtistAccount(incoming())
+        && incoming().googleUid == request.auth.uid
+        && incoming().keys().hasAll(['id', 'name', 'googleUid'])
+        && incoming().keys().hasOnly([
+          'id', 'name', 'bio', 'avatarUrl', 'genre', 'accountUrl',
+          'connectionCode', 'googleUid', 'audiusHandle', 'isConnected',
+          'hasAcceptedTerms', 'termsVersionAccepted', 'acceptedTermsAt',
+          'isPrivate', 'tracksCount', 'providerPlatform', 'createdAt', 'updatedAt'
+        ]);
+      allow update: if isSignedIn()
+        && isValidId(artistId)
+        && (isAdmin() || isArtistOwner(artistId))
+        && isValidArtistAccount(incoming())
+        && incoming().get('googleUid', '') == existing().get('googleUid', '')
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'bio', 'avatarUrl', 'genre', 'accountUrl',
+          'connectionCode', 'audiusHandle', 'isConnected',
+          'hasAcceptedTerms', 'termsVersionAccepted', 'acceptedTermsAt',
+          'isPrivate', 'tracksCount', 'providerPlatform', 'updatedAt'
+        ]);
+      allow delete: if isSignedIn() && isValidId(artistId) && (isAdmin() || isArtistOwner(artistId));
+
+      match /private/{docId} {
+        allow read, write: if isSignedIn() && isValidId(artistId) && (artistId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // Artist Tracks
     match /artistTracks/{trackId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.id is string
-        && request.resource.data.name is string
-        && request.resource.data.name.size() <= 200
-        && request.resource.data.artistName is string
-        && request.resource.data.artistName.size() <= 100
-        && request.resource.data.audioUrl is string
-        && request.resource.data.audioUrl.size() <= 1000;
-      allow delete: if false;
+      allow get: if isValidId(trackId);
+      allow list: if true;
+      allow create: if isSignedIn()
+        && isValidId(trackId)
+        && isValidArtistTrack(incoming())
+        && incoming().uploadedByUid == request.auth.uid
+        && incoming().keys().hasAll(['id', 'name', 'artistName', 'audioUrl', 'uploadedByUid'])
+        && incoming().keys().hasOnly([
+          'id', 'name', 'artistName', 'featuredArtist', 'writers',
+          'audioUrl', 'coverUrl', 'albumName', 'genre',
+          'lyrics', 'lyricsHe', 'lyricsEn',
+          'subtitleSegments', 'subtitleSegmentsHe', 'subtitleSegmentsEn',
+          'hasWhisperSubtitles', 'bgColor', 'uploadedByUid',
+          'artistAvatarUrl', 'publisherAccountUrl', 'createdAt',
+          'isAiGenerated', 'playsCount', 'isPrivate', 'customServerUrl'
+        ]);
+      allow update: if isSignedIn()
+        && isValidId(trackId)
+        && isValidArtistTrack(incoming())
+        && (
+          isAdmin() ||
+          (
+            existing().get('uploadedByUid', '') == request.auth.uid
+            && incoming().get('uploadedByUid', '') == existing().get('uploadedByUid', '')
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'artistName', 'featuredArtist', 'writers',
+              'coverUrl', 'albumName', 'genre', 'lyrics', 'lyricsHe', 'lyricsEn',
+              'subtitleSegments', 'subtitleSegmentsHe', 'subtitleSegmentsEn',
+              'hasWhisperSubtitles', 'bgColor', 'artistAvatarUrl',
+              'publisherAccountUrl', 'isPrivate', 'customServerUrl',
+              'isDeleted', 'playsCount'
+            ])
+          ) ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'subtitleSegments', 'subtitleSegmentsHe', 'subtitleSegmentsEn',
+              'lyrics', 'lyricsHe', 'lyricsEn', 'hasWhisperSubtitles',
+              'bgColor', 'playsCount'
+            ])
+          )
+        );
+      allow delete: if isSignedIn() && isValidId(trackId) && (isAdmin() || existing().get('uploadedByUid', '') == request.auth.uid);
+    }
+
+    // Track Reports (Restricted read: Admin or Reporter only)
+    match /trackReports/{reportId} {
+      allow get: if isValidId(reportId) && (isAdmin() || (isSignedIn() && existing().reporterUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.reporterUid == request.auth.uid);
+      allow create: if isSignedIn()
+        && isValidId(reportId)
+        && isValidTrackReport(incoming())
+        && incoming().reporterUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().keys().hasAll(['id', 'trackId', 'trackName', 'artistName', 'reason', 'reportedAt', 'status', 'reporterUid'])
+        && incoming().keys().hasOnly([
+          'id', 'trackId', 'trackName', 'artistName', 'reason',
+          'details', 'reportedAt', 'status', 'reporterUid'
+        ]);
+      allow update: if isAdmin() && isValidId(reportId) && isValidTrackReport(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'details']);
+      allow delete: if isAdmin() && isValidId(reportId);
+    }
+
+    // Admins Registry
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow list, write: if false;
     }
   }
 }

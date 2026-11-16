@@ -40,11 +40,9 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   showHoverPlay = true,
   priority = false,
 }) => {
+  const imgRef = React.useRef<HTMLImageElement>(null);
   const [hasError, setHasError] = useState(false);
-
-  React.useEffect(() => {
-    setHasError(false);
-  }, [coverUrl]);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   const effectiveUrl = getStreamingMediaUrl(coverUrl);
   const isValidUrl = isAuthenticCover(coverUrl);
@@ -54,7 +52,13 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
 
   React.useEffect(() => {
     setHasError(false);
-    setCurrentSrc(getStreamingMediaUrl(coverUrl));
+    const nextUrl = getStreamingMediaUrl(coverUrl);
+    setCurrentSrc(nextUrl);
+    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      setIsLoaded(true);
+    } else {
+      setIsLoaded(false);
+    }
   }, [coverUrl]);
 
   const handleImgError = () => {
@@ -98,10 +102,14 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   return (
     <div className={`relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br ${gradient} ${className}`}>
       <img
+        ref={imgRef}
         src={currentSrc}
         alt={`${trackName} by ${artistName}`}
+        onLoad={() => setIsLoaded(true)}
         onError={handleImgError}
-        className="w-full h-full object-cover transition-transform duration-300"
+        className={`w-full h-full object-cover transition-all duration-150 ${
+          isLoaded || priority ? 'opacity-100' : 'opacity-0'
+        }`}
         loading={priority ? 'eager' : 'lazy'}
         // @ts-expect-error React 18 / 19 fetchPriority attribute support
         fetchpriority={priority ? 'high' : 'auto'}

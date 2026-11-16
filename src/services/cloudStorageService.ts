@@ -327,9 +327,10 @@ export async function uploadTrackToCloudStorage(
 
   onProgress?.(95, 'שומר פרטי שיר בענן...');
 
-  // 3. Save tracks/${trackId}.json strictly in R2
+  // 3. Save tracks/${trackId}.json strictly in R2 (strip PII email fields before storing in public JSON)
+  const { uploadedByEmail: _omitEmail, ...cleanTrack } = track as any;
   const trackToSave: JamendoTrack = {
-    ...track,
+    ...cleanTrack,
     audioUrl,
     coverUrl,
     source: 'Kolot R2 Storage',
@@ -505,26 +506,68 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
   }
 }
 
-export async function uploadArtistProfileToCloud(artist: any, avatarFile?: File | Blob): Promise<{ success: boolean; avatarUrl?: string }> {
+export async function deleteOldArtistAvatarsFromCloud(
+  artistId: string,
+  keepKey?: string
+): Promise<void> {
+  if (!artistId) return;
+  const cleanId = artistId.replace(/^artist_/, '').trim();
+  const prefixes = Array.from(new Set([`avatars/${artistId}`, `avatars/${cleanId}`, `avatars/artist_${cleanId}`]));
+
+  await Promise.allSettled(
+    prefixes.map(async (prefix) => {
+      try {
+        const listRes = await fetch(`/api/storage/list?prefix=${encodeURIComponent(prefix)}`, { cache: 'no-store' });
+        if (!listRes.ok) return;
+        const data = await listRes.json();
+        const files: Array<{ key: string }> = Array.isArray(data?.files) ? data.files : [];
+        await Promise.allSettled(
+          files
+            .filter((f) => f?.key && f.key !== keepKey)
+            .map((f) =>
+              fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }).catch(() => {})
+            )
+        );
+      } catch {}
+    })
+  );
+}
+
+export async function uploadArtistProfileToCloud(
+  artist: any,
+  avatarFile?: File | Blob,
+  options?: { purgeOldAvatars?: boolean }
+): Promise<{ success: boolean; avatarUrl?: string }> {
   try {
+    const cleanId = String(artist.googleUid || artist.id || '').replace(/^artist_/, '').trim() || artist.id;
     let avatarUrl = artist.avatarUrl;
+    let uploadedKey: string | undefined;
+
     if (avatarFile) {
+      uploadedKey = `avatars/${cleanId}_${Date.now()}.jpg`;
       const formData = new FormData();
       formData.append('file', avatarFile);
-      formData.append('path', `avatars/${artist.id}_${Date.now()}.jpg`);
+      formData.append('path', uploadedKey);
       const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
       const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
-      if (data.success && data.url) avatarUrl = data.url;
+      if (data.success && data.url) {
+        avatarUrl = data.url;
+        // Delete all old custom avatars for this artist from R2 so stale images never linger
+        await deleteOldArtistAvatarsFromCloud(cleanId, uploadedKey);
+      }
+    } else if (options?.purgeOldAvatars) {
+      await deleteOldArtistAvatarsFromCloud(cleanId);
     }
 
-    const profileToSave = { ...artist, avatarUrl };
+    const { googleEmail: _omitEmail, ...safeArtist } = artist || {};
+    const profileToSave = { ...safeArtist, id: artist.id || cleanId, googleUid: cleanId, avatarUrl };
     await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        path: `profiles/${artist.id}.json`,
-        content: JSON.stringify(profileToSave, null, 2)
-      })
+        path: `profiles/${profileToSave.id}.json`,
+        content: JSON.stringify(profileToSave, null, 2),
+      }),
     });
 
     return { success: true, avatarUrl };

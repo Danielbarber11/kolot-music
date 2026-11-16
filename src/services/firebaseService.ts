@@ -31,15 +31,15 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
-import { ArtistProfile, JamendoTrack } from '../types';
+import { ArtistProfile, CURRENT_TERMS_VERSION, JamendoTrack, TrackReport } from '../types';
 
 export const firebaseConfig = {
-  apiKey: (import.meta.env?.VITE_FIREBASE_API_KEY as string) || (firebaseAppletConfig as any)?.apiKey || "AIzaSyDE5Iw4C8F-YNSwlUGLn3B9pgi6ZpffnQI",
-  authDomain: (import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN as string) || (firebaseAppletConfig as any)?.authDomain || "soy-lore-461719-i9.firebaseapp.com",
-  projectId: (import.meta.env?.VITE_FIREBASE_PROJECT_ID as string) || (firebaseAppletConfig as any)?.projectId || "soy-lore-461719-i9",
-  storageBucket: (import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET as string) || (firebaseAppletConfig as any)?.storageBucket || "soy-lore-461719-i9.firebasestorage.app",
-  messagingSenderId: (import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (firebaseAppletConfig as any)?.messagingSenderId || "1029411846084",
-  appId: (import.meta.env?.VITE_FIREBASE_APP_ID as string) || (firebaseAppletConfig as any)?.appId || "1:1029411846084:web:3d0fa2dca6338a9b981691",
+  apiKey: (import.meta.env?.VITE_FIREBASE_API_KEY as string) || (firebaseAppletConfig as any)?.apiKey || '',
+  authDomain: (import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN as string) || (firebaseAppletConfig as any)?.authDomain || '',
+  projectId: (import.meta.env?.VITE_FIREBASE_PROJECT_ID as string) || (firebaseAppletConfig as any)?.projectId || '',
+  storageBucket: (import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET as string) || (firebaseAppletConfig as any)?.storageBucket || '',
+  messagingSenderId: (import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || (firebaseAppletConfig as any)?.messagingSenderId || '',
+  appId: (import.meta.env?.VITE_FIREBASE_APP_ID as string) || (firebaseAppletConfig as any)?.appId || '',
 };
 
 // Initialize Firebase App
@@ -48,7 +48,7 @@ const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 // Initialize Firestore
 export const db = getFirestore(app, (firebaseAppletConfig as any)?.firestoreDatabaseId || '(default)');
 
-// Initialize Auth with permanent browser local persistence
+// Initialize Auth with Firebase SDK browser local persistence (zero custom PII in localStorage)
 export const auth = getAuth(app);
 setPersistence(auth, browserLocalPersistence).catch(() => {});
 
@@ -65,6 +65,12 @@ export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
+  authInfo: {
+    userId?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+  };
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
@@ -72,11 +78,17 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     error: error instanceof Error ? error.message : String(error),
     operationType,
     path,
+    authInfo: {
+      userId: auth.currentUser?.uid || null,
+      emailVerified: auth.currentUser?.emailVerified ?? null,
+      isAnonymous: auth.currentUser?.isAnonymous ?? null,
+      tenantId: auth.currentUser?.tenantId ?? null,
+    },
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
 
-// Test connection on startup as required by skill guidelines
+// Test connection on startup
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
@@ -89,9 +101,19 @@ export async function testFirestoreConnection(): Promise<boolean> {
   }
 }
 
+export async function checkIsCurrentUserAdmin(): Promise<boolean> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return false;
+  try {
+    const snap = await getDoc(doc(db, 'admins', uid));
+    return snap.exists();
+  } catch {
+    return false;
+  }
+}
+
 // -------------------------------------------------------------
 // MULTI-PROVIDER AUTHENTICATION HELPERS
-// (Google, Microsoft, Email/Password, Facebook, Yahoo)
 // -------------------------------------------------------------
 
 export async function loginWithGoogle(): Promise<FirebaseUser | null> {
@@ -115,7 +137,6 @@ export async function loginWithGoogle(): Promise<FirebaseUser | null> {
 export async function loginWithMicrosoft(): Promise<FirebaseUser | null> {
   const provider = new OAuthProvider('microsoft.com');
   provider.addScope('openid');
-  provider.addScope('email');
   provider.addScope('profile');
   provider.setCustomParameters({ prompt: 'select_account' });
 
@@ -181,51 +202,61 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
-// Handle pending OAuth redirects (Microsoft / Google / Facebook / Yahoo)
-getRedirectResult(auth)
-  .then((result) => {
-    if (result?.user) {
-      console.log('Successfully signed in via OAuth redirect:', result.user);
-      try {
-        localStorage.setItem(
-          'wikiarchive_cached_auth_user',
-          JSON.stringify({
-            uid: result.user.uid,
-            displayName: result.user.displayName,
-            photoURL: result.user.photoURL,
-            email: result.user.email,
-          })
-        );
-      } catch {}
+// Handle pending OAuth redirects silently without caching PII to localStorage
+getRedirectResult(auth).catch((err) => {
+  console.warn('OAuth redirect listener notice:', err);
+});
+
+/**
+ * Upgrades Google avatar thumbnails (e.g. =s96-c) to high-resolution (=s400-c) for sharp clarity.
+ */
+export function upgradeGooglePhotoQuality(url?: string | null): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes('googleusercontent.com')) {
+    if (/=s\d+(-c)?$/.test(trimmed)) {
+      return trimmed.replace(/=s\d+(-c)?$/, '=s400-c');
     }
-  })
-  .catch((err) => {
-    console.warn('OAuth redirect listener notice:', err);
-  });
+    if (/=w\d+-h\d+/.test(trimmed)) {
+      return trimmed.replace(/=w\d+-h\d+[^&]*/, '=s400-c');
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Extracts the authentic Google / OAuth account photo URL (checking both user.photoURL and providerData).
+ */
+export function getGoogleAccountPhotoUrl(user: FirebaseUser | null): string | undefined {
+  if (!user) return undefined;
+  if (user.photoURL && user.photoURL.trim()) {
+    return upgradeGooglePhotoQuality(user.photoURL);
+  }
+  const googleProvider = user.providerData?.find((p) => p?.providerId?.includes('google') && p?.photoURL);
+  if (googleProvider?.photoURL) {
+    return upgradeGooglePhotoQuality(googleProvider.photoURL);
+  }
+  const anyProviderPhoto = user.providerData?.find((p) => !!p?.photoURL)?.photoURL;
+  return upgradeGooglePhotoQuality(anyProviderPhoto);
+}
 
 export function getEffectiveUserAvatar(
   user: FirebaseUser | null,
   profile?: ArtistProfile | null
 ): string | undefined {
-  // 1. Prefer explicitly uploaded/saved non-Google custom avatar first
+  // 1. Prefer explicitly uploaded non-Google custom avatar
   if (profile?.avatarUrl && profile.avatarUrl.trim() && !profile.avatarUrl.includes('googleusercontent.com')) {
     return profile.avatarUrl.trim();
   }
 
-  // 2. Fallback to Google / OAuth account photoURL
-  if (user) {
-    if (user.photoURL && user.photoURL.trim()) {
-      return user.photoURL.trim();
-    }
-    const primaryPhoto = user.providerData?.find((p) => !!p?.photoURL)?.photoURL;
-    if (primaryPhoto && primaryPhoto.trim()) {
-      return primaryPhoto.trim();
-    }
-  }
+  // 2. Fallback to crisp Google / OAuth account photoURL
+  const googlePhoto = getGoogleAccountPhotoUrl(user);
+  if (googlePhoto) return googlePhoto;
 
-  // 3. Fallback to any stored profile avatarUrl (including stored Google photo URL)
+  // 3. Fallback to any stored profile avatarUrl
   if (profile?.avatarUrl && profile.avatarUrl.trim()) {
-    return profile.avatarUrl.trim();
+    return upgradeGooglePhotoQuality(profile.avatarUrl);
   }
 
   return undefined;
@@ -236,7 +267,6 @@ export function getEffectiveArtistAvatarForTrack(
   artists: ArtistProfile[] = []
 ): string | undefined {
   const uid = (track.uploadedByUid || '').replace(/^artist_/, '').trim();
-  const email = (track.uploadedByEmail || '').toLowerCase().trim();
   const normName = (track.artistName || '').toLowerCase().trim();
 
   const matchedArtist =
@@ -249,14 +279,13 @@ export function getEffectiveArtistAvatarForTrack(
             a.id.replace(/^artist_/, '') === uid
         )
       : undefined) ||
-    (email ? artists.find((a) => (a.googleEmail || '').toLowerCase().trim() === email) : undefined) ||
     (normName ? artists.find((a) => (a.name || '').toLowerCase().trim() === normName) : undefined);
 
   if (matchedArtist?.avatarUrl && matchedArtist.avatarUrl.trim()) {
-    return matchedArtist.avatarUrl.trim();
+    return upgradeGooglePhotoQuality(matchedArtist.avatarUrl);
   }
   if (track.artistAvatarUrl && track.artistAvatarUrl.trim()) {
-    return track.artistAvatarUrl.trim();
+    return upgradeGooglePhotoQuality(track.artistAvatarUrl);
   }
   return undefined;
 }
@@ -266,36 +295,43 @@ export function onAuthUserChanged(callback: (user: FirebaseUser | null) => void)
 }
 
 // -------------------------------------------------------------
-// ARTIST ACCOUNTS FIRESTORE OPERATIONS
+// ARTIST ACCOUNTS FIRESTORE OPERATIONS (Zero PII on public docs)
 // -------------------------------------------------------------
 
 export async function saveArtistAccountToFirebase(artist: ArtistProfile): Promise<boolean> {
+  if (!auth.currentUser) return false;
   try {
-    const docId = artist.googleUid || artist.id;
+    const uid = auth.currentUser.uid;
+    const docId = artist.googleUid || artist.id || uid;
     const artistDocRef = doc(db, 'artistAccounts', docId);
 
     const accountUrl =
       artist.archiveAccountUrl ||
       (artist.audiusHandle ? `https://audius.co/${artist.audiusHandle.replace(/^@/, '')}` : 'https://audius.co');
 
-    const payload = {
+    const payload: Record<string, any> = {
       id: docId,
-      name: artist.name.slice(0, 100),
+      name: (artist.name || 'אמן').slice(0, 100),
       bio: (artist.bio || '').slice(0, 1000),
       avatarUrl: (artist.avatarUrl || '').slice(0, 500000),
       genre: (artist.genre || 'General').slice(0, 50),
       accountUrl: accountUrl.slice(0, 500),
       connectionCode: (artist.connectionCode || '').slice(0, 50),
-      googleUid: artist.googleUid || docId,
-      googleEmail: artist.googleEmail || '',
+      googleUid: uid,
       audiusHandle: (artist.audiusHandle || '').slice(0, 80),
       isConnected: true,
-      hasAcceptedTerms: artist.hasAcceptedTerms ?? true,
-      acceptedTermsAt: artist.acceptedTermsAt || new Date().toISOString(),
+      hasAcceptedTerms: artist.hasAcceptedTerms ?? false,
+      termsVersionAccepted:
+        typeof artist.termsVersionAccepted === 'number'
+          ? artist.termsVersionAccepted
+          : artist.hasAcceptedTerms
+            ? CURRENT_TERMS_VERSION
+            : 0,
+      acceptedTermsAt: (artist.acceptedTermsAt || new Date().toISOString()).slice(0, 50),
       isPrivate: artist.isPrivate ?? false,
       tracksCount: artist.tracksCount ?? 0,
-      providerPlatform: artist.providerPlatform || 'Kolot Google Auth',
-      createdAt: artist.joinedDate || new Date().toISOString().split('T')[0],
+      providerPlatform: (artist.providerPlatform || 'Kolot Google Auth').slice(0, 100),
+      createdAt: (artist.joinedDate || new Date().toISOString().split('T')[0]).slice(0, 50),
       updatedAt: new Date().toISOString().split('T')[0],
     };
 
@@ -307,61 +343,53 @@ export async function saveArtistAccountToFirebase(artist: ArtistProfile): Promis
   }
 }
 
+function mapDocToArtistProfile(id: string, data: any): ArtistProfile {
+  return {
+    id,
+    name: data.name || '',
+    bio: data.bio || '',
+    avatarUrl: upgradeGooglePhotoQuality(data.avatarUrl) || undefined,
+    genre: data.genre || 'General',
+    archiveAccountUrl: data.accountUrl,
+    audiusHandle: data.audiusHandle,
+    connectionCode: data.connectionCode,
+    googleUid: data.googleUid || id.replace(/^artist_/, ''),
+    isConnected: true,
+    hasAcceptedTerms: !!data.hasAcceptedTerms,
+    termsVersionAccepted:
+      typeof data.termsVersionAccepted === 'number'
+        ? data.termsVersionAccepted
+        : data.hasAcceptedTerms
+          ? 1
+          : 0,
+    acceptedTermsAt: data.acceptedTermsAt,
+    isPrivate: data.isPrivate !== undefined ? data.isPrivate : false,
+    tracksCount: data.tracksCount || 0,
+    providerPlatform: data.providerPlatform || 'Kolot Auth',
+    joinedDate: data.createdAt || '2024',
+    totalPlays: 0,
+    followersCount: 0,
+  };
+}
+
 export async function getArtistAccountByGoogleUid(googleUid: string): Promise<ArtistProfile | null> {
+  if (!googleUid) return null;
   try {
-    const directDocRef = doc(db, 'artistAccounts', googleUid);
-    const directSnap = await getDoc(directDocRef);
+    const directSnap = await getDoc(doc(db, 'artistAccounts', googleUid));
     if (directSnap.exists()) {
-      const data = directSnap.data();
-      return {
-        id: directSnap.id,
-        name: data.name || '',
-        bio: data.bio || '',
-        avatarUrl: data.avatarUrl || undefined,
-        genre: data.genre || 'General',
-        archiveAccountUrl: data.accountUrl,
-        audiusHandle: data.audiusHandle,
-        connectionCode: data.connectionCode,
-        googleUid: data.googleUid || googleUid,
-        googleEmail: data.googleEmail || '',
-        isConnected: true,
-        hasAcceptedTerms: !!data.hasAcceptedTerms,
-        acceptedTermsAt: data.acceptedTermsAt,
-        isPrivate: data.isPrivate !== undefined ? data.isPrivate : false,
-        tracksCount: data.tracksCount || 0,
-        providerPlatform: data.providerPlatform || 'Audius',
-        joinedDate: data.createdAt || '2024',
-        totalPlays: 0,
-        followersCount: 0,
-      };
+      return mapDocToArtistProfile(directSnap.id, directSnap.data());
+    }
+
+    const legacySnap = await getDoc(doc(db, 'artistAccounts', `artist_${googleUid}`));
+    if (legacySnap.exists()) {
+      return mapDocToArtistProfile(legacySnap.id, legacySnap.data());
     }
 
     const q = query(collection(db, 'artistAccounts'), where('googleUid', '==', googleUid));
     const querySnap = await getDocs(q);
     if (!querySnap.empty) {
       const docSnap = querySnap.docs[0];
-      const data = docSnap.data();
-      return {
-        id: docSnap.id,
-        name: data.name || '',
-        bio: data.bio || '',
-        avatarUrl: data.avatarUrl || undefined,
-        genre: data.genre || 'General',
-        archiveAccountUrl: data.accountUrl,
-        audiusHandle: data.audiusHandle,
-        connectionCode: data.connectionCode,
-        googleUid: data.googleUid || googleUid,
-        googleEmail: data.googleEmail || '',
-        isConnected: true,
-        hasAcceptedTerms: !!data.hasAcceptedTerms,
-        acceptedTermsAt: data.acceptedTermsAt,
-        isPrivate: data.isPrivate !== undefined ? data.isPrivate : false,
-        tracksCount: data.tracksCount || 0,
-        providerPlatform: data.providerPlatform || 'Audius',
-        joinedDate: data.createdAt || '2024',
-        totalPlays: 0,
-        followersCount: 0,
-      };
+      return mapDocToArtistProfile(docSnap.id, docSnap.data());
     }
 
     return null;
@@ -377,31 +405,11 @@ export async function getArtistAccountsFromFirebase(): Promise<ArtistProfile[]> 
     const results: ArtistProfile[] = [];
     snapshot.forEach((docSnap) => {
       const data = docSnap.data();
-      // "עם לא העלת כלום לא יופיע הפרופיל שלך" - Hide profiles that have 0 tracks and are marked private
       if (data && data.name && data.id) {
         if (data.isPrivate && (!data.tracksCount || data.tracksCount === 0)) {
-          return; // Hide empty private profiles from public listing
+          return;
         }
-        results.push({
-          id: data.id,
-          name: data.name,
-          bio: data.bio,
-          avatarUrl: data.avatarUrl,
-          genre: data.genre || 'Pop',
-          archiveAccountUrl: data.accountUrl || undefined,
-          audiusHandle: data.audiusHandle || undefined,
-          connectionCode: data.connectionCode || undefined,
-          googleUid: data.googleUid || undefined,
-          googleEmail: data.googleEmail || undefined,
-          isConnected: true,
-          hasAcceptedTerms: !!data.hasAcceptedTerms,
-          isPrivate: !!data.isPrivate,
-          tracksCount: data.tracksCount || 0,
-          providerPlatform: data.providerPlatform || 'Audius',
-          joinedDate: data.createdAt || '2024',
-          totalPlays: 0,
-          followersCount: 0,
-        });
+        results.push(mapDocToArtistProfile(data.id || docSnap.id, data));
       }
     });
     return results;
@@ -416,6 +424,7 @@ export async function getArtistAccountsFromFirebase(): Promise<ArtistProfile[]> 
 // -------------------------------------------------------------
 
 export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<boolean> {
+  if (!auth.currentUser) return false;
   try {
     if (!track.audioUrl || !track.name || !track.artistName) return false;
 
@@ -426,7 +435,7 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
       artistName: track.artistName.slice(0, 100),
       featuredArtist: (track.featuredArtist || '').slice(0, 100),
       writers: (track.writers || '').slice(0, 500),
-      audioUrl: track.audioUrl.startsWith('data:') ? track.audioUrl.slice(0, 500000) : track.audioUrl,
+      audioUrl: track.audioUrl.startsWith('data:') ? track.audioUrl.slice(0, 2000) : track.audioUrl.slice(0, 2000),
       coverUrl: track.coverUrl ? track.coverUrl.slice(0, 500000) : '',
       albumName: (track.albumName || 'Single').slice(0, 100),
       genre: (track.genre || 'Pop').slice(0, 50),
@@ -441,12 +450,11 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
         (Array.isArray(track.subtitleSegments) && track.subtitleSegments.length > 0) ||
         (Array.isArray(track.subtitleSegmentsHe) && track.subtitleSegmentsHe.length > 0) ||
         (Array.isArray(track.subtitleSegmentsEn) && track.subtitleSegmentsEn.length > 0),
-      bgColor: track.bgColor || '',
-      uploadedByUid: track.uploadedByUid || '',
-      uploadedByEmail: track.uploadedByEmail || '',
-      artistAvatarUrl: track.artistAvatarUrl || '',
+      bgColor: (track.bgColor || '').slice(0, 500),
+      uploadedByUid: (track.uploadedByUid || auth.currentUser.uid).slice(0, 128),
+      artistAvatarUrl: (track.artistAvatarUrl || '').slice(0, 500000),
       publisherAccountUrl: (track.publisherAccountUrl || track.licenseUrl || 'https://audius.co').slice(0, 500),
-      createdAt: track.publishedDate || new Date().toISOString().split('T')[0],
+      createdAt: (track.publishedDate || new Date().toISOString().split('T')[0]).slice(0, 50),
       isAiGenerated: !!track.isAiGenerated,
       playsCount: track.playsCount || 0,
     };
@@ -460,6 +468,7 @@ export async function saveArtistTrackToFirebase(track: JamendoTrack): Promise<bo
 }
 
 export async function incrementTrackPlaysInFirebase(trackId: string): Promise<number> {
+  if (!auth.currentUser) return 1;
   try {
     const trackDocRef = doc(db, 'artistTracks', trackId);
     await setDoc(trackDocRef, { playsCount: increment(1) }, { merge: true });
@@ -467,8 +476,8 @@ export async function incrementTrackPlaysInFirebase(trackId: string): Promise<nu
     if (snap.exists()) {
       return snap.data().playsCount || 1;
     }
-  } catch (error) {
-    console.warn('Atomic plays increment notice:', error);
+  } catch {
+    // Non-fatal
   }
   return 1;
 }
@@ -517,9 +526,8 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
           publishedDate: data.createdAt || '2024',
           publisherAccountUrl: data.publisherAccountUrl || 'https://audius.co',
           uploadedByUid: data.uploadedByUid || undefined,
-          uploadedByEmail: data.uploadedByEmail || undefined,
           bgColor: data.bgColor || undefined,
-          artistAvatarUrl: data.artistAvatarUrl || undefined,
+          artistAvatarUrl: upgradeGooglePhotoQuality(data.artistAvatarUrl) || undefined,
           isAiGenerated: !!data.isAiGenerated,
           playsCount: data.playsCount || 0,
         });
@@ -534,23 +542,27 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
 
 export async function syncArtistAvatarToTracks(
   artistUid: string,
-  artistEmail: string | undefined,
+  _artistEmail: string | undefined,
   avatarUrl: string | undefined,
-  tracks: JamendoTrack[]
+  tracks: JamendoTrack[],
+  artistNameHint?: string
 ): Promise<void> {
-  if (!avatarUrl || (!artistUid && !artistEmail)) return;
+  if (!avatarUrl || (!artistUid && !artistNameHint)) return;
   const cleanUid = artistUid.replace(/^artist_/, '').trim();
-  const cleanEmail = (artistEmail || '').toLowerCase().trim();
+  const cleanName = (artistNameHint || '').toLowerCase().trim();
 
   const ownedTracks = tracks.filter((t) => {
     const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').trim();
-    const tEmail = (t.uploadedByEmail || '').toLowerCase().trim();
-    return (cleanUid && tUid === cleanUid) || (cleanEmail && tEmail === cleanEmail);
+    const tName = (t.artistName || '').toLowerCase().trim();
+    return (cleanUid && tUid === cleanUid) || (!tUid && cleanName && tName === cleanName);
   });
+
+  if (ownedTracks.length === 0) return;
 
   await Promise.allSettled(
     ownedTracks.map(async (t) => {
-      const updated = { ...t, artistAvatarUrl: avatarUrl };
+      const { uploadedByEmail: _omit, ...safeTrack } = t as any;
+      const updated = { ...safeTrack, artistAvatarUrl: avatarUrl };
       await saveArtistTrackToFirebase(updated);
       await fetch('/api/storage/upload', {
         method: 'POST',
@@ -562,25 +574,68 @@ export async function syncArtistAvatarToTracks(
       }).catch(() => {});
     })
   );
+
+  // Also refresh tracks_index.json so initial load shows new crisp avatar immediately
+  try {
+    const listRes = await fetch('/api/storage/list?prefix=tracks_index.json', { cache: 'no-store' });
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const idxFile = listData.files?.[0];
+      if (idxFile?.url) {
+        const idxRes = await fetch(idxFile.url, { cache: 'no-store' });
+        if (idxRes.ok) {
+          const parsed = await idxRes.json();
+          if (Array.isArray(parsed)) {
+            const ownedIds = new Set(ownedTracks.map((ot) => ot.id));
+            const nextIdx = parsed.map((item: any) => {
+              const { uploadedByEmail: _omit, ...cleanItem } = item || {};
+              return ownedIds.has(cleanItem?.id) ? { ...cleanItem, artistAvatarUrl: avatarUrl } : cleanItem;
+            });
+            await fetch('/api/storage/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                path: 'tracks_index.json',
+                content: JSON.stringify(nextIdx),
+              }),
+            });
+          }
+        }
+      }
+    }
+  } catch {}
 }
 
 // -------------------------------------------------------------
 // TRACK REPORTS FIRESTORE OPERATIONS
 // -------------------------------------------------------------
 
-export async function saveTrackReportToFirebase(report: import('../types').TrackReport): Promise<boolean> {
+export async function saveTrackReportToFirebase(report: TrackReport): Promise<boolean> {
+  if (!auth.currentUser) {
+    // Non-signed-in listeners submit safely via backend API to R2 reports/
+    try {
+      const res = await fetch('/api/storage/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(report),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
   try {
     const reportDocRef = doc(db, 'trackReports', report.id);
     await setDoc(reportDocRef, {
-      id: report.id,
-      trackId: report.trackId,
-      trackName: report.trackName,
-      artistName: report.artistName,
-      reason: report.reason,
-      details: report.details || '',
-      reportedAt: report.reportedAt,
+      id: report.id.slice(0, 128),
+      trackId: report.trackId.slice(0, 128),
+      trackName: report.trackName.slice(0, 200),
+      artistName: report.artistName.slice(0, 100),
+      reason: report.reason.slice(0, 200),
+      details: (report.details || '').slice(0, 2000),
+      reportedAt: report.reportedAt.slice(0, 50),
       status: report.status || 'pending',
-      reporterUid: report.reporterUid || '',
+      reporterUid: auth.currentUser.uid,
     });
     return true;
   } catch (error) {
@@ -589,10 +644,11 @@ export async function saveTrackReportToFirebase(report: import('../types').Track
   }
 }
 
-export async function getTrackReportsFromFirebase(): Promise<import('../types').TrackReport[]> {
+export async function getTrackReportsFromFirebase(): Promise<TrackReport[]> {
+  if (!auth.currentUser) return [];
   try {
     const snapshot = await getDocs(collection(db, 'trackReports'));
-    const reports: import('../types').TrackReport[] = [];
+    const reports: TrackReport[] = [];
     snapshot.forEach((docSnap) => {
       const data = docSnap.data();
       if (data && data.trackName) {
@@ -617,6 +673,7 @@ export async function getTrackReportsFromFirebase(): Promise<import('../types').
 }
 
 export async function dismissTrackReportInFirebase(reportId: string): Promise<boolean> {
+  if (!auth.currentUser) return false;
   try {
     const reportDocRef = doc(db, 'trackReports', reportId);
     await setDoc(reportDocRef, { status: 'dismissed' }, { merge: true });
@@ -628,12 +685,12 @@ export async function dismissTrackReportInFirebase(reportId: string): Promise<bo
 }
 
 export async function deleteArtistTrackFromFirebase(trackId: string): Promise<boolean> {
+  if (!auth.currentUser) return false;
   try {
     const trackDocRef = doc(db, 'artistTracks', trackId);
     try {
       await deleteDoc(trackDocRef);
     } catch {
-      // If rules disallow hard delete, mark isDeleted: true so it never returns
       await setDoc(trackDocRef, { isDeleted: true }, { merge: true });
     }
 
@@ -655,4 +712,3 @@ export async function deleteArtistTrackFromFirebase(trackId: string): Promise<bo
     return false;
   }
 }
-

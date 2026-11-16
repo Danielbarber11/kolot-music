@@ -24,7 +24,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, Album } from '../types';
+import { JamendoTrack, Language, ArtistProfile, Album, CURRENT_TERMS_VERSION } from '../types';
 import {
   fetchAllRealSongs,
   getInstantSongPool,
@@ -64,6 +64,8 @@ import {
   deleteArtistTrackFromFirebase,
   getEffectiveUserAvatar,
   getEffectiveArtistAvatarForTrack,
+  getGoogleAccountPhotoUrl,
+  upgradeGooglePhotoQuality,
 } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
@@ -81,32 +83,27 @@ import { markSongAsDeleted } from '../services/deletedTracksService';
 
 interface SongsViewProps {
   lang: Language;
+  initialTracks?: JamendoTrack[];
+  initialArtists?: ArtistProfile[];
+  initialAlbums?: Album[];
+  onTracksSync?: (tracks: JamendoTrack[]) => void;
+  onArtistsSync?: (artists: ArtistProfile[]) => void;
   onNavigateHome: () => void;
   onPlayTrack?: (track: JamendoTrack) => void;
 }
 
 export const SongsView: React.FC<SongsViewProps> = ({
   lang,
+  initialTracks = [],
+  initialArtists = [],
+  initialAlbums = [],
+  onTracksSync,
+  onArtistsSync,
   onPlayTrack,
 }) => {
   const isHe = lang === 'he';
 
-  const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(() => {
-    try {
-      const cachedUser = localStorage.getItem('wikiarchive_cached_auth_user');
-      if (cachedUser) {
-        const user = JSON.parse(cachedUser);
-        if (user && user.uid) {
-          const userSaved = localStorage.getItem(`wikiarchive_artist_account_${user.uid}`);
-          if (userSaved) return JSON.parse(userSaved);
-        }
-      }
-      const saved = localStorage.getItem('wikiarchive_artist_account');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(null);
 
   const [activeTab, setActiveTab] = useState<'all' | 'favorites'>('all');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
@@ -119,14 +116,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [showPromoBanner, setShowPromoBanner] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
-  const [authUser, setAuthUser] = useState<FirebaseUser | null>(() => {
-    try {
-      const cached = localStorage.getItem('wikiarchive_cached_auth_user');
-      return cached ? JSON.parse(cached) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
 
   const openLoginModal = () => {
     setAuthModalMode('login');
@@ -178,17 +168,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
       const user = await loginWithGoogle();
       if (user) {
         setAuthUser(user);
-        try {
-          localStorage.setItem(
-            'wikiarchive_cached_auth_user',
-            JSON.stringify({
-              uid: user.uid,
-              displayName: user.displayName,
-              photoURL: user.photoURL,
-              email: user.email,
-            })
-          );
-        } catch {}
         setIsArtistPortalOpen(true);
       }
     } catch (e) {
@@ -196,84 +175,59 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   };
 
-  // Auth & Terms Gate
+  // Auth & Versioned Terms Gate (100% Firestore + Firebase Auth SDK, zero localStorage PII)
   useEffect(() => {
     const unsub = onAuthUserChanged(async (user) => {
       setAuthUser(user);
       if (user) {
         setIsAuthModalOpen(false);
-        try {
-          localStorage.setItem(
-            'wikiarchive_cached_auth_user',
-            JSON.stringify({
-              uid: user.uid,
-              displayName: user.displayName,
-              photoURL: user.photoURL,
-              email: user.email,
-            })
-          );
-        } catch {}
 
-        // Check terms in Firestore (one-time source of truth)
-        const hasAccepted = await checkTermsAcceptedInFirestore(user.uid);
-        if (hasAccepted) {
-          localStorage.setItem('kolot_terms_accepted', 'true');
-          setShowTermsModal(false);
+        const [hasAccepted, remoteProfile] = await Promise.all([
+          checkTermsAcceptedInFirestore(user.uid),
+          getArtistAccountByGoogleUid(user.uid).catch(() => null),
+        ]);
+
+        setShowTermsModal(!hasAccepted);
+
+        if (remoteProfile) {
+          const googlePhoto = getGoogleAccountPhotoUrl(user);
+          const mergedProfile: ArtistProfile = {
+            ...remoteProfile,
+            avatarUrl: remoteProfile.avatarUrl || googlePhoto,
+          };
+          setActiveArtistProfile(mergedProfile);
         } else {
-          setShowTermsModal(true);
-        }
-
-        // Load or create user-partitioned artist profile
-        const userKey = `wikiarchive_artist_account_${user.uid}`;
-        let userProfile: ArtistProfile | null = null;
-        try {
-          const userSaved = localStorage.getItem(userKey);
-          if (userSaved) userProfile = JSON.parse(userSaved);
-        } catch {}
-
-        if (!userProfile) {
-          const profiles = await fetchAllArtistProfiles();
-          userProfile = profiles.find(p => p.id === user.uid || p.id === `artist_${user.uid}` || p.googleUid === user.uid) || null;
-        }
-
-        if (!userProfile) {
           const providerId = user.providerData?.[0]?.providerId || '';
           const providerName = providerId.includes('yahoo')
             ? 'Yahoo'
             : providerId.includes('facebook')
-            ? 'Facebook'
-            : providerId.includes('microsoft')
-            ? 'Microsoft'
-            : providerId.includes('google')
-            ? 'Google'
-            : 'אימייל';
+              ? 'Facebook'
+              : providerId.includes('microsoft')
+                ? 'Microsoft'
+                : providerId.includes('google')
+                  ? 'Google'
+                  : 'אימייל';
 
-          userProfile = {
-            id: 'artist_' + user.uid,
-            name: user.displayName || user.email?.split('@')[0] || (isHe ? 'אמן' : 'Artist'),
-            avatarUrl: user.photoURL || undefined,
+          const draftProfile: ArtistProfile = {
+            id: user.uid,
+            name: user.displayName || (isHe ? 'אמן' : 'Artist'),
+            avatarUrl: getGoogleAccountPhotoUrl(user),
             googleUid: user.uid,
-            googleEmail: user.email || undefined,
             isConnected: true,
-            hasAcceptedTerms: true,
-            acceptedTermsAt: new Date().toISOString(),
-            isPrivate: false,
+            hasAcceptedTerms: hasAccepted,
+            termsVersionAccepted: hasAccepted ? CURRENT_TERMS_VERSION : 0,
+            isPrivate: true,
             tracksCount: 0,
             providerPlatform: `חשבון ${providerName}`,
             joinedDate: new Date().getFullYear().toString(),
           };
-          saveArtistAccountToFirebase(userProfile).catch(() => {});
+          setActiveArtistProfile(draftProfile);
+          if (hasAccepted) {
+            saveArtistAccountToFirebase(draftProfile).catch(() => {});
+          }
         }
-
-        setActiveArtistProfile(userProfile);
-        try {
-          localStorage.setItem(userKey, JSON.stringify(userProfile));
-          localStorage.setItem('wikiarchive_artist_account', JSON.stringify(userProfile));
-        } catch {}
       } else {
         setActiveArtistProfile(null);
-        localStorage.removeItem('wikiarchive_cached_auth_user');
-        localStorage.removeItem('wikiarchive_artist_account');
         setShowTermsModal(false);
       }
     });
@@ -281,33 +235,32 @@ export const SongsView: React.FC<SongsViewProps> = ({
   }, []);
 
   const handleAcceptTerms = async () => {
-    if (!authUser) return;
     setShowTermsModal(false);
-    localStorage.setItem('kolot_cookie_consent_accepted', 'true');
-    localStorage.setItem('kolot_terms_accepted', 'true');
-    
-    // Save to Firestore so it's a one-time thing
-    await saveTermsAcceptedToFirestore(authUser.uid, authUser.displayName || 'User');
-    
-    // Create bare profile if not exists
-    const profiles = await fetchAllArtistProfiles();
-    const existing = profiles.find(p => p.id === authUser.uid || p.googleUid === authUser.uid);
-    if (!existing) {
+    try {
+      localStorage.setItem('kolot_cookie_consent_accepted', 'true');
+    } catch {}
+    if (!authUser) return;
+
+    await saveTermsAcceptedToFirestore(authUser.uid, authUser.displayName || 'אמן');
+    const refreshed = await getArtistAccountByGoogleUid(authUser.uid).catch(() => null);
+    if (refreshed) {
+      setActiveArtistProfile(refreshed);
+    } else {
       const updated: ArtistProfile = {
+        ...(activeArtistProfile || {}),
         id: authUser.uid,
-        name: authUser.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-        avatarUrl: authUser.photoURL || undefined,
+        name: activeArtistProfile?.name || authUser.displayName || (isHe ? 'אמן' : 'Artist'),
+        avatarUrl: activeArtistProfile?.avatarUrl || getGoogleAccountPhotoUrl(authUser),
         googleUid: authUser.uid,
-        googleEmail: authUser.email || undefined,
         isConnected: true,
         hasAcceptedTerms: true,
+        termsVersionAccepted: CURRENT_TERMS_VERSION,
         acceptedTermsAt: new Date().toISOString(),
-        isPrivate: true,
-        tracksCount: 0,
+        isPrivate: activeArtistProfile?.isPrivate ?? true,
+        tracksCount: activeArtistProfile?.tracksCount ?? 0,
         providerPlatform: 'חשבון גוגל',
       };
       setActiveArtistProfile(updated);
-      localStorage.setItem('wikiarchive_artist_account', JSON.stringify(updated));
     }
   };
 
@@ -331,9 +284,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
   };
 
   // Song Pool (Filtered strictly for tracks with authentic account owners)
-  const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool().filter(isValidTrackWithOwner));
-  const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
-  const [remoteAlbums, setRemoteAlbums] = useState<Album[]>(getCachedAlbums);
+  const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() =>
+    (initialTracks.length > 0 ? initialTracks : getInstantSongPool()).filter(isValidTrackWithOwner)
+  );
+  const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() =>
+    initialArtists.length > 0 ? initialArtists : getCachedArtistProfiles()
+  );
+  const [remoteAlbums, setRemoteAlbums] = useState<Album[]>(() =>
+    initialAlbums.length > 0 ? initialAlbums : getCachedAlbums()
+  );
   const [visibleSearchCount] = useState(150);
 
   // Favorites
@@ -356,6 +315,25 @@ export const SongsView: React.FC<SongsViewProps> = ({
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
 
+  // Sync preloaded App.tsx data cleanly without redundant re-renders
+  useEffect(() => {
+    if (initialTracks.length > 0 && allTracks.length === 0) {
+      setAllTracks(initialTracks.filter(isValidTrackWithOwner));
+    }
+  }, [initialTracks]);
+
+  useEffect(() => {
+    if (initialArtists.length > 0 && allArtists.length === 0) {
+      setAllArtists(initialArtists.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+    }
+  }, [initialArtists]);
+
+  useEffect(() => {
+    if (initialAlbums.length > 0 && remoteAlbums.length === 0) {
+      setRemoteAlbums(initialAlbums);
+    }
+  }, [initialAlbums]);
+
   // Mount effect - Independent progressive Cloud Load (< 1s first paint, zero Promise.all blocking)
   useEffect(() => {
     let active = true;
@@ -363,19 +341,25 @@ export const SongsView: React.FC<SongsViewProps> = ({
     fetchAllRealSongs(undefined, (batch) => {
       if (!active) return;
       const valid = (batch || []).filter(isValidTrackWithOwner);
-      if (valid.length > 0) setAllTracks(valid);
+      if (valid.length > 0) {
+        setAllTracks(valid);
+        onTracksSync?.(valid);
+      }
     })
       .then((finalSongs) => {
         if (!active) return;
         const validSongs = (finalSongs || []).filter(isValidTrackWithOwner);
         setAllTracks(validSongs);
+        onTracksSync?.(validSongs);
       })
       .catch(() => {});
 
     fetchAllArtistProfiles()
       .then((profiles) => {
         if (!active || !Array.isArray(profiles)) return;
-        setAllArtists(profiles.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+        const filtered = profiles.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0)));
+        setAllArtists(filtered);
+        onArtistsSync?.(profiles);
       })
       .catch(() => {});
 
@@ -1921,18 +1905,13 @@ export const SongsView: React.FC<SongsViewProps> = ({
         isOpen={isArtistPortalOpen}
         onClose={() => {
           setIsArtistPortalOpen(false);
-          try {
-            const saved = localStorage.getItem('wikiarchive_artist_account');
-            setActiveArtistProfile(saved ? JSON.parse(saved) : null);
-          } catch {
-            // ignore
-          }
         }}
         lang={lang}
         onTrackPublished={async (newTrack) => {
           setAllTracks((prev) => {
             const next = deduplicateTracks([newTrack, ...prev]);
             saveCachedCloudTracks(next);
+            onTracksSync?.(next);
             return next;
           });
         }}
@@ -1944,29 +1923,32 @@ export const SongsView: React.FC<SongsViewProps> = ({
               const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
               return cleanUpdatedUid && aUid === cleanUpdatedUid;
             });
+            let next: ArtistProfile[];
             if (idx >= 0) {
-              const copy = [...prev];
-              copy[idx] = { ...copy[idx], ...updatedArtist };
-              return copy;
+              next = [...prev];
+              next[idx] = { ...next[idx], ...updatedArtist };
+            } else {
+              next = [updatedArtist, ...prev];
             }
-            return [updatedArtist, ...prev];
+            onArtistsSync?.(next);
+            return next;
           });
-          if (updatedArtist.avatarUrl) {
-            setAllTracks((prev) => {
-              const next = prev.map((t) => {
-                const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-                const emailMatch =
-                  updatedArtist.googleEmail &&
-                  t.uploadedByEmail?.toLowerCase().trim() === updatedArtist.googleEmail.toLowerCase().trim();
-                if ((cleanUpdatedUid && tUid === cleanUpdatedUid) || emailMatch) {
-                  return { ...t, artistAvatarUrl: updatedArtist.avatarUrl };
-                }
-                return t;
-              });
-              saveCachedCloudTracks(next);
-              return next;
+          setAllTracks((prev) => {
+            const next = prev.map((t) => {
+              const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+              if (cleanUpdatedUid && tUid === cleanUpdatedUid) {
+                return {
+                  ...t,
+                  artistAvatarUrl: updatedArtist.avatarUrl || '',
+                  artistName: updatedArtist.name || t.artistName,
+                };
+              }
+              return t;
             });
-          }
+            saveCachedCloudTracks(next);
+            onTracksSync?.(next);
+            return next;
+          });
         }}
         allTracks={allTracks}
         onPlayTrack={(track) => openSongPlayer(track)}
@@ -2020,17 +2002,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
         initialMode={authModalMode}
         onSuccess={(user) => {
           setAuthUser(user);
-          try {
-            localStorage.setItem(
-              'wikiarchive_cached_auth_user',
-              JSON.stringify({
-                uid: user.uid,
-                displayName: user.displayName,
-                photoURL: user.photoURL,
-                email: user.email,
-              })
-            );
-          } catch {}
           setIsArtistPortalOpen(true);
         }}
       />

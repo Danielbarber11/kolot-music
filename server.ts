@@ -70,18 +70,13 @@ function sanitizeKey(val?: string): string {
   return val.trim().replace(/^["']|["']$/g, '');
 }
 
-// Default R2 credentials provided for server-side Cloudflare storage
-const DEFAULT_R2_ENDPOINT = 'https://005434972f224c499cd04d73150a9e80.eu.r2.cloudflarestorage.com';
-const DEFAULT_R2_ACCESS_KEY = '4be7ca8a92428a559e216b40a4c92b04';
-const DEFAULT_R2_SECRET_KEY = '4cf636c4141f35944adda0bacb8c164eb45cb6359db78767de4c79ad50eab094';
-
-// Persistent and in-memory R2 config
+// Server-side R2 configuration comes strictly from environment variables (or gitignored .r2-config.json)
 const R2_CONFIG_FILE = path.join(__dirname, '.r2-config.json');
 let activeR2Config: R2Config = {
-  endpoint: sanitizeR2Endpoint(process.env.R2_ENDPOINT || DEFAULT_R2_ENDPOINT),
-  accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY),
-  secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY),
-  bucketName: sanitizeKey(process.env.R2_BUCKET_NAME),
+  endpoint: sanitizeR2Endpoint(process.env.R2_ENDPOINT),
+  accessKeyId: sanitizeKey(process.env.R2_ACCESS_KEY_ID),
+  secretAccessKey: sanitizeKey(process.env.R2_SECRET_ACCESS_KEY),
+  bucketName: sanitizeKey(process.env.R2_BUCKET_NAME) || 'kolot-music',
   publicUrl: sanitizePublicUrl(process.env.R2_PUBLIC_URL),
 };
 
@@ -96,7 +91,7 @@ try {
       secretAccessKey: sanitizeKey(saved.secretAccessKey || activeR2Config.secretAccessKey),
       publicUrl: sanitizePublicUrl(saved.publicUrl) || activeR2Config.publicUrl,
     };
-    console.log('[R2 Storage] Loaded config from .r2-config.json');
+    console.log('[R2 Storage] Loaded config from gitignored .r2-config.json');
   }
 } catch (e: any) {
   console.warn('[R2 Storage] Could not read .r2-config.json:', e?.message);
@@ -111,11 +106,10 @@ function resolveR2Config(req?: express.Request): R2Config {
   const endpoint =
     sanitizeR2Endpoint(headerEndpoint) ||
     sanitizeR2Endpoint(activeR2Config.endpoint) ||
-    sanitizeR2Endpoint(process.env.R2_ENDPOINT) ||
-    DEFAULT_R2_ENDPOINT;
-  const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID || DEFAULT_R2_ACCESS_KEY);
-  const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY || DEFAULT_R2_SECRET_KEY);
-  const bucketName = sanitizeKey(headerBucket || activeR2Config.bucketName || process.env.R2_BUCKET_NAME);
+    sanitizeR2Endpoint(process.env.R2_ENDPOINT);
+  const accessKeyId = sanitizeKey(headerAccessKey || activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID);
+  const secretAccessKey = sanitizeKey(headerSecretKey || activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY);
+  const bucketName = sanitizeKey(headerBucket || activeR2Config.bucketName || process.env.R2_BUCKET_NAME) || 'kolot-music';
   const publicUrl = sanitizePublicUrl(activeR2Config.publicUrl || process.env.R2_PUBLIC_URL);
 
   return { endpoint, accessKeyId, secretAccessKey, bucketName, publicUrl };
@@ -2110,8 +2104,142 @@ app.get('/api/music/modern-trending', async (req, res) => {
   }
 });
 
-// Setup Vite middleware in dev mode
+// 4e. Same-origin HuggingFace Model Proxy (prevents CORS/redirect Failed to fetch for Whisper WASM)
+app.all('/api/hf-proxy/*', async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(405).send('Method not allowed');
+  }
+  const subPath = String((req.params as any)[0] || '').replace(/^\/+/, '');
+  if (!subPath || subPath.includes('..') || !/^[a-zA-Z0-9._\-\/@]+$/.test(subPath)) {
+    return res.status(400).send('Invalid model path');
+  }
+  const qIdx = req.originalUrl.indexOf('?');
+  const search = qIdx >= 0 ? req.originalUrl.slice(qIdx) : '';
+  const targetUrl = `https://huggingface.co/${subPath}${search}`;
+  try {
+    const hdrs: Record<string, string> = { 'User-Agent': 'Kolot-Whisper-Client/1.0' };
+    if (req.headers.range) hdrs['Range'] = String(req.headers.range);
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers: hdrs,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(upstream.status).send('HuggingFace upstream error');
+    }
+    res.status(upstream.status);
+    const ct = upstream.headers.get('content-type');
+    const cl = upstream.headers.get('content-length');
+    const cr = upstream.headers.get('content-range');
+    if (ct) res.setHeader('Content-Type', ct);
+    if (cl) res.setHeader('Content-Length', cl);
+    if (cr) res.setHeader('Content-Range', cr);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    if (req.method === 'HEAD') return res.end();
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    return res.send(buf);
+  } catch (err: any) {
+    return res.status(502).send(`HF proxy error: ${err?.message || 'Failed'}`);
+  }
+});
 
+// 4f. Same-origin ONNX Runtime Web WASM Proxy (serves from disk or jsDelivr CDN cleanly)
+app.all('/api/onnx-wasm/*', async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(405).send('Method not allowed');
+  }
+  const fileName = String((req.params as any)[0] || '').replace(/^\/+/, '').split('?')[0];
+  if (!fileName || !/^[a-zA-Z0-9._\-]+$/.test(fileName)) {
+    return res.status(400).send('Invalid WASM asset');
+  }
+  const contentType = fileName.endsWith('.wasm')
+    ? 'application/wasm'
+    : fileName.endsWith('.mjs') || fileName.endsWith('.js')
+      ? 'application/javascript; charset=utf-8'
+      : 'application/octet-stream';
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+
+  const localPath = path.resolve(__dirname, 'node_modules', 'onnxruntime-web', 'dist', fileName);
+  if (fs.existsSync(localPath)) {
+    if (req.method === 'HEAD') return res.status(200).end();
+    return res.sendFile(localPath);
+  }
+
+  try {
+    const cdnUrl = `https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.0-dev.20260914-8d85527a0/dist/${fileName}`;
+    const upstream = await fetch(cdnUrl, { method: req.method, redirect: 'follow', signal: AbortSignal.timeout(30000) });
+    if (!upstream.ok) return res.status(upstream.status).send('WASM asset not found');
+    res.status(upstream.status);
+    if (req.method === 'HEAD') return res.end();
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    return res.send(buf);
+  } catch (err: any) {
+    return res.status(502).send(`ONNX WASM proxy error: ${err?.message || 'Failed'}`);
+  }
+});
+
+// 4g. Free Unlimited Subtitle Translator (Hebrew <-> English, zero API keys)
+app.post('/api/ai/translate-subtitles', async (req, res) => {
+  try {
+    const lines: string[] = Array.isArray(req.body?.lines)
+      ? req.body.lines.map((x: any) => String(x || '').trim()).slice(0, 120)
+      : [];
+    const sl = req.body?.source === 'he' ? 'he' : 'en';
+    const tl = req.body?.target === 'en' ? 'en' : 'he';
+    if (lines.length === 0) return res.json({ success: true, translations: [] });
+
+    const joined = lines.join('\n');
+    const gtUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(joined)}`;
+    const gtRes = await fetch(gtUrl, {
+      headers: { 'User-Agent': 'Kolot-Subtitles/1.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!gtRes.ok) {
+      return res.status(502).json({ success: false, translations: [] });
+    }
+    const rawData: any = await gtRes.json();
+    const translatedFull = Array.isArray(rawData?.[0])
+      ? rawData[0].map((part: any) => String(part?.[0] || '')).join('')
+      : '';
+    const splitLines = translatedFull.split('\n').map((l: string) => l.trim());
+    const normalized = lines.map((_, idx) => splitLines[idx] || '');
+    return res.json({ success: true, translations: normalized });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, translations: [], error: err?.message || 'Translate failed' });
+  }
+});
+
+// 4h. Public Track Report fallback endpoint (saves directly in R2 reports/)
+app.post('/api/storage/report', async (req, res) => {
+  try {
+    const rep = req.body;
+    if (!rep?.id || !rep?.trackId || !rep?.trackName) {
+      return res.status(400).json({ success: false, error: 'Missing report fields' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    const key = `reports/${String(rep.id).replace(/[^a-zA-Z0-9_\-]/g, '')}.json`;
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: Buffer.from(JSON.stringify(rep, null, 2), 'utf-8'),
+        ContentType: 'application/json',
+      })
+    );
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to save report' });
+  }
+});
+
+// Setup Vite middleware in dev mode
 if (process.env.NODE_ENV !== 'production') {
   const { createServer: createViteServer } = await import('vite');
   const vite = await createViteServer({
@@ -2123,34 +2251,36 @@ if (process.env.NODE_ENV !== 'production') {
 
   app.use('*', async (req, res, next) => {
     const url = req.originalUrl;
+    if (url.startsWith('/api/') || url.startsWith('/assets/')) {
+      return res.status(404).send('Not Found');
+    }
     try {
-      let template = await vite.transformIndexHtml(
-        url,
-        `<!doctype html>
-<html lang="he" dir="rtl">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WikiArchive Quantum - macOS Knowledge Suite</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  </head>
-  <body class="bg-[#f8fafc] text-slate-900 font-sans antialiased">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>`
-      );
-      res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      const indexHtml = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+      const template = await vite.transformIndexHtml(url, indexHtml);
+      res
+        .status(200)
+        .set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate' })
+        .end(template);
     } catch (e) {
       vite.ssrFixStacktrace(e as Error);
       next(e);
     }
   });
 } else {
-  app.use(express.static(path.resolve(__dirname, 'dist')));
-  app.get('*', (req, res) => {
+  app.use(
+    express.static(path.resolve(__dirname, 'dist'), {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    })
+  );
+  app.get('/assets/*', (_req, res) => res.status(404).send('Asset not found'));
+  app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
   });
 }

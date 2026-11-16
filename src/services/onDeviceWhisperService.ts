@@ -1,15 +1,21 @@
 import { pipeline, env } from '@huggingface/transformers';
 import { SubtitleSegment } from '../types';
 
-// Configure Transformers.js to run 100% in browser via Cache API + WASM (0 server cost, 0 API keys)
+// Configure Transformers.js to load via our same-origin proxies (zero CORS/redirect Failed to fetch)
+// while still running 100% in browser Cache API + WASM (0 API keys, $0 cost)
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+if (typeof window !== 'undefined' && window.location?.origin) {
+  env.remoteHost = `${window.location.origin}/api/hf-proxy/`;
+  env.remotePathTemplate = '{model}/resolve/{revision}/';
+  if (env.backends?.onnx?.wasm) {
+    env.backends.onnx.wasm.wasmPaths = `${window.location.origin}/api/onnx-wasm/`;
+  }
+}
 if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.proxy = false;
   // Single-thread WASM prevents iframe SharedArrayBuffer hangs when crossOriginIsolated is false
-  if (typeof crossOriginIsolated !== 'undefined' && !crossOriginIsolated) {
-    env.backends.onnx.wasm.numThreads = 1;
-  }
+  env.backends.onnx.wasm.numThreads = 1;
 }
 
 let whisperPipelinePromise: Promise<any> | null = null;
@@ -61,37 +67,55 @@ export function sanitizeSubtitleLettersOnly(rawText: string): string {
 }
 
 /**
- * Optional free on-device Chrome Translator API (zero API keys, zero network quota).
+ * 100% free unlimited En<->He translator: prefers browser on-device Translator API,
+ * seamlessly falling back to our free keyless /api/ai/translate-subtitles proxy.
  */
 async function translateOnDeviceIfAvailable(
   texts: string[],
   sourceLanguage: 'en' | 'he',
   targetLanguage: 'en' | 'he'
 ): Promise<string[] | null> {
+  // 1. Try Chrome built-in offline Translator API first
   try {
     const g: any = typeof self !== 'undefined' ? self : window;
     const TranslatorCtor = g?.Translator;
-    if (!TranslatorCtor || typeof TranslatorCtor.create !== 'function') {
-      return null;
-    }
-    if (typeof TranslatorCtor.availability === 'function') {
-      const avail = await TranslatorCtor.availability({ sourceLanguage, targetLanguage });
-      if (avail === 'unavailable') return null;
-    }
-    const translator = await TranslatorCtor.create({ sourceLanguage, targetLanguage });
-    const out: string[] = [];
-    for (const line of texts) {
-      if (!line) {
-        out.push('');
-        continue;
+    if (TranslatorCtor && typeof TranslatorCtor.create === 'function') {
+      let avail = 'readily';
+      if (typeof TranslatorCtor.availability === 'function') {
+        avail = await TranslatorCtor.availability({ sourceLanguage, targetLanguage });
       }
-      const res = await translator.translate(line);
-      out.push(sanitizeSubtitleLettersOnly(String(res || '')));
+      if (avail !== 'unavailable') {
+        const translator = await TranslatorCtor.create({ sourceLanguage, targetLanguage });
+        const out: string[] = [];
+        for (const line of texts) {
+          if (!line) {
+            out.push('');
+            continue;
+          }
+          const res = await translator.translate(line);
+          out.push(sanitizeSubtitleLettersOnly(String(res || '')));
+        }
+        if (out.some((x) => x.length > 0)) return out;
+      }
     }
-    return out;
-  } catch {
-    return null;
-  }
+  } catch {}
+
+  // 2. Fallback: Free unlimited keyless translation proxy (/api/ai/translate-subtitles)
+  try {
+    const res = await fetch('/api/ai/translate-subtitles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lines: texts, source: sourceLanguage, target: targetLanguage }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && Array.isArray(data.translations)) {
+        return data.translations.map((t: any) => sanitizeSubtitleLettersOnly(String(t || '')));
+      }
+    }
+  } catch {}
+
+  return null;
 }
 
 /**
@@ -111,7 +135,6 @@ export async function decodeAudioToMono16k(
     }
     arrayBuffer = await res.arrayBuffer();
   } else {
-    // Cap raw slice for multi-hundred-MB files so browser RAM stays safe
     const targetSlice =
       maxSeconds > 0 && maxSeconds <= 60 && source.size > 12 * 1024 * 1024
         ? source.slice(0, 12 * 1024 * 1024)
@@ -150,15 +173,14 @@ export async function decodeAudioToMono16k(
 }
 
 /**
- * Loads or reuses cached On-Device Whisper AI pipeline via stable WASM q8 (100% free, zero API keys).
- * Uses WASM instead of WebGPU q8 to avoid Chrome WebGPU quantized ConvInteger crashes.
+ * Loads or reuses cached On-Device Whisper AI pipeline via same-origin proxy + WASM q8 (100% free, zero API keys).
  */
 async function getOnDeviceWhisperPipeline(
   onProgress?: (statusText: string, percent?: number) => void
 ) {
   if (!whisperPipelinePromise) {
     whisperPipelinePromise = (async () => {
-      onProgress?.('מכין מנוע כתוביות מקומי במכשיר (ללא מפתח API)...', 5);
+      onProgress?.('מכין מנוע כתוביות מקומי במכשיר (100% חינם)...', 5);
 
       return pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
         dtype: 'q8',
@@ -166,7 +188,7 @@ async function getOnDeviceWhisperPipeline(
         progress_callback: (info: any) => {
           if (info?.status === 'progress' && typeof info.progress === 'number') {
             const pct = Math.min(95, Math.max(5, Math.round(info.progress)));
-            onProgress?.(`מוריד מנוע Whisper למכשיר (${pct}%)`, pct);
+            onProgress?.(`טוען מודל Whisper למכשיר (${pct}%)`, pct);
           } else if (info?.status === 'ready') {
             onProgress?.('מנוע Whisper המקומי מוכן', 96);
           }

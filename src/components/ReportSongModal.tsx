@@ -64,14 +64,8 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       status: 'pending',
     };
 
-    // Save to Firestore & localStorage
+    // Save strictly to Firebase Firestore / R2 backend (zero localStorage PII)
     await saveTrackReportToFirebase(report);
-    try {
-      const saved = localStorage.getItem('kolot_track_reports');
-      const list: TrackReport[] = saved ? JSON.parse(saved) : [];
-      list.push(report);
-      localStorage.setItem('kolot_track_reports', JSON.stringify(list));
-    } catch {}
 
     setIsSubmitting(false);
     setIsSubmitted(true);

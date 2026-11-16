@@ -18,7 +18,7 @@ import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCached
 import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteArtistTrackFromFirebase, getEffectiveArtistAvatarForTrack } from '../services/firebaseService';
+import { deleteArtistTrackFromFirebase, getEffectiveArtistAvatarForTrack, auth, checkIsCurrentUserAdmin, upgradeGooglePhotoQuality, onAuthUserChanged } from '../services/firebaseService';
 
 interface ArtistProfileModalProps {
   artistName: string;
@@ -63,6 +63,20 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [avatarImgError, setAvatarImgError] = useState(false);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
+  const [currentUid, setCurrentUid] = useState<string | null>(() => auth.currentUser?.uid || null);
+  const [isCurrentUserAdmin, setIsCurrentUserAdmin] = useState(false);
+
+  useEffect(() => {
+    const unsub = onAuthUserChanged((user) => {
+      setCurrentUid(user?.uid || null);
+      if (user) {
+        checkIsCurrentUserAdmin().then(setIsCurrentUserAdmin).catch(() => setIsCurrentUserAdmin(false));
+      } else {
+        setIsCurrentUserAdmin(false);
+      }
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     setAvatarImgError(false);
@@ -159,7 +173,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const artistBio = artistInfo?.bio || sampleTrack?.artistBio || '';
 
-  // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl -> localStorage -> Track coverUrl
+  // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl -> Track coverUrl
   let rawAvatarUrl: string | undefined = artistInfo?.avatarUrl;
 
   if (!isAuthenticCover(rawAvatarUrl) && sampleTrack) {
@@ -172,19 +186,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
       (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
     if (trackWithAvatar?.artistAvatarUrl) {
       rawAvatarUrl = trackWithAvatar.artistAvatarUrl;
-    } else {
-      try {
-        const saved = localStorage.getItem('wikiarchive_artist_account') || localStorage.getItem('kolot_artist_account_v1');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          const parsedUid = (parsed.googleUid || parsed.id || '').replace(/^artist_/, '').toLowerCase().trim();
-          const uidMatch = canonicalUid && parsedUid && canonicalUid === parsedUid;
-          const nameMatch = parsed.name?.toLowerCase().trim() === effectiveCleanName;
-          if ((uidMatch || nameMatch) && parsed.avatarUrl && isAuthenticCover(parsed.avatarUrl)) {
-            rawAvatarUrl = parsed.avatarUrl;
-          }
-        }
-      } catch {}
     }
   }
 
@@ -195,7 +196,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     }
   }
 
-  const avatarUrl = rawAvatarUrl ? getStreamingMediaUrl(rawAvatarUrl) : undefined;
+  const avatarUrl = rawAvatarUrl ? upgradeGooglePhotoQuality(getStreamingMediaUrl(rawAvatarUrl)) || getStreamingMediaUrl(rawAvatarUrl) : undefined;
   const themeColor = useExtractedColor(avatarUrl, artistInfo?.genre || sampleTrack?.genre || 'Pop');
 
   // Profile modal opens even if track count is currently 0 (reliable loading)
@@ -228,38 +229,22 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   })();
 
   const canDeleteTrack = (track: JamendoTrack) => {
-    if (!onRemoveTrack) return false;
-    try {
-      const authRaw = localStorage.getItem('wikiarchive_cached_auth_user');
-      const authUser = authRaw ? JSON.parse(authRaw) : null;
-      if (!authUser) return false;
+    if (!onRemoveTrack || !currentUid) return false;
+    const cleanCurrent = currentUid.replace(/^artist_/, '').toLowerCase().trim();
+    const trackUid = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
 
-      const userEmail = authUser.email?.toLowerCase().trim() || '';
-      const isMainAdmin = userEmail === 'danielbarber1246@gmail.com';
+    if (isCurrentUserAdmin) return true;
+    if (trackUid && trackUid === cleanCurrent) return true;
 
-      // Main admin email (danielbarber1246@gmail.com) can manage unassigned songs or their own songs
-      if (isMainAdmin) {
-        if (!track.uploadedByEmail && !track.uploadedByUid) return true;
-        if (track.uploadedByEmail?.toLowerCase().trim() === 'danielbarber1246@gmail.com') return true;
-      }
-
-      // Track uploaded by user email or uid
-      if (track.uploadedByEmail && userEmail && track.uploadedByEmail.toLowerCase().trim() === userEmail) return true;
-      if (track.uploadedByUid && track.uploadedByUid === authUser.uid) return true;
-
-      // Or user owns artist profile
-      const artistRaw = localStorage.getItem('kolot_artist_account_v1') || localStorage.getItem('wikiarchive_artist_account');
-      if (artistRaw) {
-        const artist = JSON.parse(artistRaw);
-        if ((artist.uid === authUser.uid || artist.googleUid === authUser.uid) && (
-          artist.name?.toLowerCase().trim() === cleanQuery ||
-          artist.name?.toLowerCase().trim() === (track.artistName || '').toLowerCase().trim()
-        )) {
-          return true;
-        }
-      }
-    } catch {}
-    return false;
+    const ownsProfile = mergedArtists.some((a) => {
+      const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+      return (
+        aUid === cleanCurrent &&
+        (a.name?.toLowerCase().trim() === cleanQuery ||
+          a.name?.toLowerCase().trim() === (track.artistName || '').toLowerCase().trim())
+      );
+    });
+    return ownsProfile;
   };
 
   const handleDeleteTrack = async (track: JamendoTrack, e: React.MouseEvent) => {

@@ -1,7 +1,8 @@
-import { JamendoTrack, Album } from '../types';
+import { JamendoTrack, Album, CURRENT_TERMS_VERSION } from '../types';
 import {
   getArtistTracksFromFirebase,
   getArtistAccountsFromFirebase,
+  getArtistAccountByGoogleUid,
   saveArtistAccountToFirebase,
 } from './firebaseService';
 import { clearAllLocalDeviceStorage } from './localTrackStorage';
@@ -233,28 +234,40 @@ export async function fetchAllArtistProfiles(): Promise<any[]> {
 }
 
 export async function checkTermsAcceptedInFirestore(uid: string): Promise<boolean> {
+  if (!uid) return false;
   try {
-    const fbAccounts = await getArtistAccountsFromFirebase();
-    const account = fbAccounts.find((a) => a.id === uid || a.googleUid === uid);
-    return !!account?.hasAcceptedTerms;
+    const account = await getArtistAccountByGoogleUid(uid);
+    if (!account) return false;
+    const acceptedVersion =
+      typeof account.termsVersionAccepted === 'number'
+        ? account.termsVersionAccepted
+        : account.hasAcceptedTerms
+          ? 1
+          : 0;
+    return !!account.hasAcceptedTerms && acceptedVersion >= CURRENT_TERMS_VERSION;
   } catch {
     return false;
   }
 }
 
 export async function saveTermsAcceptedToFirestore(uid: string, name: string): Promise<void> {
+  if (!uid) return;
   try {
+    const existing = await getArtistAccountByGoogleUid(uid).catch(() => null);
     await saveArtistAccountToFirebase({
-      id: uid,
-      name: name,
+      ...(existing || {}),
+      id: existing?.id || uid,
+      googleUid: uid,
+      name: existing?.name || name || 'אמן',
       isConnected: true,
       hasAcceptedTerms: true,
+      termsVersionAccepted: CURRENT_TERMS_VERSION,
       acceptedTermsAt: new Date().toISOString(),
-      isPrivate: true,
-      tracksCount: 0,
-      joinedDate: new Date().getFullYear().toString(),
-      providerPlatform: 'Google Auth',
-    } as any);
+      isPrivate: existing?.isPrivate ?? true,
+      tracksCount: existing?.tracksCount ?? 0,
+      joinedDate: existing?.joinedDate || new Date().getFullYear().toString(),
+      providerPlatform: existing?.providerPlatform || 'Google Auth',
+    });
   } catch (err) {
     console.warn('Failed to save terms acceptance to Firestore:', err);
   }

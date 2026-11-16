@@ -77,24 +77,50 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   }, []);
 
   useEffect(() => {
-    getTrackReportsFromFirebase().then((fbReports) => {
-      const savedLocal = localStorage.getItem('kolot_track_reports');
-      const localReports: TrackReport[] = savedLocal ? JSON.parse(savedLocal) : [];
+    let active = true;
+    const loadReports = async () => {
+      const fbReports = await getTrackReportsFromFirebase().catch(() => []);
       const combined = [...fbReports];
-      localReports.forEach((lr) => {
-        if (!combined.some((c) => c.id === lr.id)) {
-          combined.push(lr);
+      try {
+        const listRes = await fetch('/api/storage/list?prefix=reports/', { cache: 'no-store' });
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          const files: Array<{ key: string; url: string }> = Array.isArray(listData?.files) ? listData.files : [];
+          const cloudReports = await Promise.all(
+            files
+              .filter((f) => f.key.endsWith('.json'))
+              .map(async (f) => {
+                try {
+                  const r = await fetch(f.url, { cache: 'no-store' });
+                  return r.ok ? ((await r.json()) as TrackReport) : null;
+                } catch {
+                  return null;
+                }
+              })
+          );
+          cloudReports.forEach((cr) => {
+            if (cr && cr.id && !combined.some((c) => c.id === cr.id)) {
+              combined.push(cr);
+            }
+          });
         }
-      });
-      setReports(combined);
-    });
+      } catch {}
+      if (active) setReports(combined);
+    };
+    loadReports().catch(() => {});
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleDismissReport = async (reportId: string) => {
     setReports((prev) => prev.filter((r) => r.id !== reportId));
-    const local = reports.filter((r) => r.id !== reportId);
-    localStorage.setItem('kolot_track_reports', JSON.stringify(local));
-    await dismissTrackReportInFirebase(reportId);
+    await Promise.allSettled([
+      dismissTrackReportInFirebase(reportId),
+      fetch(`/api/storage/delete?path=${encodeURIComponent(`reports/${reportId}.json`)}`, {
+        method: 'DELETE',
+      }).catch(() => {}),
+    ]);
   };
 
   return (

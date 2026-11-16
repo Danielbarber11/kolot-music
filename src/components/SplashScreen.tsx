@@ -14,7 +14,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
       initial={{ opacity: 1 }}
       animate={{ opacity: isLoading ? 1 : 0 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.8, ease: [0.4, 0, 0.2, 1] }}
+      transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
       onAnimationComplete={() => {
         if (!isLoading && window.document.getElementById('splash-screen')) {
           window.document.getElementById('splash-screen')?.remove();
@@ -29,10 +29,10 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
       <div className="relative flex flex-col items-center space-y-8">
         {/* Animated Logo */}
         <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
+          initial={{ scale: 0.9, opacity: 0.5 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{
-            duration: 1.2,
+            duration: 0.25,
             ease: "easeOut",
           }}
           className="relative"
@@ -56,9 +56,9 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
 
         {/* Text Brand */}
         <motion.div
-          initial={{ y: 20, opacity: 0 }}
+          initial={{ y: 8, opacity: 0.4 }}
           animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.5, duration: 0.8 }}
+          transition={{ delay: 0.05, duration: 0.22 }}
           className="text-center space-y-2"
         >
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-[0.2em] uppercase select-none">

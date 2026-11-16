@@ -1,49 +1,40 @@
-// Kolot Music Service Worker
-const CACHE_NAME = 'kolot-music-v1';
-const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/favicon.svg',
-  '/manifest.json'
-];
+// Kolot Music Service Worker v2 - Network-First Navigation (Prevents White Screen on Deploy)
+const CACHE_NAME = 'kolot-music-v2';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch(() => {});
-    })
-  );
+  // Activate immediately so old broken caches are purged right away
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
+    caches.keys().then((keys) =>
+      Promise.all(keys.map((key) => caches.delete(key)))
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  // Let network handle API and audio streaming directly
-  if (event.request.url.includes('/api/') || event.request.url.includes('audius') || event.request.url.includes('blob:')) {
+  const url = event.request.url;
+
+  // Never intercept non-GET, API calls, external audio/AI streams, or hashed Vite bundles
+  if (
+    event.request.method !== 'GET' ||
+    url.includes('/api/') ||
+    url.includes('/assets/') ||
+    url.startsWith('blob:') ||
+    url.includes('audius') ||
+    url.includes('firebase') ||
+    url.includes('googleapis')
+  ) {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).catch(() => {
-        // Fallback for navigation requests
-        if (event.request.mode === 'navigate') {
-          return caches.match('/index.html');
-        }
-      });
-    })
-  );
+  // Always fetch fresh HTML for navigation so new Cloudflare deploys never load stale hashed assets
+  if (event.request.mode === 'navigate' || event.request.destination === 'document') {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-store' }).catch(() => caches.match('/index.html'))
+    );
+    return;
+  }
 });

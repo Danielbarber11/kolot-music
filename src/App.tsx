@@ -3,14 +3,48 @@ import { AnimatePresence } from 'motion/react';
 import { SongsView } from './components/SongsView';
 import { SongPlayerPage } from './components/SongPlayerPage';
 import { SplashScreen } from './components/SplashScreen';
-import { Language, JamendoTrack, ArtistProfile } from './types';
+import { Language, JamendoTrack, ArtistProfile, Album } from './types';
 import {
   getInstantSongPool,
   fetchAllRealSongs,
   getCachedArtistProfiles,
   fetchAllArtistProfiles,
+  getCachedAlbums,
+  fetchRealAlbums,
+  initializeMultiMusicService,
 } from './services/multiMusicService';
+import { getStreamingMediaUrl } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
+
+function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> {
+  const uniqueUrls = Array.from(
+    new Set(
+      urls
+        .map((u) => (u ? getStreamingMediaUrl(u) : ''))
+        .filter((u) => !!u && (u.startsWith('http') || u.startsWith('/') || u.startsWith('data:')))
+    )
+  ).slice(0, 8);
+
+  if (uniqueUrls.length === 0) return Promise.resolve();
+
+  return Promise.allSettled(
+    uniqueUrls.map(
+      (url) =>
+        new Promise<void>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            if (typeof img.decode === 'function') {
+              img.decode().catch(() => {}).finally(resolve);
+            } else {
+              resolve();
+            }
+          };
+          img.onerror = () => resolve();
+          img.src = url;
+        })
+    )
+  ).then(() => {});
+}
 
 export default function App() {
   const [lang] = useState<Language>('he');
@@ -18,6 +52,7 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
+  const [allAlbums, setAllAlbums] = useState<Album[]>(() => getCachedAlbums());
 
   const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
     try {
@@ -28,28 +63,58 @@ export default function App() {
     }
   });
 
-  // Start non-blocking progressive fetch immediately on load
+  // Coordinate initial feed + top cover image decode capped at 800ms so entry feels instant and complete (< 1s)
   useEffect(() => {
+    let active = true;
+
+    const preloadDataAndTopCovers = async () => {
+      try {
+        await initializeMultiMusicService();
+        const freshTracks = await fetchAllRealSongs().catch(() => getInstantSongPool());
+        const freshArtists = await fetchAllArtistProfiles().catch(() => getCachedArtistProfiles());
+        const freshAlbums = await fetchRealAlbums().catch(() => getCachedAlbums());
+
+        if (!active) return;
+        if (freshTracks.length > 0) setAllTracks(freshTracks);
+        if (freshArtists.length > 0) setAllArtists(freshArtists);
+        if (freshAlbums.length > 0) setAllAlbums(freshAlbums);
+
+        const topImageUrls = [
+          ...freshTracks.slice(0, 6).map((t) => t.coverUrl),
+          ...freshArtists.slice(0, 3).map((a) => a.avatarUrl),
+        ];
+        await preloadAndDecodeImages(topImageUrls);
+      } catch {
+        // Non-fatal
+      }
+    };
+
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 800));
+
+    Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
+      if (active) setIsInitializing(false);
+    });
+
+    // Continue refreshing full data in background even after splash lifts
     fetchAllRealSongs(undefined, (batch) => {
-      if (batch.length > 0) setAllTracks(batch);
-    })
-      .then((tracks) => {
-        if (tracks.length > 0) setAllTracks(tracks);
-      })
-      .catch(() => {});
+      if (active && batch.length > 0) setAllTracks(batch);
+    }).catch(() => {});
 
     fetchAllArtistProfiles()
       .then((profiles) => {
-        if (profiles.length > 0) setAllArtists(profiles);
+        if (active && profiles.length > 0) setAllArtists(profiles);
       })
       .catch(() => {});
 
-    // Hide splash screen within 200ms max for instant loading
-    const timer = setTimeout(() => {
-      setIsInitializing(false);
-    }, 200);
+    fetchRealAlbums()
+      .then((albums) => {
+        if (active && albums.length > 0) setAllAlbums(albums);
+      })
+      .catch(() => {});
 
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleToggleLikeSong = (id: string) => {
@@ -67,9 +132,14 @@ export default function App() {
         </AnimatePresence>
 
         <main className="flex-1 p-0 m-0">
-          {/* Main SongsView stays mounted to preserve scroll, state, and avoid image/button pop-in */}
+          {/* Main SongsView receives preloaded tracks/artists/albums so UI renders immediately behind SplashScreen */}
           <SongsView
             lang={lang}
+            initialTracks={allTracks}
+            initialArtists={allArtists}
+            initialAlbums={allAlbums}
+            onTracksSync={setAllTracks}
+            onArtistsSync={setAllArtists}
             onNavigateHome={() => setActivePlayerTrack(null)}
             onPlayTrack={(track) => setActivePlayerTrack(track)}
           />

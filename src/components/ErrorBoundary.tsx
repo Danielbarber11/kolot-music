@@ -24,10 +24,18 @@ export class ErrorBoundary extends Component<Props, State> {
     // Keep user uploaded tracks safe
   }
 
-  private handleReset = () => {
+  private handleReset = async () => {
     try {
       localStorage.clear();
       sessionStorage.clear();
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+        await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+      }
+      if ('caches' in window) {
+        const names = await caches.keys().catch(() => []);
+        await Promise.all(names.map((n) => caches.delete(n).catch(() => false)));
+      }
     } catch {}
     this.setState({ hasError: false, error: undefined });
     window.location.reload();

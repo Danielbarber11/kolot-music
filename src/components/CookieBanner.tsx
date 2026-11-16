@@ -17,12 +17,11 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
 
   useEffect(() => {
     const localAccepted = localStorage.getItem('kolot_cookie_consent_accepted') === 'true';
-    const termsAccepted = localStorage.getItem('kolot_terms_accepted') === 'true';
     const hasAccount = !!currentUser || !!artistProfile;
     const profileAccepted = !!artistProfile?.hasAcceptedTerms;
 
-    // If user has an account or logged in or already accepted, hide banner completely
-    if (localAccepted || termsAccepted || hasAccount || profileAccepted) {
+    // If user has an account or already dismissed the cookie notice, hide banner
+    if (localAccepted || hasAccount || profileAccepted) {
       setIsVisible(false);
     } else {
       setIsVisible(true);
@@ -30,18 +29,18 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
   }, [currentUser, artistProfile]);
 
   const handleAccept = async () => {
-    localStorage.setItem('kolot_cookie_consent_accepted', 'true');
-    localStorage.setItem('kolot_terms_accepted', 'true');
+    try {
+      localStorage.setItem('kolot_cookie_consent_accepted', 'true');
+    } catch {}
     setIsVisible(false);
 
-    if (artistProfile) {
+    if (artistProfile && !artistProfile.hasAcceptedTerms) {
       const updated: ArtistProfile = {
         ...artistProfile,
         hasAcceptedTerms: true,
         acceptedTermsAt: artistProfile.acceptedTermsAt || new Date().toISOString(),
       };
       try {
-        localStorage.setItem('wikiarchive_artist_account', JSON.stringify(updated));
         await saveArtistAccountToFirebase(updated);
       } catch (err) {
         console.warn('Failed to update consent in Firebase account:', err);

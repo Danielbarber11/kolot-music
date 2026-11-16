@@ -27,7 +27,7 @@ import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistProfileModal } from './ArtistProfileModal';
 import { ArtistPortalModal } from './ArtistPortalModal';
 import { ReportSongModal } from './ReportSongModal';
-import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFirebase, getEffectiveArtistAvatarForTrack } from '../services/firebaseService';
+import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFirebase, getEffectiveArtistAvatarForTrack, getGoogleAccountPhotoUrl } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveTrackSubtitlesInCloud } from '../services/cloudStorageService';
@@ -239,12 +239,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (res.lyricsHe) track.lyricsHe = res.lyricsHe;
     if (res.lyricsEn) track.lyricsEn = res.lyricsEn;
 
+    const { uploadedByEmail: _omitEmail, ...cleanTrack } = track;
     const updatedPool = getInstantSongPool().map((item) =>
-      item.id === track.id ? { ...item, ...track } : item
+      item.id === track.id ? { ...item, ...cleanTrack } : item
     );
     saveCachedCloudTracks(updatedPool);
 
-    saveTrackSubtitlesInCloud(track, primarySegments, primaryLyrics, {
+    saveTrackSubtitlesInCloud(cleanTrack, primarySegments, primaryLyrics, {
       subtitleSegmentsHe: nextHe,
       subtitleSegmentsEn: nextEn,
       lyricsHe: res.lyricsHe,
@@ -252,7 +253,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }).catch(() => {});
 
     saveArtistTrackToFirebase({
-      ...track,
+      ...cleanTrack,
       subtitleSegments: primarySegments,
       subtitleSegmentsHe: nextHe,
       subtitleSegmentsEn: nextEn,
@@ -262,14 +263,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       ...(primaryLyrics ? { lyrics: primaryLyrics } : {}),
     }).catch(() => {});
   };
-  const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('wikiarchive_artist_account');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
@@ -626,7 +619,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             {(() => {
               const resolvedArtistPhoto =
                 getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
-                (authUser && (track.uploadedByUid === authUser.uid || track.artistName === authUser.displayName) ? authUser.photoURL || undefined : undefined);
+                (authUser && (track.uploadedByUid === authUser.uid || track.artistName === authUser.displayName)
+                  ? getGoogleAccountPhotoUrl(authUser)
+                  : undefined);
               if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {
                 return (
                   <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center shadow-sm">
@@ -1047,12 +1042,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         isOpen={isArtistPortalOpen}
         onClose={() => {
           setIsArtistPortalOpen(false);
-          try {
-            const saved = localStorage.getItem('wikiarchive_artist_account');
-            setActiveArtistProfile(saved ? JSON.parse(saved) : null);
-          } catch {
-            // ignore
-          }
         }}
         lang={lang}
         onTrackPublished={(newTrack) => {

@@ -2,26 +2,41 @@
   "entities": {
     "artistAccount": {
       "title": "Artist Account",
-      "description": "Artist profile registered on open music platform and synced to Firebase",
+      "description": "Public artist profile synced to Firebase (zero PII emails)",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "name": { "type": "string", "maxLength": 100 },
         "bio": { "type": "string", "maxLength": 1000 },
-        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "avatarUrl": { "type": "string", "maxLength": 500000 },
         "genre": { "type": "string", "maxLength": 50 },
         "audiusHandle": { "type": "string", "maxLength": 100 },
         "accountUrl": { "type": "string", "maxLength": 500 },
+        "connectionCode": { "type": "string", "maxLength": 50 },
         "providerPlatform": { "type": "string", "maxLength": 100 },
         "googleUid": { "type": "string", "maxLength": 128 },
-        "googleEmail": { "type": "string", "maxLength": 200 },
+        "isConnected": { "type": "boolean" },
         "hasAcceptedTerms": { "type": "boolean" },
+        "termsVersionAccepted": { "type": "number" },
         "acceptedTermsAt": { "type": "string", "maxLength": 50 },
         "isPrivate": { "type": "boolean" },
         "tracksCount": { "type": "number" },
-        "createdAt": { "type": "string", "maxLength": 50 }
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
       },
-      "required": ["id", "name"]
+      "required": ["id", "name", "googleUid"]
+    },
+    "artistPrivateInfo": {
+      "title": "Artist Private Info",
+      "description": "Private PII isolated from public artist profiles (owner/admin only)",
+      "type": "object",
+      "properties": {
+        "googleUid": { "type": "string", "maxLength": 128 },
+        "termsVersionAccepted": { "type": "number" },
+        "acceptedTermsAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["googleUid"]
     },
     "artistTrack": {
       "title": "Artist Track",
@@ -31,35 +46,86 @@
         "id": { "type": "string", "maxLength": 128 },
         "name": { "type": "string", "maxLength": 200 },
         "artistName": { "type": "string", "maxLength": 100 },
+        "featuredArtist": { "type": "string", "maxLength": 100 },
+        "writers": { "type": "string", "maxLength": 500 },
         "albumName": { "type": "string", "maxLength": 100 },
         "duration": { "type": "number" },
-        "audioUrl": { "type": "string", "maxLength": 1000 },
-        "coverUrl": { "type": "string", "maxLength": 1000 },
+        "audioUrl": { "type": "string", "maxLength": 2000 },
+        "coverUrl": { "type": "string", "maxLength": 500000 },
         "genre": { "type": "string", "maxLength": 50 },
         "license": { "type": "string", "maxLength": 200 },
         "source": { "type": "string", "maxLength": 200 },
         "legalStatus": { "type": "string", "maxLength": 200 },
-        "lyrics": { "type": "string", "maxLength": 5000 },
+        "lyrics": { "type": "string", "maxLength": 8000 },
+        "lyricsHe": { "type": "string", "maxLength": 6000 },
+        "lyricsEn": { "type": "string", "maxLength": 6000 },
+        "subtitleSegments": { "type": "array" },
+        "subtitleSegmentsHe": { "type": "array" },
+        "subtitleSegmentsEn": { "type": "array" },
+        "hasWhisperSubtitles": { "type": "boolean" },
+        "bgColor": { "type": "string", "maxLength": 500 },
         "publishedDate": { "type": "string", "maxLength": 50 },
         "artistBio": { "type": "string", "maxLength": 1000 },
-        "artistAvatarUrl": { "type": "string", "maxLength": 500 },
+        "artistAvatarUrl": { "type": "string", "maxLength": 500000 },
         "publisherAccountUrl": { "type": "string", "maxLength": 500 },
         "uploadedByUid": { "type": "string", "maxLength": 128 },
         "isPrivate": { "type": "boolean" },
+        "isDeleted": { "type": "boolean" },
+        "isAiGenerated": { "type": "boolean" },
+        "playsCount": { "type": "number" },
         "customServerUrl": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "string", "maxLength": 50 }
       },
-      "required": ["id", "name", "artistName", "audioUrl"]
+      "required": ["id", "name", "artistName", "audioUrl", "uploadedByUid"]
+    },
+    "trackReport": {
+      "title": "Track Report",
+      "description": "User moderation report submitted for a track",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "trackId": { "type": "string", "maxLength": 128 },
+        "trackName": { "type": "string", "maxLength": 200 },
+        "artistName": { "type": "string", "maxLength": 100 },
+        "reason": { "type": "string", "maxLength": 200 },
+        "details": { "type": "string", "maxLength": 2000 },
+        "reportedAt": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "dismissed"] },
+        "reporterUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "trackId", "trackName", "artistName", "reason", "reportedAt", "status", "reporterUid"]
+    },
+    "adminUser": {
+      "title": "Admin User",
+      "description": "Verified platform administrator document",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["uid", "role"]
     }
   },
   "firestore": {
     "/artistAccounts/{artistId}": {
       "schema": "artistAccount",
-      "description": "Collection of open network registered artists and user profiles"
+      "description": "Collection of public artist profiles (without PII)"
+    },
+    "/artistAccounts/{artistId}/private/info": {
+      "schema": "artistPrivateInfo",
+      "description": "Private user metadata isolated from public profiles"
     },
     "/artistTracks/{trackId}": {
       "schema": "artistTrack",
-      "description": "Collection of user-submitted tracks cleared for open streaming and server persistence"
+      "description": "Collection of user-submitted tracks cleared for open streaming"
+    },
+    "/trackReports/{reportId}": {
+      "schema": "trackReport",
+      "description": "Moderation reports submitted by signed-in listeners"
+    },
+    "/admins/{adminUid}": {
+      "schema": "adminUser",
+      "description": "System administrator access registry"
     }
   }
 }
