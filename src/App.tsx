@@ -23,7 +23,7 @@ function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> 
         .map((u) => (u ? getStreamingMediaUrl(u) : ''))
         .filter((u) => !!u && (u.startsWith('http') || u.startsWith('/') || u.startsWith('data:')))
     )
-  ).slice(0, 8);
+  ).slice(0, 20);
 
   if (uniqueUrls.length === 0) return Promise.resolve();
 
@@ -32,6 +32,7 @@ function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> 
       (url) =>
         new Promise<void>((resolve) => {
           const img = new Image();
+          img.referrerPolicy = 'no-referrer';
           img.onload = () => {
             if (typeof img.decode === 'function') {
               img.decode().catch(() => {}).finally(resolve);
@@ -63,7 +64,7 @@ export default function App() {
     }
   });
 
-  // Coordinate initial feed + top cover image decode capped at 800ms so entry feels instant and complete (< 1s)
+  // Coordinate initial feed + top cover & avatar image decode capped at 850ms so entry feels instant with zero image flash
   useEffect(() => {
     let active = true;
 
@@ -80,8 +81,9 @@ export default function App() {
         if (freshAlbums.length > 0) setAllAlbums(freshAlbums);
 
         const topImageUrls = [
-          ...freshTracks.slice(0, 6).map((t) => t.coverUrl),
-          ...freshArtists.slice(0, 3).map((a) => a.avatarUrl),
+          ...freshTracks.slice(0, 10).map((t) => t.coverUrl),
+          ...freshArtists.slice(0, 6).map((a) => a.avatarUrl),
+          ...freshAlbums.slice(0, 4).map((al) => al.coverUrl),
         ];
         await preloadAndDecodeImages(topImageUrls);
       } catch {
@@ -89,7 +91,7 @@ export default function App() {
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 800));
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 850));
 
     Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
       if (active) setIsInitializing(false);

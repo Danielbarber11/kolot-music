@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Kolot Music - קולות מוזיקה",
-  "short_name": "Kolot",
-  "description": "פלטפורמת מוזיקה מתקדמת להאזנה, יצירה והפצת שירים ואלבומים חופשיים",
+  "name": "Kolot Music",
+  "short_name": "Kolot Music",
+  "description": "Kolot Music - פלטפורמת מוזיקה להאזנה, יצירה והפצת שירים ואלבומים",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

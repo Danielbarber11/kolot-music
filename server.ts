@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -876,6 +877,118 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
   }
 });
 
+function sanitizePublicProfile(p: any) {
+  if (!p || typeof p !== 'object') return null;
+  const { googleEmail: _omitEmail, ...clean } = p;
+  return clean;
+}
+
+// 2c. Single Profile Lookup - 100% Pure Cloudflare R2
+app.get('/api/storage/profile/:uid', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const rawUid = decodeURIComponent(String(req.params.uid || '')).trim();
+    const cleanUid = rawUid.replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanUid) {
+      return res.status(400).json({ success: false, error: 'Missing uid' });
+    }
+
+    const { client, bucket } = await getR2Context(req);
+    const readJsonKey = async (key: string) => {
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (!obj.Body) return null;
+        const text = await obj.Body.transformToString('utf-8');
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+
+    const primary = await readJsonKey(`profiles/${cleanUid}.json`);
+    const found = primary || (await readJsonKey(`profiles/artist_${cleanUid}.json`));
+    return res.json({
+      success: true,
+      profile: sanitizePublicProfile(found),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load profile',
+    });
+  }
+});
+
+// 2d. Fast Canonical Profiles Feed - 100% Pure Cloudflare R2
+app.get('/api/storage/profiles-feed', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const readJsonKey = async (key: string) => {
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (!obj.Body) return null;
+        const text = await obj.Body.transformToString('utf-8');
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const listData = await client.send(
+        new ListObjectsV2Command({ Bucket: bucket, Prefix: 'profiles/', ContinuationToken: continuationToken })
+      );
+      (listData.Contents || []).forEach((item) => {
+        if (item.Key && item.Key.endsWith('.json')) keys.push(item.Key);
+      });
+      continuationToken = listData.IsTruncated ? listData.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+    const batchSize = 25;
+    for (let i = 0; i < keys.length; i += batchSize) {
+      const slice = keys.slice(i, i + batchSize);
+      const loaded = await Promise.all(slice.map(async (k) => ({ key: k, data: await readJsonKey(k) })));
+      for (const item of loaded) {
+        const clean = sanitizePublicProfile(item.data);
+        if (!clean) continue;
+        const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
+        if (!uid) continue;
+        const ts = Math.max(
+          Date.parse(String(clean.updatedAt || '')) || 0,
+          Date.parse(String(clean.acceptedTermsAt || '')) || 0
+        );
+        const isCanonicalKey = !item.key.startsWith('profiles/artist_');
+        const prev = profileMap.get(uid);
+        if (
+          !prev ||
+          ts > prev.ts ||
+          (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)
+        ) {
+          profileMap.set(uid, {
+            data: { ...clean, id: uid, googleUid: uid },
+            ts,
+            isCanonicalKey,
+          });
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      profiles: Array.from(profileMap.values()).map((entry) => entry.data),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load profiles feed',
+    });
+  }
+});
+
 // 3. Delete File - 100% Pure Cloudflare R2
 app.delete('/api/storage/delete', async (req, res) => {
   try {
@@ -903,9 +1016,11 @@ app.get('/api/storage/raw/*', async (req, res) => {
   const filePath = decodeURIComponent(rawParam).replace(/^\/+/, '');
   if (!filePath) return res.status(400).send('Missing path');
 
+  const isJson = filePath.toLowerCase().endsWith('.json');
+
   try {
     const { client, bucket, publicUrl } = await getR2Context(req);
-    if (publicUrl) {
+    if (publicUrl && !isJson) {
       return res.redirect(`${publicUrl}/${filePath}`);
     }
 
@@ -918,7 +1033,6 @@ app.get('/api/storage/raw/*', async (req, res) => {
 
     const s3Item = await client.send(command);
 
-    const isJson = filePath.toLowerCase().endsWith('.json');
     res.setHeader('Accept-Ranges', 'bytes');
     if (s3Item.ContentType) {
       res.setHeader('Content-Type', s3Item.ContentType);
@@ -2123,7 +2237,7 @@ app.all('/api/hf-proxy/*', async (req, res) => {
       method: req.method,
       headers: hdrs,
       redirect: 'follow',
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(180000),
     });
     if (!upstream.ok && upstream.status !== 206) {
       return res.status(upstream.status).send('HuggingFace upstream error');
@@ -2132,15 +2246,20 @@ app.all('/api/hf-proxy/*', async (req, res) => {
     const ct = upstream.headers.get('content-type');
     const cl = upstream.headers.get('content-length');
     const cr = upstream.headers.get('content-range');
+    const ce = upstream.headers.get('content-encoding');
     if (ct) res.setHeader('Content-Type', ct);
-    if (cl) res.setHeader('Content-Length', cl);
+    if (cl && !ce) res.setHeader('Content-Length', cl);
     if (cr) res.setHeader('Content-Range', cr);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    if (req.method === 'HEAD') return res.end();
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    return res.send(buf);
+    if (req.method === 'HEAD' || !upstream.body) return res.end();
+    const nodeStream = Readable.fromWeb(upstream.body as any);
+    nodeStream.on('error', () => {
+      if (!res.headersSent) res.status(502);
+      res.end();
+    });
+    return nodeStream.pipe(res);
   } catch (err: any) {
     return res.status(502).send(`HF proxy error: ${err?.message || 'Failed'}`);
   }

@@ -36,8 +36,12 @@ import {
   getCachedArtistProfiles,
   fetchRealAlbums,
   getCachedAlbums,
-  checkTermsAcceptedInFirestore,
-  saveTermsAcceptedToFirestore,
+  checkTermsAcceptedInR2,
+  saveTermsAcceptedToR2,
+  getArtistAccountByUid,
+  saveArtistAccountToR2,
+  upsertMemoryArtistProfile,
+  updateMemoryTracksArtistAvatar,
   isValidTrackWithOwner,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
@@ -53,19 +57,13 @@ import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
 import { AuthModal } from './AuthModal';
 import {
-  getArtistTracksFromFirebase,
-  getArtistAccountsFromFirebase,
-  testFirestoreConnection,
   onAuthUserChanged,
-  saveArtistAccountToFirebase,
   saveArtistTrackToFirebase,
-  getArtistAccountByGoogleUid,
   loginWithGoogle,
   deleteArtistTrackFromFirebase,
   getEffectiveUserAvatar,
   getEffectiveArtistAvatarForTrack,
   getGoogleAccountPhotoUrl,
-  upgradeGooglePhotoQuality,
 } from '../services/firebaseService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
@@ -175,7 +173,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   };
 
-  // Auth & Versioned Terms Gate (100% Firestore + Firebase Auth SDK, zero localStorage PII)
+  // Auth & Versioned Terms Gate (100% Cloudflare R2 Profiles + Firebase Auth SDK)
   useEffect(() => {
     const unsub = onAuthUserChanged(async (user) => {
       setAuthUser(user);
@@ -183,8 +181,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
         setIsAuthModalOpen(false);
 
         const [hasAccepted, remoteProfile] = await Promise.all([
-          checkTermsAcceptedInFirestore(user.uid),
-          getArtistAccountByGoogleUid(user.uid).catch(() => null),
+          checkTermsAcceptedInR2(user.uid),
+          getArtistAccountByUid(user.uid).catch(() => null),
         ]);
 
         setShowTermsModal(!hasAccepted);
@@ -196,6 +194,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             avatarUrl: remoteProfile.avatarUrl || googlePhoto,
           };
           setActiveArtistProfile(mergedProfile);
+          upsertMemoryArtistProfile(mergedProfile);
         } else {
           const providerId = user.providerData?.[0]?.providerId || '';
           const providerName = providerId.includes('yahoo')
@@ -216,14 +215,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
             isConnected: true,
             hasAcceptedTerms: hasAccepted,
             termsVersionAccepted: hasAccepted ? CURRENT_TERMS_VERSION : 0,
-            isPrivate: true,
+            isPrivate: false,
             tracksCount: 0,
             providerPlatform: `חשבון ${providerName}`,
             joinedDate: new Date().getFullYear().toString(),
           };
           setActiveArtistProfile(draftProfile);
+          upsertMemoryArtistProfile(draftProfile);
           if (hasAccepted) {
-            saveArtistAccountToFirebase(draftProfile).catch(() => {});
+            saveArtistAccountToR2(draftProfile).catch(() => {});
           }
         }
       } else {
@@ -241,10 +241,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
     } catch {}
     if (!authUser) return;
 
-    await saveTermsAcceptedToFirestore(authUser.uid, authUser.displayName || 'אמן');
-    const refreshed = await getArtistAccountByGoogleUid(authUser.uid).catch(() => null);
-    if (refreshed) {
-      setActiveArtistProfile(refreshed);
+    const savedProfile = await saveTermsAcceptedToR2(
+      authUser.uid,
+      authUser.displayName || 'אמן',
+      getGoogleAccountPhotoUrl(authUser)
+    );
+    if (savedProfile) {
+      setActiveArtistProfile(savedProfile);
+      upsertMemoryArtistProfile(savedProfile);
     } else {
       const updated: ArtistProfile = {
         ...(activeArtistProfile || {}),
@@ -256,11 +260,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
         hasAcceptedTerms: true,
         termsVersionAccepted: CURRENT_TERMS_VERSION,
         acceptedTermsAt: new Date().toISOString(),
-        isPrivate: activeArtistProfile?.isPrivate ?? true,
+        isPrivate: activeArtistProfile?.isPrivate ?? false,
         tracksCount: activeArtistProfile?.tracksCount ?? 0,
         providerPlatform: 'חשבון גוגל',
       };
       setActiveArtistProfile(updated);
+      upsertMemoryArtistProfile(updated);
     }
   };
 
@@ -774,7 +779,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 {(() => {
                   const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
                   return avatar ? (
-                    <img src={avatar} alt="" className="w-full h-full object-cover" />
+                    <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
                   ) : (
                     <span className="text-xs font-bold text-white">
                       {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
@@ -822,7 +827,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             {(() => {
               const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
               return avatar ? (
-                <img src={avatar} alt="" className="w-full h-full object-cover" />
+                <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
               ) : (
                 <span className="text-xs font-bold text-white">
                   {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
@@ -949,19 +954,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       onClick={() => openArtistProfile(artist.name, artist.googleUid || artist.id)}
                       className="group p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                     >
-                      <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
+                      <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
                         {effectiveArtistImg ? (
                           <img
                             src={effectiveArtistImg}
                             alt={artist.name}
                             referrerPolicy="no-referrer"
+                            loading="eager"
+                            decoding="async"
                             onError={(e) => {
                               (e.currentTarget as HTMLElement).style.display = 'none';
                             }}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-gradient-to-tr from-white/10 to-white/5">
+                          <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-neutral-900">
                             {artist.name[0] || <User className="w-10 h-10 text-white/50" />}
                           </div>
                         )}
@@ -1106,10 +1113,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
 
                 return (
-                  <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-white/[0.08] via-white/[0.03] to-black border border-white/15 p-5 sm:p-8 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
-                    {/* Subtle Ambient Radial Glow */}
-                    <div className="absolute -top-24 -end-24 w-96 h-96 bg-white/[0.06] rounded-full blur-3xl pointer-events-none" />
-                    <div className="absolute -bottom-20 -start-20 w-80 h-80 bg-white/[0.04] rounded-full blur-3xl pointer-events-none" />
+                  <section className="relative overflow-hidden rounded-3xl bg-[#0a0b0e] border border-white/15 p-5 sm:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
 
                     <div className="relative z-10 flex flex-col md:flex-row items-center gap-6 sm:gap-8 justify-between">
                       {/* Track Info (Right side in RTL) */}
@@ -1172,7 +1176,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           >
                             <div className="w-6 h-6 rounded-full overflow-hidden bg-white/20 shrink-0 border border-white/30 flex items-center justify-center">
                               {artistAvatarImg ? (
-                                <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
                               ) : (
                                 <User className="w-3.5 h-3.5 text-white" />
                               )}
@@ -1251,9 +1255,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     onClick={item.action}
                     className="group flex items-center gap-3 p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.10] border border-white/10 hover:border-white/25 backdrop-blur-md transition-all text-start cursor-pointer shadow-sm active:scale-98 overflow-hidden"
                   >
-                    <div className="w-10 h-10 rounded-lg bg-white/10 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
+                    <div className="w-10 h-10 rounded-lg bg-neutral-900 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
                       {item.cover ? (
-                        <img src={getStreamingMediaUrl(item.cover)} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                        <img src={getStreamingMediaUrl(item.cover)} alt="" loading="eager" decoding="async" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       ) : (
                         <item.icon className="w-4 h-4 text-white fill-white/20" />
                       )}
@@ -1469,15 +1473,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         >
                           <div>
                             {/* Album Cover Art */}
-                            <div className="relative aspect-square w-full rounded-xl overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
+                            <div className="relative aspect-square w-full rounded-xl overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
                               {coverToUse ? (
                                 <img
                                   src={getStreamingMediaUrl(coverToUse)}
                                   alt={album.title}
+                                  loading="eager"
+                                  decoding="async"
                                   className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
                                 />
                               ) : (
-                                <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-neutral-800 via-neutral-900 to-black text-white/80 p-3">
+                                <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-900 text-white/80 p-3">
                                   <Logo heartOnly={true} className="w-14 h-14 drop-shadow-[0_4px_16px_rgba(255,255,255,0.3)]" />
                                 </div>
                               )}
@@ -1546,19 +1552,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           className="group w-36 sm:w-40 shrink-0 p-3.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                         >
                           {/* Circular Avatar */}
-                          <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
+                          <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
                             {effectiveImg ? (
                               <img
                                 src={effectiveImg}
                                 alt={artist.name}
                                 referrerPolicy="no-referrer"
+                                loading="eager"
+                                decoding="async"
                                 onError={(e) => {
                                   (e.currentTarget as HTMLElement).style.display = 'none';
                                 }}
                                 className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-gradient-to-tr from-white/10 to-white/5">
+                              <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-neutral-900">
                                 {artist.name[0] || <User className="w-12 h-12 text-white/40" />}
                               </div>
                             )}
@@ -1917,7 +1925,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
         }}
         onArtistUpdated={(updatedArtist) => {
           setActiveArtistProfile(updatedArtist);
+          upsertMemoryArtistProfile(updatedArtist);
           const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+          const cleanUpdatedName = (updatedArtist.name || '').toLowerCase().trim();
+          updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
           setAllArtists((prev) => {
             const idx = prev.findIndex((a) => {
               const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
@@ -1936,7 +1947,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setAllTracks((prev) => {
             const next = prev.map((t) => {
               const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-              if (cleanUpdatedUid && tUid === cleanUpdatedUid) {
+              const tName = (t.artistName || '').toLowerCase().trim();
+              if ((cleanUpdatedUid && tUid === cleanUpdatedUid) || (!tUid && cleanUpdatedName && tName === cleanUpdatedName)) {
                 return {
                   ...t,
                   artistAvatarUrl: updatedArtist.avatarUrl || '',

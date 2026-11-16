@@ -31,7 +31,7 @@ import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFire
 import { User as FirebaseUser } from 'firebase/auth';
 import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveTrackSubtitlesInCloud } from '../services/cloudStorageService';
-import { getCachedArtistProfiles, fetchAllArtistProfiles, saveCachedCloudTracks, getInstantSongPool } from '../services/multiMusicService';
+import { getCachedArtistProfiles, fetchAllArtistProfiles, saveCachedCloudTracks, getInstantSongPool, updateMemoryTrack, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar } from '../services/multiMusicService';
 import { generateSynchronizedLyrics, transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
@@ -231,37 +231,32 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     const primarySegments = nextHe && nextHe.length > 0 ? nextHe : nextEn || [];
     const primaryLyrics = res.lyricsHe || res.lyrics || res.lyricsEn;
 
-    track.subtitleSegments = primarySegments;
-    track.subtitleSegmentsHe = nextHe;
-    track.subtitleSegmentsEn = nextEn;
-    track.hasWhisperSubtitles = true;
-    if (primaryLyrics) track.lyrics = primaryLyrics;
-    if (res.lyricsHe) track.lyricsHe = res.lyricsHe;
-    if (res.lyricsEn) track.lyricsEn = res.lyricsEn;
-
-    const { uploadedByEmail: _omitEmail, ...cleanTrack } = track;
-    const updatedPool = getInstantSongPool().map((item) =>
-      item.id === track.id ? { ...item, ...cleanTrack } : item
-    );
-    saveCachedCloudTracks(updatedPool);
-
-    saveTrackSubtitlesInCloud(cleanTrack, primarySegments, primaryLyrics, {
-      subtitleSegmentsHe: nextHe,
-      subtitleSegmentsEn: nextEn,
-      lyricsHe: res.lyricsHe,
-      lyricsEn: res.lyricsEn,
-    }).catch(() => {});
-
-    saveArtistTrackToFirebase({
-      ...cleanTrack,
+    const { uploadedByEmail: _omitEmail, ...cleanBaseTrack } = track;
+    const updatedTrackObj: JamendoTrack = {
+      ...cleanBaseTrack,
       subtitleSegments: primarySegments,
       subtitleSegmentsHe: nextHe,
       subtitleSegmentsEn: nextEn,
-      lyricsHe: res.lyricsHe,
-      lyricsEn: res.lyricsEn,
       hasWhisperSubtitles: true,
       ...(primaryLyrics ? { lyrics: primaryLyrics } : {}),
+      ...(res.lyricsHe ? { lyricsHe: res.lyricsHe } : {}),
+      ...(res.lyricsEn ? { lyricsEn: res.lyricsEn } : {}),
+    };
+
+    updateMemoryTrack(updatedTrackObj);
+    const updatedPool = getInstantSongPool().map((item) =>
+      item.id === track.id ? { ...item, ...updatedTrackObj } : item
+    );
+    saveCachedCloudTracks(updatedPool);
+
+    saveTrackSubtitlesInCloud(updatedTrackObj, primarySegments, primaryLyrics, {
+      subtitleSegmentsHe: nextHe,
+      subtitleSegmentsEn: nextEn,
+      lyricsHe: res.lyricsHe,
+      lyricsEn: res.lyricsEn,
     }).catch(() => {});
+
+    saveArtistTrackToFirebase(updatedTrackObj).catch(() => {});
   };
 
   useEffect(() => {
@@ -440,7 +435,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.985 }}
       transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-[100] w-screen h-screen overflow-y-auto text-white flex flex-col custom-scrollbar transition-colors duration-700 m-0 p-0 border-0"
+      className="fixed inset-0 z-[100] w-screen h-screen overflow-y-auto text-white flex flex-col custom-scrollbar m-0 p-0 border-0"
       style={dynamicBgStyle}
     >
       {/* Immersive Dynamic Artwork Background - FIXED so it continues seamlessly when scrolling down */}
@@ -449,7 +444,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           <img
             src={effectiveCoverUrl}
             alt=""
-            className="w-full h-full object-cover blur-3xl scale-150 saturate-200 contrast-125 transition-all duration-700 opacity-75"
+            loading="eager"
+            decoding="async"
+            className="w-full h-full object-cover blur-3xl scale-150 saturate-200 contrast-125 opacity-75"
           />
           <div
             className="absolute inset-0"
@@ -629,13 +626,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                       src={getStreamingMediaUrl(resolvedArtistPhoto)}
                       alt={track.artistName}
                       referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
                       className="w-full h-full rounded-full object-cover"
                     />
                   </div>
                 );
               }
               return (
-                <div className="w-full h-full rounded-full bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-black text-xs flex items-center justify-center shadow-inner">
+                <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
                   <User className="w-4 h-4 text-white" />
                 </div>
               );
@@ -1048,6 +1047,20 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           if (onPlayTrack) {
             onPlayTrack(newTrack);
           }
+        }}
+        onArtistUpdated={(updatedArtist) => {
+          upsertMemoryArtistProfile(updatedArtist);
+          const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+          updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
+          setLoadedArtists((prev) => {
+            const idx = prev.findIndex((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() === cleanUpdatedUid);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = { ...next[idx], ...updatedArtist };
+              return next;
+            }
+            return [updatedArtist, ...prev];
+          });
         }}
         allTracks={allTracks}
         onRemoveTrack={onRemoveTrack}

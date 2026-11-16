@@ -1,21 +1,18 @@
-import { JamendoTrack, Album, CURRENT_TERMS_VERSION } from '../types';
-import {
-  getArtistTracksFromFirebase,
-  getArtistAccountsFromFirebase,
-  getArtistAccountByGoogleUid,
-  saveArtistAccountToFirebase,
-} from './firebaseService';
+import { JamendoTrack, Album, ArtistProfile, CURRENT_TERMS_VERSION } from '../types';
+import { getArtistTracksFromFirebase } from './firebaseService';
 import { clearAllLocalDeviceStorage } from './localTrackStorage';
 import {
   fetchTracksFromCloud,
   computeTrackBgColor,
   fetchArtistProfilesFromCloud,
+  fetchArtistProfileByUidFromCloud,
+  uploadArtistProfileToCloud,
   fetchAlbumsFromCloud,
 } from './cloudStorageService';
 import { getDeletedSongIds } from './deletedTracksService';
 
 /**
- * 100% Cloud-Native Music Service (Cloudflare R2 + Firebase Firestore)
+ * 100% Cloud-Native Music Service (Cloudflare R2 Profiles & Storage)
  * Zero local storage persistence for tracks, albums, or profiles.
  */
 export const VERIFIED_REAL_TRACKS: JamendoTrack[] = [];
@@ -36,7 +33,7 @@ export const ALL_MUSIC_GENRES = [
 
 // Session-only in-memory state (never persisted to localStorage or IndexedDB)
 let memorySessionTracks: JamendoTrack[] = [];
-let memorySessionProfiles: any[] = [];
+let memorySessionProfiles: ArtistProfile[] = [];
 let memorySessionAlbums: Album[] = [];
 
 /**
@@ -63,6 +60,54 @@ export function getCachedCloudTracks(): JamendoTrack[] {
 export function saveCachedCloudTracks(tracks: JamendoTrack[]): void {
   if (Array.isArray(tracks)) {
     memorySessionTracks = tracks.filter(isValidTrackWithOwner);
+  }
+}
+
+export function updateMemoryTrack(updatedTrack: JamendoTrack): void {
+  if (!isValidTrackWithOwner(updatedTrack)) return;
+  const exists = memorySessionTracks.some((t) => t.id === updatedTrack.id);
+  memorySessionTracks = exists
+    ? memorySessionTracks.map((t) => (t.id === updatedTrack.id ? updatedTrack : t))
+    : [updatedTrack, ...memorySessionTracks];
+}
+
+export function updateMemoryTracksArtistAvatar(
+  artistUid: string,
+  avatarUrl: string | undefined,
+  artistNameHint?: string
+): void {
+  const cleanUid = (artistUid || '').replace(/^artist_/, '').toLowerCase().trim();
+  const cleanName = (artistNameHint || '').toLowerCase().trim();
+  memorySessionTracks = memorySessionTracks.map((t) => {
+    const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+    const tName = (t.artistName || '').toLowerCase().trim();
+    const matches = (cleanUid && tUid === cleanUid) || (!tUid && cleanName && tName === cleanName);
+    if (!matches) return t;
+    return {
+      ...t,
+      artistAvatarUrl: avatarUrl || '',
+      ...(artistNameHint ? { artistName: artistNameHint } : {}),
+    };
+  });
+}
+
+export function upsertMemoryArtistProfile(artist: ArtistProfile): void {
+  if (!artist) return;
+  const cleanKey = (artist.googleUid || artist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+  if (!cleanKey) return;
+  const normalized: ArtistProfile = {
+    ...artist,
+    id: artist.googleUid || artist.id || cleanKey,
+    googleUid: artist.googleUid || artist.id || cleanKey,
+  };
+  const idx = memorySessionProfiles.findIndex((p) => {
+    const pKey = (p.googleUid || p.id || '').replace(/^artist_/, '').toLowerCase().trim();
+    return pKey === cleanKey;
+  });
+  if (idx >= 0) {
+    memorySessionProfiles = memorySessionProfiles.map((p, i) => (i === idx ? { ...p, ...normalized } : p));
+  } else {
+    memorySessionProfiles = [normalized, ...memorySessionProfiles];
   }
 }
 
@@ -202,27 +247,22 @@ export function getInstantSongPool(): JamendoTrack[] {
   );
 }
 
-export function getCachedArtistProfiles(): any[] {
+export function getCachedArtistProfiles(): ArtistProfile[] {
   return memorySessionProfiles;
 }
 
-export async function fetchAllArtistProfiles(): Promise<any[]> {
+export async function fetchAllArtistProfiles(): Promise<ArtistProfile[]> {
   try {
-    const [fbAccounts, cloudAccounts] = await Promise.all([
-      getArtistAccountsFromFirebase().catch(() => []),
-      fetchArtistProfilesFromCloud().catch(() => []),
-    ]);
-
-    const profileMap = new Map<string, any>();
-    fbAccounts.forEach((a) => {
-      const key = (a.googleUid || a.id || '').replace(/^artist_/, '');
-      if (key) profileMap.set(key, a);
-    });
-    cloudAccounts.forEach((ca) => {
-      const key = (ca?.googleUid || ca?.id || '').replace(/^artist_/, '');
+    const cloudAccounts = await fetchArtistProfilesFromCloud().catch(() => []);
+    const profileMap = new Map<string, ArtistProfile>();
+    cloudAccounts.forEach((ca: any) => {
+      const key = String(ca?.googleUid || ca?.id || '').replace(/^artist_/, '').trim();
       if (!key) return;
-      const existing = profileMap.get(key);
-      profileMap.set(key, existing ? { ...existing, ...ca, bio: ca.bio || existing.bio, avatarUrl: ca.avatarUrl || existing.avatarUrl } : ca);
+      profileMap.set(key, {
+        ...ca,
+        id: key,
+        googleUid: key,
+      });
     });
 
     const combined = Array.from(profileMap.values());
@@ -233,10 +273,38 @@ export async function fetchAllArtistProfiles(): Promise<any[]> {
   }
 }
 
-export async function checkTermsAcceptedInFirestore(uid: string): Promise<boolean> {
+export async function getArtistAccountByUid(uid: string): Promise<ArtistProfile | null> {
+  const cleanUid = String(uid || '').replace(/^artist_/, '').trim();
+  if (!cleanUid) return null;
+  const profile = await fetchArtistProfileByUidFromCloud(cleanUid).catch(() => null);
+  if (profile) {
+    upsertMemoryArtistProfile(profile);
+    return profile;
+  }
+  return (
+    memorySessionProfiles.find(
+      (p) => (p.googleUid || p.id || '').replace(/^artist_/, '').trim() === cleanUid
+    ) || null
+  );
+}
+
+export async function saveArtistAccountToR2(
+  artist: ArtistProfile,
+  avatarFile?: File | Blob,
+  options?: { purgeOldAvatars?: boolean }
+): Promise<{ success: boolean; profile?: ArtistProfile; error?: string }> {
+  const res = await uploadArtistProfileToCloud(artist, avatarFile, options);
+  if (res.success && res.profile) {
+    upsertMemoryArtistProfile(res.profile);
+    return { success: true, profile: res.profile };
+  }
+  return { success: false, error: res.error };
+}
+
+export async function checkTermsAcceptedInR2(uid: string): Promise<boolean> {
   if (!uid) return false;
   try {
-    const account = await getArtistAccountByGoogleUid(uid);
+    const account = await getArtistAccountByUid(uid);
     if (!account) return false;
     const acceptedVersion =
       typeof account.termsVersionAccepted === 'number'
@@ -250,28 +318,35 @@ export async function checkTermsAcceptedInFirestore(uid: string): Promise<boolea
   }
 }
 
-export async function saveTermsAcceptedToFirestore(uid: string, name: string): Promise<void> {
-  if (!uid) return;
+export async function saveTermsAcceptedToR2(uid: string, name: string, avatarUrl?: string): Promise<ArtistProfile | null> {
+  if (!uid) return null;
   try {
-    const existing = await getArtistAccountByGoogleUid(uid).catch(() => null);
-    await saveArtistAccountToFirebase({
+    const existing = await getArtistAccountByUid(uid).catch(() => null);
+    const payload: ArtistProfile = {
       ...(existing || {}),
-      id: existing?.id || uid,
+      id: uid,
       googleUid: uid,
       name: existing?.name || name || 'אמן',
+      avatarUrl: existing?.avatarUrl || avatarUrl || undefined,
       isConnected: true,
       hasAcceptedTerms: true,
       termsVersionAccepted: CURRENT_TERMS_VERSION,
       acceptedTermsAt: new Date().toISOString(),
-      isPrivate: existing?.isPrivate ?? true,
+      isPrivate: existing?.isPrivate ?? false,
       tracksCount: existing?.tracksCount ?? 0,
       joinedDate: existing?.joinedDate || new Date().getFullYear().toString(),
       providerPlatform: existing?.providerPlatform || 'Google Auth',
-    });
+    };
+    const saved = await saveArtistAccountToR2(payload);
+    return saved.profile || payload;
   } catch (err) {
-    console.warn('Failed to save terms acceptance to Firestore:', err);
+    console.warn('Failed to save terms acceptance to R2:', err);
+    return null;
   }
 }
+
+export const checkTermsAcceptedInFirestore = checkTermsAcceptedInR2;
+export const saveTermsAcceptedToFirestore = saveTermsAcceptedToR2;
 
 let inFlightSongsPromise: Promise<JamendoTrack[]> | null = null;
 const batchListeners = new Set<(tracks: JamendoTrack[]) => void>();

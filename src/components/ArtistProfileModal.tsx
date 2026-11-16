@@ -302,45 +302,31 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           </button>
         </div>
 
-        {/* HERO HEADER: CLEAR ELEGANT LAYOUT MATCHING PROFILE IMAGE COLOR */}
-        <div
-          className="relative w-full border-b border-white/10 transition-colors duration-700"
-          style={{
-            background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.52) 0%, rgba(${Math.round(themeColor.r * 0.35)}, ${Math.round(themeColor.g * 0.35)}, ${Math.round(themeColor.b * 0.35)}, 0.45) 55%, #070b14 100%)`,
-          }}
-        >
+        {/* HERO HEADER: CLEAN STEADY DARK SURFACE MATCHING PROFILE ARTWORK WITHOUT COLOR FLASH */}
+        <div className="relative w-full border-b border-white/10 bg-[#08090d]">
           <div
-            className="relative w-full h-36 sm:h-44 overflow-hidden"
+            className="relative w-full h-32 sm:h-40 overflow-hidden bg-neutral-950"
             style={{
-              background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.78) 0%, rgba(${Math.round(themeColor.r * 0.28)}, ${Math.round(themeColor.g * 0.28)}, ${Math.round(themeColor.b * 0.28)}, 0.6) 65%, transparent 100%)`,
+              background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.22) 0%, #070b14 100%)`,
             }}
-          >
-            <div
-              className="absolute -top-12 left-1/4 w-96 h-96 rounded-full blur-[110px] opacity-70 pointer-events-none"
-              style={{ background: `rgb(${themeColor.r}, ${themeColor.g}, ${themeColor.b})` }}
-            />
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/35 to-[#070b14]/90" />
-          </div>
+          />
 
           {/* PROFILE CARD */}
           <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-14 sm:-mt-16 pb-6 flex flex-col sm:flex-row items-center sm:items-end gap-4 sm:gap-6">
             <div className="relative flex-shrink-0">
-              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-[#070b14] bg-slate-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
+              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-[#070b14] bg-neutral-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
                 {avatarUrl && !avatarImgError ? (
                   <img
                     src={avatarUrl}
                     alt={effectiveArtistName}
+                    loading="eager"
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     onError={() => setAvatarImgError(true)}
                     className="w-full h-full rounded-full object-cover"
                   />
                 ) : (
-                  <div
-                    className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-3xl shadow-inner select-none"
-                    style={{
-                      background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
-                    }}
-                  >
+                  <div className="w-full h-full rounded-full bg-neutral-900 flex items-center justify-center text-white font-bold text-3xl select-none">
                     {effectiveArtistName?.[0] || <User className="w-10 h-10 text-white/90" />}
                   </div>
                 )}

@@ -3,7 +3,7 @@ import { Cookie, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Language, ArtistProfile } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
-import { saveArtistAccountToFirebase } from '../services/firebaseService';
+import { saveArtistAccountToR2 } from '../services/multiMusicService';
 
 interface CookieBannerProps {
   lang: Language;
@@ -41,9 +41,9 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
         acceptedTermsAt: artistProfile.acceptedTermsAt || new Date().toISOString(),
       };
       try {
-        await saveArtistAccountToFirebase(updated);
+        await saveArtistAccountToR2(updated);
       } catch (err) {
-        console.warn('Failed to update consent in Firebase account:', err);
+        console.warn('Failed to update consent in R2 account:', err);
       }
     }
   };

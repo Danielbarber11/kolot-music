@@ -12,18 +12,6 @@ interface TrackCoverArtProps {
   priority?: boolean;
 }
 
-const GENRE_GRADIENTS: Record<string, string> = {
-  Rock: 'from-red-600 via-rose-700 to-amber-700',
-  Jazz: 'from-amber-500 via-orange-600 to-amber-800',
-  Classical: 'from-indigo-600 via-purple-700 to-slate-900',
-  Electronic: 'from-cyan-500 via-teal-600 to-indigo-800',
-  Acoustic: 'from-emerald-600 via-teal-700 to-slate-800',
-  Pop: 'from-pink-600 via-fuchsia-600 to-purple-700',
-  Blues: 'from-blue-600 via-indigo-700 to-slate-900',
-  Chill: 'from-teal-500 via-indigo-600 to-slate-900',
-  Cinematic: 'from-violet-700 via-purple-800 to-slate-950',
-};
-
 // Check if URL is a valid non-empty cover image URL
 export const isAuthenticCover = (url?: string): boolean => {
   if (!url || typeof url !== 'string') return false;
@@ -42,23 +30,14 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
 }) => {
   const imgRef = React.useRef<HTMLImageElement>(null);
   const [hasError, setHasError] = useState(false);
-  const [isLoaded, setIsLoaded] = useState(false);
 
   const effectiveUrl = getStreamingMediaUrl(coverUrl);
   const isValidUrl = isAuthenticCover(coverUrl);
-  const gradient = GENRE_GRADIENTS[genre] || GENRE_GRADIENTS['Pop'];
-
   const [currentSrc, setCurrentSrc] = useState(effectiveUrl);
 
   React.useEffect(() => {
     setHasError(false);
-    const nextUrl = getStreamingMediaUrl(coverUrl);
-    setCurrentSrc(nextUrl);
-    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
-      setIsLoaded(true);
-    } else {
-      setIsLoaded(false);
-    }
+    setCurrentSrc(getStreamingMediaUrl(coverUrl));
   }, [coverUrl]);
 
   const handleImgError = () => {
@@ -68,29 +47,21 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   if (!isValidUrl || hasError || !currentSrc) {
     return (
       <div
-        className={`relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br ${gradient} flex flex-col items-center justify-center p-4 text-white shadow-inner select-none ${className}`}
+        className={`relative aspect-square rounded-xl overflow-hidden bg-neutral-900 border border-white/5 flex flex-col items-center justify-center p-4 text-white select-none ${className}`}
       >
-        {/* Subtle Vinyl Grooves */}
-        <div className="absolute inset-0 opacity-15 pointer-events-none">
-          <div className="absolute inset-4 rounded-full border border-white/40" />
-          <div className="absolute inset-8 rounded-full border border-white/30" />
-          <div className="absolute inset-12 rounded-full border border-white/20" />
+        <div className="relative z-10 w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-white/10 border border-white/15 flex items-center justify-center">
+          <Music className="w-6 h-6 text-white/80" />
         </div>
 
-        {/* Central Music Badge with Musical Note */}
-        <div className="relative z-10 w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-white/20 backdrop-blur-xl border border-white/30 flex items-center justify-center shadow-2xl">
-          <Music className="w-6 h-6 sm:w-8 sm:h-8 text-white drop-shadow-lg" />
-        </div>
+        {genre && (
+          <span className="relative z-10 mt-2.5 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-black/50 border border-white/10 text-white/80">
+            {genre}
+          </span>
+        )}
 
-        {/* Genre Label */}
-        <span className="relative z-10 mt-3 text-[10px] sm:text-[11px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-black/30 backdrop-blur-md border border-white/20 text-white/95">
-          {genre}
-        </span>
-
-        {/* Hover Play Button */}
         {showHoverPlay && (
-          <div className="absolute inset-0 bg-slate-950/40 group-hover:bg-slate-950/50 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 z-20 backdrop-blur-[1px]">
-            <div className="w-10 h-10 rounded-full bg-white text-slate-950 flex items-center justify-center shadow-2xl transform group-hover:scale-110 transition-transform">
+          <div className="absolute inset-0 bg-black/40 group-hover:bg-black/55 flex items-center justify-center transition-opacity opacity-0 group-hover:opacity-100 z-20">
+            <div className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center shadow-2xl transform group-hover:scale-105 transition-transform">
               <Play className="w-5 h-5 fill-current translate-x-0.5" />
             </div>
           </div>
@@ -100,25 +71,22 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   }
 
   return (
-    <div className={`relative aspect-square rounded-xl overflow-hidden bg-gradient-to-br ${gradient} ${className}`}>
+    <div className={`relative aspect-square rounded-xl overflow-hidden bg-neutral-950 ${className}`}>
       <img
         ref={imgRef}
         src={currentSrc}
         alt={`${trackName} by ${artistName}`}
-        onLoad={() => setIsLoaded(true)}
         onError={handleImgError}
-        className={`w-full h-full object-cover transition-all duration-150 ${
-          isLoaded || priority ? 'opacity-100' : 'opacity-0'
-        }`}
-        loading={priority ? 'eager' : 'lazy'}
+        className="w-full h-full object-cover opacity-100"
+        loading="eager"
         // @ts-expect-error React 18 / 19 fetchPriority attribute support
         fetchpriority={priority ? 'high' : 'auto'}
-        decoding={priority ? 'sync' : 'async'}
+        decoding="async"
       />
 
       {showHoverPlay && (
-        <div className="absolute inset-0 bg-black/30 group-hover:bg-black/50 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100">
-          <div className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center shadow-xl transform group-hover:scale-110 transition-transform">
+        <div className="absolute inset-0 bg-black/30 group-hover:bg-black/50 flex items-center justify-center transition-opacity opacity-0 group-hover:opacity-100">
+          <div className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center shadow-xl transform group-hover:scale-105 transition-transform">
             <Play className="w-4.5 h-4.5 fill-black text-black translate-x-0.5" />
           </div>
         </div>

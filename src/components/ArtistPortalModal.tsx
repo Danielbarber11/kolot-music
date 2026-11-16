@@ -38,15 +38,13 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, CURRENT_TERMS_VERSION } from '../types';
 import {
-  saveArtistAccountToFirebase,
+  auth,
   saveArtistTrackToFirebase,
   deleteArtistTrackFromFirebase,
   loginWithGoogle,
   logoutUser,
   onAuthUserChanged,
-  getArtistAccountByGoogleUid,
   getEffectiveUserAvatar,
-  syncArtistAvatarToTracks,
   getGoogleAccountPhotoUrl,
   upgradeGooglePhotoQuality,
 } from '../services/firebaseService';
@@ -55,21 +53,31 @@ import {
   deleteTrackFromCloud,
   uploadAlbumToCloud,
   deleteAlbumFromCloud,
-  uploadArtistProfileToCloud,
   deleteOldArtistAvatarsFromCloud,
-  saveTrackSubtitlesInCloud,
+  syncArtistAvatarToTracksInR2,
   getCloudStorageConfig,
   checkR2StorageStatus,
 } from '../services/cloudStorageService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
+import { getTrackInstantColor, globalTrackColorCache, extractImageColor } from '../services/colorService';
 import { transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
 import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
-import { getCachedAlbums, saveCachedAlbums, fetchAllRealSongs, getInstantSongPool, saveCachedCloudTracks, fetchAllArtistProfiles } from '../services/multiMusicService';
+import {
+  getCachedAlbums,
+  saveCachedAlbums,
+  fetchAllRealSongs,
+  getInstantSongPool,
+  saveCachedCloudTracks,
+  fetchAllArtistProfiles,
+  getArtistAccountByUid,
+  saveArtistAccountToR2,
+  upsertMemoryArtistProfile,
+  updateMemoryTracksArtistAvatar,
+} from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
 
 interface ArtistPortalModalProps {
@@ -393,7 +401,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
       if (user) {
         try {
-          const remoteArtist = await getArtistAccountByGoogleUid(user.uid);
+          const remoteArtist = await getArtistAccountByUid(user.uid);
           const googlePhoto = getGoogleAccountPhotoUrl(user);
           if (remoteArtist) {
             const mergedAvatar = upgradeGooglePhotoQuality(remoteArtist.avatarUrl) || googlePhoto || undefined;
@@ -403,10 +411,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               googleUid: user.uid,
             };
             setCurrentArtist(syncedArtist);
+            upsertMemoryArtistProfile(syncedArtist);
             hydrateFields(syncedArtist, user);
             if (!remoteArtist.avatarUrl && mergedAvatar) {
-              void saveArtistAccountToFirebase(syncedArtist);
-              void uploadArtistProfileToCloud(syncedArtist);
+              void saveArtistAccountToR2(syncedArtist);
             }
           } else {
             const providerId = user.providerData?.[0]?.providerId || '';
@@ -433,10 +441,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               providerPlatform: `חשבון ${cleanProvider}`,
             };
             setCurrentArtist(autoPrivateArtist);
+            upsertMemoryArtistProfile(autoPrivateArtist);
             hydrateFields(autoPrivateArtist, user);
           }
         } catch (e) {
-          console.warn('Could not fetch artist profile for user:', e);
+          console.warn('Could not fetch artist profile from R2:', e);
         }
       }
     });
@@ -455,7 +464,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         }
 
         const googlePhoto = getGoogleAccountPhotoUrl(user);
-        const existing = await getArtistAccountByGoogleUid(user.uid);
+        const existing = await getArtistAccountByUid(user.uid);
         if (existing) {
           const synced: ArtistProfile = {
             ...existing,
@@ -463,6 +472,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             googleUid: user.uid,
           };
           setCurrentArtist(synced);
+          upsertMemoryArtistProfile(synced);
           if (synced.bio) setArtistBioInput(synced.bio);
           if (synced.avatarUrl) setArtistAvatarPreview(synced.avatarUrl);
         } else {
@@ -481,6 +491,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             providerPlatform: 'חשבון גוגל',
           };
           setCurrentArtist(autoPrivateArtist);
+          upsertMemoryArtistProfile(autoPrivateArtist);
           if (autoPrivateArtist.avatarUrl) setArtistAvatarPreview(autoPrivateArtist.avatarUrl);
         }
       }
@@ -699,44 +710,64 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   };
 
   const handleRestoreGoogleAvatar = async () => {
-    const googlePhoto = getGoogleAccountPhotoUrl(currentUser);
-    if (!currentUser || !googlePhoto || isRestoringGoogleAvatar) return;
+    if (!currentUser || isRestoringGoogleAvatar) return;
 
     setIsRestoringGoogleAvatar(true);
     setAuthError(null);
-    setArtistAvatarFile(null);
-    setArtistAvatarPreview(googlePhoto);
 
     try {
-      const uid = currentUser.uid;
+      await currentUser.reload().catch(() => {});
+      const freshUser = auth.currentUser || currentUser;
+      const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
+      if (!googlePhoto) {
+        setAuthError(isHe ? 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' : 'No Google profile photo found.');
+        return;
+      }
+
+      setArtistAvatarFile(null);
+      setArtistAvatarPreview(googlePhoto);
+
+      const uid = freshUser.uid;
       await deleteOldArtistAvatarsFromCloud(uid).catch(() => {});
 
       const restoredArtist: ArtistProfile = {
         ...currentArtist,
         id: uid,
         googleUid: uid,
-        name: artistNameInput.trim() || currentArtist.name || currentUser.displayName || (isHe ? 'אמן' : 'Artist'),
+        name: artistNameInput.trim() || currentArtist.name || freshUser.displayName || (isHe ? 'אמן' : 'Artist'),
         avatarUrl: googlePhoto,
         hasAcceptedTerms: currentArtist.hasAcceptedTerms ?? true,
         termsVersionAccepted: currentArtist.termsVersionAccepted ?? CURRENT_TERMS_VERSION,
+        acceptedTermsAt: currentArtist.acceptedTermsAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         isConnected: true,
         isPrivate: false,
       };
 
-      setCurrentArtist(restoredArtist);
+      const saveRes = await saveArtistAccountToR2(restoredArtist, undefined, { purgeOldAvatars: true });
+      if (!saveRes.success) {
+        setAuthError(saveRes.error || (isHe ? 'שמירת תמונת Google ל-Cloudflare R2 נכשלה.' : 'Failed to save Google photo to R2.'));
+        return;
+      }
 
-      await Promise.allSettled([
-        uploadArtistProfileToCloud(restoredArtist, undefined, { purgeOldAvatars: true }),
-        saveArtistAccountToFirebase(restoredArtist),
-        syncArtistAvatarToTracks(uid, undefined, googlePhoto, allTracks),
+      const savedProfile = saveRes.profile || restoredArtist;
+      const canonicalAvatar = savedProfile.avatarUrl || googlePhoto;
+
+      setCurrentArtist(savedProfile);
+      setArtistAvatarPreview(canonicalAvatar);
+      upsertMemoryArtistProfile(savedProfile);
+      updateMemoryTracksArtistAvatar(uid, canonicalAvatar, savedProfile.name);
+      onArtistUpdated?.(savedProfile);
+
+      void Promise.allSettled([
+        syncArtistAvatarToTracksInR2(uid, canonicalAvatar, allTracks, savedProfile.name),
         fetchAllArtistProfiles(),
       ]);
 
-      onArtistUpdated?.(restoredArtist);
       setPublishSuccess(true);
       setTimeout(() => setPublishSuccess(false), 2000);
-    } catch {
-      setAuthError(isHe ? 'שחזור תמונת Google נכשל. נסה שוב.' : 'Failed to restore Google photo.');
+    } catch (err: any) {
+      setAuthError(err?.message || (isHe ? 'שחזור תמונת Google נכשל. נסה שוב.' : 'Failed to restore Google photo.'));
     } finally {
       setIsRestoringGoogleAvatar(false);
     }
@@ -756,8 +787,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         ? (cleanHandle.startsWith('http') ? cleanHandle : `https://audius.co/${cleanHandle}`)
         : undefined;
 
-      const googlePhoto = getGoogleAccountPhotoUrl(currentUser);
-      let finalAvatarUrl: string | undefined = artistAvatarPreview || currentArtist.avatarUrl || googlePhoto || undefined;
+      const googlePhoto = getGoogleAccountPhotoUrl(auth.currentUser || currentUser);
+      const previewOrCurrent = artistAvatarPreview || currentArtist.avatarUrl || googlePhoto || undefined;
 
       const artistIdForUpload = currentUser ? currentUser.uid : currentArtist.id;
       let avatarBlobToUpload: Blob | undefined;
@@ -765,69 +796,62 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         avatarBlobToUpload = await compressAvatarBlob(artistAvatarFile);
       }
 
-      const isUsingGooglePhoto = !avatarBlobToUpload && !!googlePhoto && finalAvatarUrl === googlePhoto;
+      const isUsingGooglePhoto = !avatarBlobToUpload && !!googlePhoto && previewOrCurrent === googlePhoto;
 
       const updatedArtistDraft: ArtistProfile = {
         ...currentArtist,
         id: artistIdForUpload,
         name: finalName,
         bio: artistBioInput.trim() || currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
-        avatarUrl: finalAvatarUrl,
+        avatarUrl: previewOrCurrent,
         genre: genreInput || currentArtist.genre,
         audiusHandle: cleanHandle || currentArtist.audiusHandle,
         archiveAccountUrl: accountUrl || currentArtist.archiveAccountUrl,
-        googleUid: currentUser?.uid || currentArtist.googleUid,
+        googleUid: currentUser?.uid || currentArtist.googleUid || artistIdForUpload,
         isConnected: true,
         hasAcceptedTerms: true,
         termsVersionAccepted: currentArtist.termsVersionAccepted ?? CURRENT_TERMS_VERSION,
         acceptedTermsAt: currentArtist.acceptedTermsAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         isPrivate: false,
         customServerUrl: customServerUrlInput.trim() || undefined,
       };
 
-      const cloudProfileRes = await uploadArtistProfileToCloud(
+      const saveRes = await saveArtistAccountToR2(
         updatedArtistDraft,
         avatarBlobToUpload,
         { purgeOldAvatars: isUsingGooglePhoto || !!avatarBlobToUpload }
       );
-      if (cloudProfileRes.success && cloudProfileRes.avatarUrl) {
-        finalAvatarUrl = cloudProfileRes.avatarUrl;
+      if (!saveRes.success) {
+        setAuthError(saveRes.error || (isHe ? 'שמירת הפרופיל ל-Cloudflare R2 נכשלה.' : 'Failed to save profile to R2.'));
+        return;
       }
+
+      const savedProfile: ArtistProfile = saveRes.profile || updatedArtistDraft;
+      const finalAvatarUrl = savedProfile.avatarUrl || previewOrCurrent;
 
       if (finalAvatarUrl) {
         await extractImageColor(finalAvatarUrl).catch(() => {});
       }
 
-      const updatedArtist: ArtistProfile = {
-        ...updatedArtistDraft,
-        avatarUrl: finalAvatarUrl,
-      };
-
-      setCurrentArtist(updatedArtist);
+      setCurrentArtist(savedProfile);
       setArtistAvatarFile(null);
-      if (finalAvatarUrl) setArtistAvatarPreview(finalAvatarUrl);
+      setArtistAvatarPreview(finalAvatarUrl || null);
+      upsertMemoryArtistProfile(savedProfile);
+      updateMemoryTracksArtistAvatar(currentUser?.uid || artistIdForUpload, finalAvatarUrl, savedProfile.name);
+      onArtistUpdated?.(savedProfile);
 
-      await Promise.allSettled([
-        saveArtistAccountToFirebase(updatedArtist),
-        syncArtistAvatarToTracks(
-          currentUser?.uid || artistIdForUpload,
-          undefined,
-          finalAvatarUrl,
-          allTracks
-        ),
+      void Promise.allSettled([
+        syncArtistAvatarToTracksInR2(currentUser?.uid || artistIdForUpload, finalAvatarUrl, allTracks, savedProfile.name),
         fetchAllArtistProfiles(),
       ]);
-
-      if (onArtistUpdated) {
-        onArtistUpdated(updatedArtist);
-      }
 
       setPublishSuccess(true);
       setTimeout(() => setPublishSuccess(false), 2500);
       setActiveTab('profile');
     } catch (err: any) {
       console.error(err);
-      setAuthError(isHe ? 'שמירת ההגדרות נכשלה. נסה שוב.' : 'Failed to save settings.');
+      setAuthError(err?.message || (isHe ? 'שמירת ההגדרות נכשלה. נסה שוב.' : 'Failed to save settings.'));
     } finally {
       setIsPairing(false);
     }
@@ -963,7 +987,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       tracksCount: (currentArtist.tracksCount || 0) + 1,
     };
     setCurrentArtist(updatedArtist);
-    saveArtistAccountToFirebase(updatedArtist).catch(() => {});
+    saveArtistAccountToR2(updatedArtist).catch(() => {});
 
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist');
 
@@ -1048,9 +1072,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
-      // 2. Sync artist profile + track metadata to Firebase Firestore in background
-      void saveArtistAccountToFirebase(updatedArtist).catch(() => {});
-      void uploadArtistProfileToCloud(updatedArtist).catch(() => {});
+      // 2. Sync artist profile + track metadata in R2 + Firestore
+      void saveArtistAccountToR2(updatedArtist).catch(() => {});
       void saveArtistTrackToFirebase(newTrack).catch(() => {});
 
       // 3. Broadcast track immediately to UI
@@ -1121,9 +1144,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     return false;
   });
 
-  const sampleTrack = myUploadedTracks[0] || allTracks[0];
   const activeAvatar = artistAvatarPreview || getEffectiveUserAvatar(currentUser, currentArtist);
-  const themeColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
 
   if (!currentUser) {
     return (
@@ -1143,9 +1164,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             <X className="w-5 h-5 text-white/80" />
           </button>
 
-          <div className="w-full max-w-md bg-[#0d1322] border border-amber-500/30 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fadeIn">
-            <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-amber-500/20 via-indigo-500/20 to-purple-500/20 border border-amber-500/40 text-amber-300 flex items-center justify-center mx-auto shadow-2xl ring-4 ring-amber-500/10">
-              <User className="w-10 h-10 text-amber-400" />
+          <div className="w-full max-w-md bg-[#0b0d12] border border-white/15 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fadeIn">
+            <div className="w-20 h-20 rounded-3xl bg-neutral-900 border border-white/20 text-white flex items-center justify-center mx-auto shadow-2xl">
+              <User className="w-10 h-10 text-emerald-400" />
             </div>
 
             <div className="space-y-2">
@@ -1247,45 +1268,26 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         </div>
         )}
 
-        {/* 1. PUBLIC ARTIST PROFILE SCREEN - COMPACT HEADER, NO DEAD GAP */}
+        {/* 1. PUBLIC ARTIST PROFILE SCREEN - STEADY DARK HEADER, ZERO COLOR FLASHES */}
         {activeTab === 'profile' && (
-          <div className="w-full flex-1 flex flex-col">
-            <div
-              className="relative w-full overflow-hidden border-b border-white/10 transition-colors duration-700"
-              style={{
-                background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.52) 0%, rgba(${Math.round(themeColor.r * 0.35)}, ${Math.round(themeColor.g * 0.35)}, ${Math.round(themeColor.b * 0.35)}, 0.45) 55%, #070b14 100%)`,
-              }}
-            >
-              <div
-                className="relative w-full h-32 sm:h-40 overflow-hidden"
-                style={{
-                  background: `radial-gradient(ellipse at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.78) 0%, rgba(${Math.round(themeColor.r * 0.28)}, ${Math.round(themeColor.g * 0.28)}, ${Math.round(themeColor.b * 0.28)}, 0.55) 65%, transparent 100%)`,
-                }}
-              >
-                <div
-                  className="absolute -top-12 left-1/4 w-80 h-80 rounded-full blur-[100px] opacity-70 pointer-events-none"
-                  style={{ background: `rgb(${themeColor.r}, ${themeColor.g}, ${themeColor.b})` }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#070b14]/35 to-[#070b14]/90" />
-              </div>
+          <div className="w-full flex-1 flex flex-col bg-[#08090d]">
+            <div className="relative w-full overflow-hidden border-b border-white/10 bg-[#0b0d13]">
+              <div className="relative w-full h-28 sm:h-36 overflow-hidden bg-gradient-to-b from-white/[0.04] to-[#08090d]" />
 
               <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#070b14] bg-slate-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#08090d] bg-neutral-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
                     {activeAvatar ? (
                       <img
                         src={activeAvatar}
                         alt={currentArtist.name}
                         referrerPolicy="no-referrer"
+                        loading="eager"
+                        decoding="async"
                         className="w-full h-full rounded-full object-cover"
                       />
                     ) : (
-                      <div
-                        className="w-full h-full rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-inner select-none"
-                        style={{
-                          background: `linear-gradient(135deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.9), #0f172a)`,
-                        }}
-                      >
+                      <div className="w-full h-full rounded-full flex items-center justify-center bg-neutral-900 text-white font-bold text-2xl select-none">
                         {currentArtist.name?.[0] || 'A'}
                       </div>
                     )}
@@ -1354,9 +1356,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         >
                           <div className="w-full aspect-square rounded-xl bg-neutral-900 overflow-hidden flex items-center justify-center border border-white/10 relative group-hover:scale-[1.02] transition-transform">
                             {album.coverUrl ? (
-                              <img src={album.coverUrl} alt="" className="w-full h-full object-cover" />
+                              <img src={album.coverUrl} alt="" loading="eager" decoding="async" className="w-full h-full object-cover" />
                             ) : (
-                              <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-neutral-800 to-black p-2">
+                              <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-900 p-2">
                                 <Disc className="w-8 h-8 text-white/50" />
                               </div>
                             )}
@@ -2738,8 +2740,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 <div className="relative">
                   {currentUser?.photoURL ? (
                     <img
-                      src={currentUser.photoURL}
+                      src={upgradeGooglePhotoQuality(currentUser.photoURL) || currentUser.photoURL}
                       alt={currentUser.displayName || 'User'}
+                      referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
                       className="w-12 h-12 rounded-2xl object-cover border border-white/20 shadow-md"
                     />
                   ) : (
@@ -2809,7 +2814,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       <div className="w-24 h-24 rounded-full border-2 border-dashed border-neutral-700 hover:border-emerald-400 overflow-hidden flex items-center justify-center bg-neutral-900 transition-all cursor-pointer">
                         {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
                           <img
-                            src={artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL || ''}
+                            src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
+                            referrerPolicy="no-referrer"
+                            loading="eager"
+                            decoding="async"
                             className="w-full h-full object-cover"
                             alt="Preview"
                           />
@@ -2837,11 +2845,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </div>
                     <div className="space-y-1.5 text-center sm:text-right flex-1">
                       <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
-                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר בכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save everywhere.'}</p>
+                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר ב-Cloudflare R2 ובכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save to Cloudflare R2 and all tracks.'}</p>
                       <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
-                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר בענן ובפרופיל האמן' : 'Saved to Cloud & Profile'}</span>
+                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר ב-Cloudflare R2 ובפרופיל האמן' : 'Saved to Cloudflare R2'}</span>
                         {(() => {
-                          const googlePhoto = getGoogleAccountPhotoUrl(currentUser);
+                          const googlePhoto = getGoogleAccountPhotoUrl(auth.currentUser || currentUser);
                           const currentDisplayPhoto = artistAvatarPreview || currentArtist.avatarUrl || '';
                           if (!googlePhoto || (currentDisplayPhoto === googlePhoto && !artistAvatarFile)) return null;
                           return (
@@ -2858,6 +2866,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           );
                         })()}
                       </div>
+                      {authError && (
+                        <p className="text-[11px] text-rose-300 font-bold pt-1">{authError}</p>
+                      )}
                     </div>
                   </div>
 

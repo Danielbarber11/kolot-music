@@ -537,9 +537,13 @@ export async function uploadArtistProfileToCloud(
   artist: any,
   avatarFile?: File | Blob,
   options?: { purgeOldAvatars?: boolean }
-): Promise<{ success: boolean; avatarUrl?: string }> {
+): Promise<{ success: boolean; avatarUrl?: string; profile?: any; error?: string }> {
   try {
-    const cleanId = String(artist.googleUid || artist.id || '').replace(/^artist_/, '').trim() || artist.id;
+    const cleanId = String(artist.googleUid || artist.id || '').replace(/^artist_/, '').trim();
+    if (!cleanId) {
+      return { success: false, error: 'חסר מזהה משתמש תקין לשמירה בענן' };
+    }
+
     let avatarUrl = artist.avatarUrl;
     let uploadedKey: string | undefined;
 
@@ -550,53 +554,208 @@ export async function uploadArtistProfileToCloud(
       formData.append('path', uploadedKey);
       const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
       const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
-      if (data.success && data.url) {
-        avatarUrl = data.url;
-        // Delete all old custom avatars for this artist from R2 so stale images never linger
-        await deleteOldArtistAvatarsFromCloud(cleanId, uploadedKey);
+      if (!data.success || !data.url) {
+        return { success: false, error: data.error || 'העלאת התמונה ל-Cloudflare R2 נכשלה' };
       }
+      avatarUrl = data.url;
+      await deleteOldArtistAvatarsFromCloud(cleanId, uploadedKey);
     } else if (options?.purgeOldAvatars) {
       await deleteOldArtistAvatarsFromCloud(cleanId);
     }
 
     const { googleEmail: _omitEmail, ...safeArtist } = artist || {};
-    const profileToSave = { ...safeArtist, id: artist.id || cleanId, googleUid: cleanId, avatarUrl };
-    await fetch('/api/storage/upload', {
+    const nowIso = new Date().toISOString();
+    const profileToSave = {
+      ...safeArtist,
+      id: cleanId,
+      googleUid: cleanId,
+      avatarUrl: avatarUrl || '',
+      updatedAt: nowIso,
+    };
+
+    const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        path: `profiles/${profileToSave.id}.json`,
+        path: `profiles/${cleanId}.json`,
         content: JSON.stringify(profileToSave, null, 2),
       }),
     });
+    const metaData = await safeJson(metaRes, 'שמירת הפרופיל ב-Cloudflare R2 נכשלה');
+    if (!metaData.success) {
+      return { success: false, error: metaData.error || 'שמירת הפרופיל ב-R2 נכשלה' };
+    }
 
-    return { success: true, avatarUrl };
-  } catch {
-    return { success: false };
+    // Remove legacy profiles/artist_${cleanId}.json so old cached avatars/terms never overwrite the canonical profile
+    void fetch(`/api/storage/delete?path=${encodeURIComponent(`profiles/artist_${cleanId}.json`)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+
+    return { success: true, avatarUrl: avatarUrl || undefined, profile: profileToSave };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'שגיאה בשמירת הפרופיל ל-Cloudflare R2' };
   }
 }
 
+export async function fetchArtistProfileByUidFromCloud(uid: string): Promise<any | null> {
+  const cleanUid = String(uid || '').replace(/^artist_/, '').trim();
+  if (!cleanUid) return null;
+
+  try {
+    const res = await fetch(`/api/storage/profile/${encodeURIComponent(cleanUid)}`, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await safeJson(res, 'טעינת פרופיל אמן נכשלה');
+      if (data?.success && data?.profile) {
+        return { ...data.profile, id: cleanUid, googleUid: cleanUid };
+      }
+    }
+  } catch {}
+
+  try {
+    const fallbackRes = await fetch(`/api/storage/raw/${encodeURIComponent(`profiles/${cleanUid}.json`)}`, {
+      cache: 'no-store',
+    });
+    if (fallbackRes.ok) {
+      const parsed = await safeJson(fallbackRes, 'קריאת פרופיל מ-R2');
+      if (parsed && typeof parsed === 'object') {
+        return { ...parsed, id: cleanUid, googleUid: cleanUid };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 export async function fetchArtistProfilesFromCloud(): Promise<any[]> {
+  try {
+    const feedRes = await fetch('/api/storage/profiles-feed', { cache: 'no-store' });
+    if (feedRes.ok) {
+      const feedData = await safeJson(feedRes, 'טעינת פרופילי אמנים נכשלה');
+      if (feedData?.success && Array.isArray(feedData.profiles)) {
+        return feedData.profiles;
+      }
+    }
+  } catch (feedErr) {
+    console.warn('profiles-feed fallback to list:', feedErr);
+  }
+
   try {
     const res = await fetch('/api/storage/list?prefix=profiles/', { cache: 'no-store' });
     const data = await safeJson(res, 'טעינת פרופילי אמנים נכשלה');
     if (data.success && data.files) {
       const profileFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
-      const profiles = await Promise.all(
+      const loaded = await Promise.all(
         profileFiles.map(async (f: any) => {
           try {
-            const profileRes = await fetch(f.url, { cache: 'no-store' });
-            if (profileRes.ok) return await safeJson(profileRes, 'עיבוד פרופיל אמן נכשל');
+            const rawUrl = f.key ? `/api/storage/raw/${f.key}` : f.url;
+            const profileRes = await fetch(rawUrl, { cache: 'no-store' });
+            if (profileRes.ok) {
+              return { key: f.key, data: await safeJson(profileRes, 'עיבוד פרופיל אמן נכשל') };
+            }
           } catch {}
           return null;
         })
       );
-      return profiles.filter(Boolean);
+
+      const map = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+      for (const item of loaded) {
+        if (!item?.data) continue;
+        const cleanUid = String(item.data.googleUid || item.data.id || '').replace(/^artist_/, '').trim();
+        if (!cleanUid) continue;
+        const ts = Math.max(
+          Date.parse(String(item.data.updatedAt || '')) || 0,
+          Date.parse(String(item.data.acceptedTermsAt || '')) || 0
+        );
+        const isCanonicalKey = !String(item.key || '').startsWith('profiles/artist_');
+        const prev = map.get(cleanUid);
+        if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
+          map.set(cleanUid, {
+            data: { ...item.data, id: cleanUid, googleUid: cleanUid },
+            ts,
+            isCanonicalKey,
+          });
+        }
+      }
+      return Array.from(map.values()).map((entry) => entry.data);
     }
   } catch (err) {
     console.warn('Failed to fetch profiles from Cloud Storage:', err);
   }
   return [];
+}
+
+export async function syncArtistAvatarToTracksInR2(
+  artistUid: string,
+  avatarUrl: string | undefined,
+  tracks: JamendoTrack[],
+  artistNameHint?: string
+): Promise<JamendoTrack[]> {
+  if (!avatarUrl || (!artistUid && !artistNameHint)) return tracks;
+  const cleanUid = artistUid.replace(/^artist_/, '').toLowerCase().trim();
+  const cleanName = (artistNameHint || '').toLowerCase().trim();
+
+  const ownedIds = new Set<string>();
+  const updatedTracks = tracks.map((t) => {
+    const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+    const tName = (t.artistName || '').toLowerCase().trim();
+    const matches = (cleanUid && tUid === cleanUid) || (!tUid && cleanName && tName === cleanName);
+    if (!matches) return t;
+    ownedIds.add(t.id);
+    const { uploadedByEmail: _omit, ...safeTrack } = t as any;
+    return {
+      ...safeTrack,
+      artistAvatarUrl: avatarUrl,
+      ...(artistNameHint ? { artistName: artistNameHint } : {}),
+    } as JamendoTrack;
+  });
+
+  if (ownedIds.size === 0) return updatedTracks;
+
+  await Promise.allSettled(
+    updatedTracks
+      .filter((t) => ownedIds.has(t.id))
+      .map((updated) =>
+        fetch('/api/storage/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: `tracks/${updated.id}.json`,
+            content: JSON.stringify(updated, null, 2),
+          }),
+        }).catch(() => {})
+      )
+  );
+
+  // Refresh tracks_index.json in R2 so initial feed reflects new avatar immediately
+  try {
+    const idxRes = await fetch('/api/storage/raw/tracks_index.json', { cache: 'no-store' });
+    if (idxRes.ok) {
+      const parsed = await idxRes.json();
+      if (Array.isArray(parsed)) {
+        const nextIdx = parsed.map((item: any) => {
+          const { uploadedByEmail: _omit, ...cleanItem } = item || {};
+          if (ownedIds.has(cleanItem?.id)) {
+            return {
+              ...cleanItem,
+              artistAvatarUrl: avatarUrl,
+              ...(artistNameHint ? { artistName: artistNameHint } : {}),
+            };
+          }
+          return cleanItem;
+        });
+        await fetch('/api/storage/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: 'tracks_index.json',
+            content: JSON.stringify(nextIdx),
+          }),
+        });
+      }
+    }
+  } catch {}
+
+  return updatedTracks;
 }
 
 export async function updateTrackColorInCloud(trackId: string, bgColor: string, fullTrack: JamendoTrack): Promise<boolean> {

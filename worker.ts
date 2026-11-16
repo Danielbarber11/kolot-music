@@ -537,6 +537,110 @@ export default {
       }
     }
 
+    // 3c. Single Profile Lookup - 100% Pure Cloudflare R2
+    if (pathname.startsWith('/api/storage/profile/') && request.method === 'GET') {
+      try {
+        const rawUid = decodeURIComponent(pathname.replace(/^\/api\/storage\/profile\//, '')).trim();
+        const cleanUid = rawUid.replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanUid) return jsonResponse({ success: false, error: 'Missing uid' }, 400);
+
+        const readProfileKey = async (key: string) => {
+          try {
+            if (env.R2_BUCKET) {
+              const obj = await env.R2_BUCKET.get(key);
+              return obj ? JSON.parse(await obj.text()) : null;
+            }
+            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+            return r.ok ? await r.json() : null;
+          } catch {
+            return null;
+          }
+        };
+
+        const found = (await readProfileKey(`profiles/${cleanUid}.json`)) || (await readProfileKey(`profiles/artist_${cleanUid}.json`));
+        if (!found || typeof found !== 'object') {
+          return jsonResponse({ success: true, profile: null });
+        }
+        const { googleEmail: _omitEmail, ...cleanProfile } = found;
+        return jsonResponse({ success: true, profile: cleanProfile });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Profile lookup failed' }, 500);
+      }
+    }
+
+    // 3d. Fast Canonical Profiles Feed - 100% Pure Cloudflare R2
+    if (pathname === '/api/storage/profiles-feed' && request.method === 'GET') {
+      try {
+        const readProfileKey = async (key: string) => {
+          try {
+            if (env.R2_BUCKET) {
+              const obj = await env.R2_BUCKET.get(key);
+              return obj ? JSON.parse(await obj.text()) : null;
+            }
+            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+            return r.ok ? await r.json() : null;
+          } catch {
+            return null;
+          }
+        };
+
+        const keys: string[] = [];
+        if (env.R2_BUCKET) {
+          let cursor: string | undefined;
+          do {
+            const listed = await env.R2_BUCKET.list({ prefix: 'profiles/', cursor });
+            listed.objects.forEach((o) => {
+              if (o.key.endsWith('.json')) keys.push(o.key);
+            });
+            cursor = listed.truncated ? listed.cursor : undefined;
+          } while (cursor);
+        } else {
+          let token = '';
+          do {
+            const q: Record<string, string> = { 'list-type': '2', prefix: 'profiles/' };
+            if (token) q['continuation-token'] = token;
+            const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
+            if (!listRes.ok) break;
+            const xml = await listRes.text();
+            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
+              if (it.Key?.endsWith('.json')) keys.push(it.Key);
+            });
+            const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
+            const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
+            token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
+          } while (token);
+        }
+
+        const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+        for (let i = 0; i < keys.length; i += 25) {
+          const slice = keys.slice(i, i + 25);
+          const loaded = await Promise.all(slice.map(async (k) => ({ key: k, data: await readProfileKey(k) })));
+          for (const item of loaded) {
+            if (!item.data || typeof item.data !== 'object') continue;
+            const { googleEmail: _omitEmail, ...clean } = item.data;
+            const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
+            if (!uid) continue;
+            const ts = Math.max(
+              Date.parse(String(clean.updatedAt || '')) || 0,
+              Date.parse(String(clean.acceptedTermsAt || '')) || 0
+            );
+            const isCanonicalKey = !item.key.startsWith('profiles/artist_');
+            const prev = profileMap.get(uid);
+            if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
+              profileMap.set(uid, { data: { ...clean, id: uid, googleUid: uid }, ts, isCanonicalKey });
+            }
+          }
+        }
+
+        return jsonResponse({
+          success: true,
+          profiles: Array.from(profileMap.values()).map((entry) => entry.data),
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Profiles feed failed' }, 500);
+      }
+    }
+
     // 4. Delete file
     if (pathname === '/api/storage/delete' && request.method === 'DELETE') {
       try {
@@ -858,8 +962,9 @@ export default {
       const ct = upstream.headers.get('content-type');
       const cl = upstream.headers.get('content-length');
       const cr = upstream.headers.get('content-range');
+      const ce = upstream.headers.get('content-encoding');
       if (ct) outHeaders.set('Content-Type', ct);
-      if (cl) outHeaders.set('Content-Length', cl);
+      if (cl && !ce) outHeaders.set('Content-Length', cl);
       if (cr) outHeaders.set('Content-Range', cr);
       outHeaders.set('Accept-Ranges', 'bytes');
       outHeaders.set('Access-Control-Allow-Origin', '*');

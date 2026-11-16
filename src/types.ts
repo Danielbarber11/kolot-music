@@ -185,6 +185,7 @@ export interface ArtistProfile {
   hasAcceptedTerms?: boolean;
   termsVersionAccepted?: number;
   acceptedTermsAt?: string;
+  updatedAt?: string;
   isPrivate?: boolean;
   tracksCount?: number;
   providerPlatform?: string;

@@ -295,128 +295,27 @@ export function onAuthUserChanged(callback: (user: FirebaseUser | null) => void)
 }
 
 // -------------------------------------------------------------
-// ARTIST ACCOUNTS FIRESTORE OPERATIONS (Zero PII on public docs)
+// ARTIST ACCOUNTS OPERATIONS (100% Cloudflare R2 — Firebase is Auth-only)
 // -------------------------------------------------------------
 
+import {
+  uploadArtistProfileToCloud,
+  fetchArtistProfileByUidFromCloud,
+  fetchArtistProfilesFromCloud,
+} from './cloudStorageService';
+
 export async function saveArtistAccountToFirebase(artist: ArtistProfile): Promise<boolean> {
-  if (!auth.currentUser) return false;
-  try {
-    const uid = auth.currentUser.uid;
-    const docId = artist.googleUid || artist.id || uid;
-    const artistDocRef = doc(db, 'artistAccounts', docId);
-
-    const accountUrl =
-      artist.archiveAccountUrl ||
-      (artist.audiusHandle ? `https://audius.co/${artist.audiusHandle.replace(/^@/, '')}` : 'https://audius.co');
-
-    const payload: Record<string, any> = {
-      id: docId,
-      name: (artist.name || 'אמן').slice(0, 100),
-      bio: (artist.bio || '').slice(0, 1000),
-      avatarUrl: (artist.avatarUrl || '').slice(0, 500000),
-      genre: (artist.genre || 'General').slice(0, 50),
-      accountUrl: accountUrl.slice(0, 500),
-      connectionCode: (artist.connectionCode || '').slice(0, 50),
-      googleUid: uid,
-      audiusHandle: (artist.audiusHandle || '').slice(0, 80),
-      isConnected: true,
-      hasAcceptedTerms: artist.hasAcceptedTerms ?? false,
-      termsVersionAccepted:
-        typeof artist.termsVersionAccepted === 'number'
-          ? artist.termsVersionAccepted
-          : artist.hasAcceptedTerms
-            ? CURRENT_TERMS_VERSION
-            : 0,
-      acceptedTermsAt: (artist.acceptedTermsAt || new Date().toISOString()).slice(0, 50),
-      isPrivate: artist.isPrivate ?? false,
-      tracksCount: artist.tracksCount ?? 0,
-      providerPlatform: (artist.providerPlatform || 'Kolot Google Auth').slice(0, 100),
-      createdAt: (artist.joinedDate || new Date().toISOString().split('T')[0]).slice(0, 50),
-      updatedAt: new Date().toISOString().split('T')[0],
-    };
-
-    await setDoc(artistDocRef, payload, { merge: true });
-    return true;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `artistAccounts/${artist.googleUid || artist.id}`);
-    return false;
-  }
-}
-
-function mapDocToArtistProfile(id: string, data: any): ArtistProfile {
-  return {
-    id,
-    name: data.name || '',
-    bio: data.bio || '',
-    avatarUrl: upgradeGooglePhotoQuality(data.avatarUrl) || undefined,
-    genre: data.genre || 'General',
-    archiveAccountUrl: data.accountUrl,
-    audiusHandle: data.audiusHandle,
-    connectionCode: data.connectionCode,
-    googleUid: data.googleUid || id.replace(/^artist_/, ''),
-    isConnected: true,
-    hasAcceptedTerms: !!data.hasAcceptedTerms,
-    termsVersionAccepted:
-      typeof data.termsVersionAccepted === 'number'
-        ? data.termsVersionAccepted
-        : data.hasAcceptedTerms
-          ? 1
-          : 0,
-    acceptedTermsAt: data.acceptedTermsAt,
-    isPrivate: data.isPrivate !== undefined ? data.isPrivate : false,
-    tracksCount: data.tracksCount || 0,
-    providerPlatform: data.providerPlatform || 'Kolot Auth',
-    joinedDate: data.createdAt || '2024',
-    totalPlays: 0,
-    followersCount: 0,
-  };
+  const res = await uploadArtistProfileToCloud(artist);
+  return res.success;
 }
 
 export async function getArtistAccountByGoogleUid(googleUid: string): Promise<ArtistProfile | null> {
   if (!googleUid) return null;
-  try {
-    const directSnap = await getDoc(doc(db, 'artistAccounts', googleUid));
-    if (directSnap.exists()) {
-      return mapDocToArtistProfile(directSnap.id, directSnap.data());
-    }
-
-    const legacySnap = await getDoc(doc(db, 'artistAccounts', `artist_${googleUid}`));
-    if (legacySnap.exists()) {
-      return mapDocToArtistProfile(legacySnap.id, legacySnap.data());
-    }
-
-    const q = query(collection(db, 'artistAccounts'), where('googleUid', '==', googleUid));
-    const querySnap = await getDocs(q);
-    if (!querySnap.empty) {
-      const docSnap = querySnap.docs[0];
-      return mapDocToArtistProfile(docSnap.id, docSnap.data());
-    }
-
-    return null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `artistAccounts/${googleUid}`);
-    return null;
-  }
+  return fetchArtistProfileByUidFromCloud(googleUid);
 }
 
 export async function getArtistAccountsFromFirebase(): Promise<ArtistProfile[]> {
-  try {
-    const snapshot = await getDocs(collection(db, 'artistAccounts'));
-    const results: ArtistProfile[] = [];
-    snapshot.forEach((docSnap) => {
-      const data = docSnap.data();
-      if (data && data.name && data.id) {
-        if (data.isPrivate && (!data.tracksCount || data.tracksCount === 0)) {
-          return;
-        }
-        results.push(mapDocToArtistProfile(data.id || docSnap.id, data));
-      }
-    });
-    return results;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, 'artistAccounts');
-    return [];
-  }
+  return fetchArtistProfilesFromCloud();
 }
 
 // -------------------------------------------------------------
@@ -540,6 +439,8 @@ export async function getArtistTracksFromFirebase(): Promise<JamendoTrack[]> {
   }
 }
 
+import { syncArtistAvatarToTracksInR2 } from './cloudStorageService';
+
 export async function syncArtistAvatarToTracks(
   artistUid: string,
   _artistEmail: string | undefined,
@@ -547,63 +448,7 @@ export async function syncArtistAvatarToTracks(
   tracks: JamendoTrack[],
   artistNameHint?: string
 ): Promise<void> {
-  if (!avatarUrl || (!artistUid && !artistNameHint)) return;
-  const cleanUid = artistUid.replace(/^artist_/, '').trim();
-  const cleanName = (artistNameHint || '').toLowerCase().trim();
-
-  const ownedTracks = tracks.filter((t) => {
-    const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').trim();
-    const tName = (t.artistName || '').toLowerCase().trim();
-    return (cleanUid && tUid === cleanUid) || (!tUid && cleanName && tName === cleanName);
-  });
-
-  if (ownedTracks.length === 0) return;
-
-  await Promise.allSettled(
-    ownedTracks.map(async (t) => {
-      const { uploadedByEmail: _omit, ...safeTrack } = t as any;
-      const updated = { ...safeTrack, artistAvatarUrl: avatarUrl };
-      await saveArtistTrackToFirebase(updated);
-      await fetch('/api/storage/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: `tracks/${t.id}.json`,
-          content: JSON.stringify(updated, null, 2),
-        }),
-      }).catch(() => {});
-    })
-  );
-
-  // Also refresh tracks_index.json so initial load shows new crisp avatar immediately
-  try {
-    const listRes = await fetch('/api/storage/list?prefix=tracks_index.json', { cache: 'no-store' });
-    if (listRes.ok) {
-      const listData = await listRes.json();
-      const idxFile = listData.files?.[0];
-      if (idxFile?.url) {
-        const idxRes = await fetch(idxFile.url, { cache: 'no-store' });
-        if (idxRes.ok) {
-          const parsed = await idxRes.json();
-          if (Array.isArray(parsed)) {
-            const ownedIds = new Set(ownedTracks.map((ot) => ot.id));
-            const nextIdx = parsed.map((item: any) => {
-              const { uploadedByEmail: _omit, ...cleanItem } = item || {};
-              return ownedIds.has(cleanItem?.id) ? { ...cleanItem, artistAvatarUrl: avatarUrl } : cleanItem;
-            });
-            await fetch('/api/storage/upload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                path: 'tracks_index.json',
-                content: JSON.stringify(nextIdx),
-              }),
-            });
-          }
-        }
-      }
-    }
-  } catch {}
+  await syncArtistAvatarToTracksInR2(artistUid, avatarUrl, tracks, artistNameHint);
 }
 
 // -------------------------------------------------------------
