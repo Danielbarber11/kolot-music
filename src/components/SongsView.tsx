@@ -698,7 +698,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             setSelectedGenre(null);
             setActiveTab('all');
           }}>
-            <Logo className="h-7 sm:h-8 md:h-8.5 w-auto" heartOnly={true} />
+            <Logo className="h-7 sm:h-8 md:h-8.5 w-auto" />
           </div>
 
           {/* Controls: Search Keyboard + Favorites + Profile (End Side in RTL) */}
@@ -791,7 +791,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setSelectedGenre(null);
           setActiveTab('all');
         }}>
-          <Logo className="h-7 w-auto" heartOnly={true} />
+          <Logo className="h-7 w-auto" />
         </header>
       </div>
 
