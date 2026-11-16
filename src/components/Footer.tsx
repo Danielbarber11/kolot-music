@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
+import { Logo } from './Logo';
 
 interface FooterProps {
   lang: Language;
@@ -96,16 +97,13 @@ export const Footer: React.FC<FooterProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-12 gap-8 sm:gap-10 pb-8 border-b border-white/10">
             {/* BRANDING SECTION */}
             <div className="md:col-span-5 space-y-3.5 text-right">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                  <Music2 className="w-5 h-5 text-black" />
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-black border border-white/15 flex items-center justify-center shadow-lg shrink-0 p-1.5">
+                  <Logo heartOnly={true} className="w-full h-full" />
                 </div>
                 <div>
                   <h3 className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5">
                     <span>Kolot Music</span>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-medium">
-                      קולות
-                    </span>
                   </h3>
                   <p className="text-[11px] text-white/50">פלטפורמת המוזיקה החופשית והעצמאית</p>
                 </div>
@@ -179,28 +177,26 @@ export const Footer: React.FC<FooterProps> = ({
               </div>
             </div>
 
-            {/* PWA INSTALL CARD (HIDDEN IF ALREADY INSTALLED) */}
+            {/* PWA INSTALL CARD (HIDDEN IF ALREADY INSTALLED OR NOT INSTALLABLE ON THIS BROWSER) */}
             <div className="md:col-span-3 text-right">
-              {isInstalled ? (
-                // Hidden completely or replaced with verified badge
-                <div className="h-full p-4 rounded-2xl bg-white/[0.02] border border-white/5 flex flex-col justify-center items-center text-center space-y-2">
-                  <div className="w-9 h-9 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+              {isInstalled || (!isInstallable && !isIOS) ? (
+                <div className="h-full p-4 rounded-2xl bg-white/[0.02] border border-white/10 flex flex-col justify-center items-center text-center space-y-2">
+                  <div className="w-9 h-9 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white">
                     <Check className="w-4 h-4" />
                   </div>
                   <p className="text-xs font-semibold text-white/90">
-                    {isHe ? 'האפליקציה מותקנת במסך הבית' : 'App Installed on Home Screen'}
+                    {isHe ? 'האפליקציה מותקנת במכשיר' : 'App Installed on Device'}
                   </p>
-                  <p className="text-[11px] text-white/50 max-w-[200px]">
+                  <p className="text-[11px] text-white/50 max-w-[210px]">
                     {isHe
-                      ? 'האתר מוגדר כעת לגישה מהירה ישירות ממסך הבית שלך.'
-                      : 'Kolot Music is ready on your home screen for quick access.'}
+                      ? 'ניתן לפתוח את Kolot Music ישירות דרך אייקון האפליקציה או כפתור "פתח ביישום" בשורת הכתובת.'
+                      : 'Launch Kolot Music directly from your device or the Open in App button.'}
                   </p>
                 </div>
               ) : (
-                // PWA Install Button & Card
-                <div className="p-4 rounded-2xl bg-gradient-to-br from-white/[0.06] to-white/[0.02] border border-emerald-500/30 shadow-xl space-y-3">
+                <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/15 shadow-xl space-y-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                    <div className="w-7 h-7 rounded-lg bg-white/10 text-white flex items-center justify-center">
                       <Smartphone className="w-4 h-4" />
                     </div>
                     <span className="text-xs font-bold text-white">
@@ -217,7 +213,7 @@ export const Footer: React.FC<FooterProps> = ({
                   <button
                     type="button"
                     onClick={handleInstallClick}
-                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 transition-all transform hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                    className="w-full py-2.5 px-3 rounded-xl bg-white hover:bg-neutral-200 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all active:scale-[0.98] cursor-pointer"
                   >
                     <Smartphone className="w-4 h-4 text-black" />
                     <span>{isHe ? 'הוסף למסך הבית' : 'Add to Home Screen'}</span>
@@ -402,7 +398,7 @@ export const Footer: React.FC<FooterProps> = ({
               <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
                 <h4 className="font-semibold text-white text-sm">3. אחסון ופרטיות מידע</h4>
                 <p>
-                  הקבצים והשירים מאוחסנים באופן מאובטח בתשתית ענן Cloudflare R2 ו-Firebase. פרטי ההתחברות (Google Auth) מנוהלים בצורה מאובטחת ללא שמירת סיסמאות אישיות באתר.
+                  הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית ענן Cloudflare R2 בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
                 </p>
               </section>
 

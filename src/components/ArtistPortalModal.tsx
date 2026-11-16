@@ -174,6 +174,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [whisperDraftLyricsHe, setWhisperDraftLyricsHe] = useState('');
   const [whisperDraftLyricsEn, setWhisperDraftLyricsEn] = useState('');
   const [uploadSubtitleLangTab, setUploadSubtitleLangTab] = useState<'he' | 'en'>('he');
+  const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
+  const [subtitleLangChoice, setSubtitleLangChoice] = useState<'auto' | 'he' | 'en'>('auto');
   const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
   const [whisperProgressText, setWhisperProgressText] = useState('');
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
@@ -985,12 +987,63 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist');
 
-    const hasAnyDraftSubtitles =
-      !!(whisperDraftSegments && whisperDraftSegments.length > 0) ||
-      !!(whisperDraftSegmentsHe && whisperDraftSegmentsHe.length > 0) ||
-      !!(whisperDraftSegmentsEn && whisperDraftSegmentsEn.length > 0);
+    let finalDraftSegments = whisperDraftSegments;
+    let finalDraftSegmentsHe = whisperDraftSegmentsHe;
+    let finalDraftSegmentsEn = whisperDraftSegmentsEn;
+    let finalDraftLyricsHe = whisperDraftLyricsHe;
+    let finalDraftLyricsEn = whisperDraftLyricsEn;
+    let sanitizedManualLyrics = lyricsInput.trim() ? sanitizeSubtitleLettersOnly(lyricsInput.trim()) : '';
 
-    const sanitizedManualLyrics = lyricsInput.trim() ? sanitizeSubtitleLettersOnly(lyricsInput.trim()) : '';
+    if (!includeSubtitles) {
+      finalDraftSegments = undefined;
+      finalDraftSegmentsHe = undefined;
+      finalDraftSegmentsEn = undefined;
+      finalDraftLyricsHe = '';
+      finalDraftLyricsEn = '';
+      sanitizedManualLyrics = '';
+    } else {
+      const hasDraftAlready =
+        !!(finalDraftSegments && finalDraftSegments.length > 0) ||
+        !!(finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0) ||
+        !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0);
+
+      if (!hasDraftAlready && !sanitizedManualLyrics && (rawAudioFile || audioStreamUrl.trim())) {
+        try {
+          setPublishProgressStep(isHe ? 'יוצר כתוביות מדויקות על המכשיר...' : 'Generating on-device subtitles...');
+          setUploadProgressPercent(12);
+          const autoSubRes = await transcribeTrackWithWhisperAI({
+            audioFile: rawAudioFile || undefined,
+            track: !rawAudioFile && audioStreamUrl.trim() ? {
+              id: trackId,
+              name: songTitle.trim(),
+              artistName: finalArtistName,
+              albumName: albumTitle.trim() || 'Single',
+              duration: 180,
+              audioUrl: audioStreamUrl.trim(),
+              coverUrl: coverArtUrl.trim(),
+            } : undefined,
+            language: isHe ? 'he' : 'en',
+            subtitleLanguageHint: subtitleLangChoice,
+            onProgress: (txt) => setPublishProgressStep(txt),
+          });
+          if (autoSubRes.success) {
+            finalDraftSegments = autoSubRes.segments || autoSubRes.segmentsHe;
+            finalDraftSegmentsHe = autoSubRes.segmentsHe;
+            finalDraftSegmentsEn = autoSubRes.segmentsEn;
+            finalDraftLyricsHe = autoSubRes.lyricsHe || '';
+            finalDraftLyricsEn = autoSubRes.lyricsEn || '';
+          }
+        } catch (subErr) {
+          console.warn('[PublishTrack] Auto-subtitle skipped gracefully:', subErr);
+        }
+      }
+    }
+
+    const hasAnyDraftSubtitles =
+      includeSubtitles &&
+      (!!(finalDraftSegments && finalDraftSegments.length > 0) ||
+        !!(finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0) ||
+        !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0));
 
     const newTrack: JamendoTrack = {
       id: trackId,
@@ -1007,12 +1060,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       source: 'Kolot R2 Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
-      lyrics: sanitizedManualLyrics || whisperDraftLyricsHe || whisperDraftLyricsEn || undefined,
-      lyricsHe: whisperDraftLyricsHe || sanitizedManualLyrics || undefined,
-      lyricsEn: whisperDraftLyricsEn || undefined,
-      subtitleSegments: whisperDraftSegments && whisperDraftSegments.length > 0 ? whisperDraftSegments : whisperDraftSegmentsHe,
-      subtitleSegmentsHe: whisperDraftSegmentsHe && whisperDraftSegmentsHe.length > 0 ? whisperDraftSegmentsHe : undefined,
-      subtitleSegmentsEn: whisperDraftSegmentsEn && whisperDraftSegmentsEn.length > 0 ? whisperDraftSegmentsEn : undefined,
+      lyrics: includeSubtitles ? (sanitizedManualLyrics || finalDraftLyricsHe || finalDraftLyricsEn || undefined) : undefined,
+      lyricsHe: includeSubtitles ? (finalDraftLyricsHe || sanitizedManualLyrics || undefined) : undefined,
+      lyricsEn: includeSubtitles ? (finalDraftLyricsEn || undefined) : undefined,
+      subtitleSegments: hasAnyDraftSubtitles ? (finalDraftSegments && finalDraftSegments.length > 0 ? finalDraftSegments : finalDraftSegmentsHe) : undefined,
+      subtitleSegmentsHe: hasAnyDraftSubtitles && finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0 ? finalDraftSegmentsHe : undefined,
+      subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
       hasWhisperSubtitles: hasAnyDraftSubtitles,
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(currentUser, currentArtist) || undefined,
@@ -1092,6 +1145,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setRawCoverFile(null);
       setAlbumTitle('');
       setIsAiGeneratedInput(false);
+      setIncludeSubtitles(true);
+      setSubtitleLangChoice('auto');
       setLyricsInput('');
       setWhisperDraftSegments(undefined);
       setWhisperDraftSegmentsHe(undefined);
@@ -1676,211 +1731,220 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
         )}
 
-        {/* 2. FULL-SCREEN PURE BLACK ADD SONG SCREEN */}
+        {/* 2. FULL-SCREEN MONOCHROME BLACK & WHITE ADD SONG SCREEN */}
         {activeTab === 'manual_upload' && (
           <div className="w-full min-h-screen bg-black text-white px-4 sm:px-8 py-6 sm:py-10 flex flex-col items-center">
-            <div className="w-full max-w-2xl space-y-6 animate-fadeIn">
-              {/* TOP HEADER: CIRCULAR BACK BUTTON & TITLE */}
-              <div className="flex items-center justify-between pb-4 border-b border-white/10">
+            <div className="w-full max-w-2xl space-y-5 animate-fadeIn">
+              {/* TOP HEADER */}
+              <div className="flex items-center justify-between gap-3 pb-4 border-b border-white/15">
                 <button
                   type="button"
                   onClick={() => setActiveTab('profile')}
-                  className="w-12 h-12 rounded-full border border-white/20 bg-neutral-900/90 hover:bg-neutral-800 text-white flex items-center justify-center cursor-pointer shadow-xl transition-all active:scale-95"
+                  className="w-11 h-11 rounded-full border border-white/25 bg-neutral-950 hover:bg-white hover:text-black text-white flex items-center justify-center cursor-pointer transition-all active:scale-95 shrink-0"
                   title={isHe ? 'חזור לפרופיל' : 'Back to Profile'}
                 >
-                  {isHe ? <ArrowRight className="w-5 h-5 text-white" /> : <ArrowLeft className="w-5 h-5 text-white" />}
+                  {isHe ? <ArrowRight className="w-5 h-5" /> : <ArrowLeft className="w-5 h-5" />}
                 </button>
 
-                <div className="text-center flex-1 pr-3 pl-3">
+                <div className="text-center flex-1 min-w-0">
                   <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
                     {isHe ? 'הוספת שיר חדש' : 'Add New Song'}
                   </h1>
-                  <p className="text-xs text-neutral-400 font-medium mt-0.5">
-                    {isHe ? 'העלה קובץ שיר, תמונת עטיפה ופרטים לעמוד שלך' : 'Upload track file, artwork and details to your profile'}
+                  <p className="text-xs text-neutral-400 font-medium mt-0.5 truncate">
+                    {isHe ? 'העלה שיר, עטיפה וכתוביות ישירות לענן של Kolot' : 'Upload audio, artwork and subtitles to Kolot'}
                   </p>
                 </div>
 
-                <div className="w-12 h-12 invisible" />
+                <div className="w-11 h-11 shrink-0" />
               </div>
 
               {publishSuccess && (
-                <div className="p-4 rounded-2xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center gap-2 animate-fadeIn">
-                  <Check className="w-5 h-5 flex-shrink-0" />
-                  <span>{isHe ? 'השיר והתמונה פורסמו בהצלחה ונשמרו בפרופיל!' : 'Song published successfully!'}</span>
+                <div className="p-4 rounded-2xl bg-white text-black text-xs font-black flex items-center gap-2.5 shadow-lg animate-fadeIn">
+                  <Check className="w-5 h-5 shrink-0" />
+                  <span>{isHe ? 'השיר פורסם בהצלחה ונשמר בפרופיל!' : 'Song published successfully!'}</span>
                 </div>
               )}
 
-              <form onSubmit={handlePublishTrack} className="space-y-6">
-                {/* 1. TOP ROW: SQUARE IMAGE BUTTON & KEYBOARD SONG TITLE */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-5">
-                  {/* Square cover button: תעלה תמונה */}
-                  <div className="flex-shrink-0 flex flex-col items-center sm:items-start">
-                    <input
-                      ref={coverInputRef}
-                      type="file"
-                      accept="image/*,.jpg,.jpeg,.png,.webp"
-                      onChange={handleCoverFileSelect}
-                      className="hidden"
-                    />
+              <form onSubmit={handlePublishTrack} className="space-y-5">
+                {/* 1. COVER ART + TITLE + ARTIST CREDITS */}
+                <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-5">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-5">
+                    {/* Square 1:1 Cover Art */}
+                    <div className="flex-shrink-0 flex flex-col items-center sm:items-start">
+                      <input
+                        ref={coverInputRef}
+                        type="file"
+                        accept="image/*,.jpg,.jpeg,.png,.webp"
+                        onChange={handleCoverFileSelect}
+                        className="hidden"
+                      />
 
-                    {coverArtUrl ? (
-                      <div className="relative group w-32 h-32 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border border-white/20 shadow-xl bg-neutral-900 flex-shrink-0">
-                        <img
-                          src={coverArtUrl}
-                          alt="Cover preview"
-                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      {coverArtUrl ? (
+                        <div className="relative group w-32 h-32 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border border-white/30 bg-black flex-shrink-0">
+                          <img
+                            src={coverArtUrl}
+                            alt="Cover preview"
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                          <div className="absolute inset-0 bg-black/75 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-2">
+                            <button
+                              type="button"
+                              onClick={() => coverInputRef.current?.click()}
+                              className="px-3 py-1.5 rounded-lg bg-white text-black hover:bg-neutral-200 text-[11px] font-black flex items-center gap-1.5 cursor-pointer transition-all"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>{isHe ? 'החלף תמונה' : 'Change'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleResetCover}
+                              className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-white/25 hover:bg-neutral-800 text-white text-[11px] font-bold cursor-pointer transition-all flex items-center gap-1"
+                              title={isHe ? 'הסר תמונה' : 'Remove'}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{isHe ? 'הסר' : 'Remove'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setIsCoverDragging(true);
+                          }}
+                          onDragLeave={() => setIsCoverDragging(false)}
+                          onDrop={handleCoverDrop}
+                          onClick={() => coverInputRef.current?.click()}
+                          className={`w-32 h-32 sm:w-36 sm:h-36 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all select-none ${
+                            isCoverDragging
+                              ? 'border-white bg-white/10 scale-[1.02]'
+                              : 'border-white/25 hover:border-white bg-black hover:bg-neutral-900'
+                          }`}
+                        >
+                          <div className="w-10 h-10 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center mb-2 text-white">
+                            <FileImage className="w-5 h-5" />
+                          </div>
+                          <span className="text-xs font-black text-white leading-tight">
+                            {isHe ? 'בחר עטיפה *' : 'Upload Cover *'}
+                          </span>
+                          <span className="text-[10px] text-neutral-400 mt-1">
+                            {isHe ? 'תמונה 1:1' : 'Square 1:1'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Title & Main Artist */}
+                    <div className="flex-1 min-w-0 space-y-4">
+                      <div>
+                        <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
+                          <Keyboard className="w-4 h-4 text-white" />
+                          <span>{isHe ? 'שם השיר (חובה) *' : 'Song Title (Required) *'}</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={songTitle}
+                          onChange={(e) => setSongTitle(e.target.value)}
+                          placeholder={isHe ? 'הקלד את שם השיר...' : 'Type song title...'}
+                          className="w-full px-4 py-3 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white font-bold text-sm transition-colors"
                         />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-2">
-                          <button
-                            type="button"
-                            onClick={() => coverInputRef.current?.click()}
-                            className="px-2.5 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-[11px] font-bold flex items-center gap-1 backdrop-blur-sm cursor-pointer transition-all"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>{isHe ? 'החלף' : 'Change'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleResetCover}
-                            className="p-1 rounded-lg bg-rose-500/30 hover:bg-rose-500/50 text-rose-200 cursor-pointer transition-all"
-                            title={isHe ? 'הסר תמונה' : 'Remove'}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
                       </div>
-                    ) : (
-                      <div
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          setIsCoverDragging(true);
-                        }}
-                        onDragLeave={() => setIsCoverDragging(false)}
-                        onDrop={handleCoverDrop}
-                        onClick={() => coverInputRef.current?.click()}
-                        className={`w-32 h-32 sm:w-36 sm:h-36 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all select-none ${
-                          isCoverDragging
-                            ? 'border-emerald-400 bg-emerald-500/15 scale-105'
-                            : 'border-neutral-700 hover:border-emerald-400/80 bg-neutral-900/80 hover:bg-neutral-900'
-                        }`}
-                      >
-                        <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-2 text-neutral-300 group-hover:text-emerald-400 transition-colors">
-                          <FileImage className="w-5 h-5 text-emerald-400" />
-                        </div>
-                        <span className="text-xs font-black text-white leading-tight">
-                          {isHe ? 'תעלה תמונה' : 'Upload Image'}
-                        </span>
-                        <span className="text-[10px] text-neutral-400 mt-1 font-mono">
-                          {isHe ? 'ריבוע 1:1' : 'Square 1:1'}
-                        </span>
+
+                      <div>
+                        <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
+                          <User className="w-4 h-4 text-white" />
+                          <span>{isHe ? 'שם הזמר / אמן מבצע' : 'Performing Artist'}</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={performingArtistInput}
+                          onChange={(e) => setPerformingArtistInput(e.target.value)}
+                          placeholder={currentArtist.name || (isHe ? 'שם הזמר המבצע...' : 'Artist name...')}
+                          className="w-full px-4 py-2.5 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white font-bold text-xs transition-colors"
+                        />
                       </div>
-                    )}
+                    </div>
                   </div>
 
-                  {/* Keyboard Song Title Input */}
-                  <div className="flex-1 min-w-0 space-y-2">
-                    <label className="text-xs font-extrabold text-white flex items-center gap-2">
-                      <Keyboard className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'שם השיר (חובה) *' : 'Song Title (Required) *'}</span>
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        required
-                        value={songTitle}
-                        onChange={(e) => setSongTitle(e.target.value)}
-                        placeholder={isHe ? 'הקלד את שם השיר...' : 'Type song title...'}
-                        className="w-full px-4 py-3.5 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-sm transition-all"
-                      />
-                    </div>
-                    <p className="text-[11px] text-neutral-400">
-                      {isHe ? 'השם שיוצג בראש הנגן, ברשימות ההשמעה ובדף השיר' : 'Displayed in player and playlists'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 2. ARTIST, FEATURED ARTIST, WRITERS & COMPOSERS */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {/* שם הזמר / אמן מבצע */}
+                  {/* Secondary Metadata Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-4 border-t border-white/10">
                     <div>
-                      <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
-                        <User className="w-4 h-4 text-emerald-400" />
-                        <span>{isHe ? 'שם הזמר / אמן מבצע' : 'Performing Artist'}</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={performingArtistInput}
-                        onChange={(e) => setPerformingArtistInput(e.target.value)}
-                        placeholder={currentArtist.name || (isHe ? 'שם הזמר המבצע...' : 'Performing artist name...')}
-                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
-                      />
-                    </div>
-
-                    {/* זמר אורח */}
-                    <div>
-                      <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
-                        <Mic2 className="w-4 h-4 text-emerald-400" />
+                      <label className="text-[11px] font-bold text-neutral-300 flex items-center gap-1.5 mb-1.5">
+                        <Mic2 className="w-3.5 h-3.5 text-white" />
                         <span>{isHe ? 'זמר אורח (Feat.)' : 'Featured Artist'}</span>
                       </label>
                       <input
                         type="text"
                         value={featuredArtistInput}
                         onChange={(e) => setFeaturedArtistInput(e.target.value)}
-                        placeholder={isHe ? 'שם הזמר האורח (אופציונלי)...' : 'Featured artist (optional)...'}
-                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
+                        placeholder={isHe ? 'אופציונלי...' : 'Optional...'}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white font-medium text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-neutral-300 flex items-center gap-1.5 mb-1.5">
+                        <Disc className="w-3.5 h-3.5 text-white" />
+                        <span>{isHe ? 'אלבום / סינגל' : 'Album / Single'}</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={albumTitle}
+                        onChange={(e) => setAlbumTitle(e.target.value)}
+                        placeholder={isHe ? 'סינגל עצמאי' : 'Single'}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white font-medium text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-neutral-300 flex items-center gap-1.5 mb-1.5">
+                        <Edit3 className="w-3.5 h-3.5 text-white" />
+                        <span>{isHe ? 'כותבים ומלחינים' : 'Writers & Composers'}</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={writersInput}
+                        onChange={(e) => setWritersInput(e.target.value)}
+                        placeholder={isHe ? 'מילים / לחן...' : 'Writers...'}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white font-medium text-xs"
                       />
                     </div>
                   </div>
-
-                  {/* כותבים ומלחינים */}
-                  <div>
-                    <label className="text-xs font-extrabold text-white flex items-center gap-2 mb-1.5">
-                      <Edit3 className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'כותבים ומלחינים' : 'Writers & Composers'}</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={writersInput}
-                      onChange={(e) => setWritersInput(e.target.value)}
-                      placeholder={isHe ? 'מילים: ... | לחן: ... | עיבוד: ...' : 'Writers, composers & arrangers...'}
-                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 font-bold text-xs"
-                    />
-                  </div>
                 </div>
 
-                {/* 2. AUDIO FILE UPLOAD */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
+                {/* 2. AUDIO SOURCE */}
+                <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-3.5">
                   {fileUploadError && (
-                    <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-normal text-center">
+                    <div className="p-3 rounded-xl bg-neutral-900 border border-white/30 text-white text-xs font-bold text-center">
                       {fileUploadError}
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-normal text-white flex items-center gap-2">
-                      <FileAudio className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'קובץ שמע / שיר (עד 1GB, חובה) *' : 'Audio File (up to 1GB, Required) *'}</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-extrabold text-white flex items-center gap-2">
+                      <FileAudio className="w-4 h-4 text-white" />
+                      <span>{isHe ? 'קובץ שמע / שיר (חובה) *' : 'Audio Source (Required) *'}</span>
                     </label>
 
-                    <div className="flex items-center gap-1 bg-neutral-900 p-0.5 rounded-lg text-[10px]">
+                    <div className="inline-flex items-center gap-1 bg-black border border-white/20 p-0.5 rounded-xl text-[11px]">
                       <button
                         type="button"
                         onClick={() => setAudioUploadType('file')}
-                        className={`px-2.5 py-1 rounded-md font-normal transition-all cursor-pointer ${
-                          audioUploadType === 'file' ? 'bg-emerald-500 text-black font-bold' : 'text-neutral-400'
+                        className={`px-3 py-1 rounded-lg transition-all cursor-pointer font-bold ${
+                          audioUploadType === 'file' ? 'bg-white text-black' : 'text-neutral-400 hover:text-white'
                         }`}
                       >
-                        {isHe ? 'קובץ' : 'File'}
+                        {isHe ? 'העלאת קובץ' : 'File'}
                       </button>
                       <button
                         type="button"
                         onClick={() => setAudioUploadType('url')}
-                        className={`px-2.5 py-1 rounded-md font-normal transition-all cursor-pointer ${
-                          audioUploadType === 'url' ? 'bg-emerald-500 text-black font-bold' : 'text-neutral-400'
+                        className={`px-3 py-1 rounded-lg transition-all cursor-pointer font-bold ${
+                          audioUploadType === 'url' ? 'bg-white text-black' : 'text-neutral-400 hover:text-white'
                         }`}
                       >
-                        {isHe ? 'קישור' : 'URL'}
+                        {isHe ? 'קישור ישיר' : 'URL'}
                       </button>
                     </div>
                   </div>
@@ -1896,18 +1960,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       />
 
                       {audioStreamUrl ? (
-                        <div className="p-4 rounded-xl bg-neutral-900 border border-emerald-500/40 space-y-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-9 h-9 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+                        <div className="p-4 rounded-xl bg-black border border-white/30 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-9 h-9 rounded-lg bg-white text-black flex items-center justify-center flex-shrink-0">
                                 <FileAudio className="w-5 h-5" />
                               </div>
                               <div className="min-w-0">
                                 <span className="block text-xs font-bold text-white truncate">
                                   {audioFileName || (isHe ? 'קובץ שמע נבחר' : 'Audio file selected')}
                                 </span>
-                                <span className="block text-[10px] text-emerald-400 font-mono">
-                                  {isHe ? '✓ הקובץ נטען ומוכן להשמעה ושמירה' : 'Ready'}
+                                <span className="block text-[11px] text-neutral-300">
+                                  {isHe ? 'מוכן להשמעה ולפרסום' : 'Ready for playback & publish'}
                                 </span>
                               </div>
                             </div>
@@ -1916,15 +1980,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => audioInputRef.current?.click()}
-                                className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-[11px] font-bold border border-neutral-700 cursor-pointer transition-all flex items-center gap-1"
+                                className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-white hover:text-black text-white text-[11px] font-bold border border-white/25 cursor-pointer transition-all flex items-center gap-1.5"
                               >
-                                <RefreshCw className="w-3 h-3 text-emerald-400" />
+                                <RefreshCw className="w-3.5 h-3.5" />
                                 <span>{isHe ? 'החלף קובץ' : 'Replace'}</span>
                               </button>
                               <button
                                 type="button"
                                 onClick={handleResetAudio}
-                                className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 cursor-pointer transition-all"
+                                className="p-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-white/20 cursor-pointer transition-all"
                                 title={isHe ? 'הסר קובץ' : 'Remove'}
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1932,8 +1996,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             </div>
                           </div>
 
-                          <div className="pt-2 border-t border-neutral-800">
-                            <audio controls src={audioStreamUrl} className="w-full h-8 rounded opacity-90" />
+                          <div className="pt-2 border-t border-white/10">
+                            <audio controls src={audioStreamUrl} className="w-full h-8 rounded" />
                           </div>
                         </div>
                       ) : (
@@ -1947,15 +2011,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           onClick={() => audioInputRef.current?.click()}
                           className={`p-6 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
                             isAudioDragging
-                              ? 'border-emerald-400 bg-emerald-500/10 scale-[1.01]'
-                              : 'border-neutral-800 hover:border-emerald-500/50 bg-neutral-900/60 hover:bg-neutral-900'
+                              ? 'border-white bg-white/10 scale-[1.01]'
+                              : 'border-white/20 hover:border-white bg-black hover:bg-neutral-900'
                           }`}
                         >
-                          <FolderUp className="w-8 h-8 text-emerald-400 mb-2 transition-transform group-hover:scale-110" />
-                          <span className="text-xs font-normal text-white">
+                          <FolderUp className="w-8 h-8 text-white mb-2" />
+                          <span className="text-xs font-bold text-white">
                             {isHe ? 'גרור לכאן קובץ שיר או לחץ לבחירה מהמכשיר' : 'Drag & drop audio file or click to browse'}
                           </span>
-                          <span className="text-[10px] text-neutral-400 mt-1 font-mono">
+                          <span className="text-[11px] text-neutral-400 mt-1">
                             MP3, WAV, AAC, M4A, OGG, FLAC (עד 1GB)
                           </span>
                         </div>
@@ -1968,16 +2032,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       value={audioStreamUrl}
                       onChange={(e) => setAudioStreamUrl(e.target.value)}
                       placeholder="https://... (קישור ישיר לקובץ MP3 / שמע)"
-                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 text-xs font-mono"
+                      className="w-full px-4 py-3 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white text-xs"
                     />
                   )}
                 </div>
 
-                {/* 3. MUSICAL STYLE SELECTOR WITH ON-DEVICE AUDIO CLASSIFICATION */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
+                {/* 3. MUSICAL STYLE + ON-DEVICE AUDIO CLASSIFICATION */}
+                <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-white font-extrabold text-xs flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-emerald-400" />
+                      <Music className="w-4 h-4 text-white" />
                       <span>{isHe ? 'סגנון מוזיקלי *' : 'Musical Style *'}</span>
                     </label>
 
@@ -1985,56 +2049,42 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       type="button"
                       disabled={isClassifyingGenre || (!rawAudioFile && !audioStreamUrl.trim() && !songTitle.trim())}
                       onClick={handleAutoDetectGenre}
-                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500/25 to-cyan-500/20 hover:from-emerald-500/35 hover:to-cyan-500/30 border border-emerald-400/50 text-emerald-200 text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md"
+                      className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
                     >
                       {isClassifyingGenre ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-300" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
-                        <Wand2 className="w-3.5 h-3.5 text-emerald-300" />
+                        <Wand2 className="w-3.5 h-3.5" />
                       )}
                       <span>
                         {isClassifyingGenre
-                          ? (genreProgressText || (isHe ? 'מזהה ז׳אנר במכשיר...' : 'Classifying on device...'))
-                          : (isHe ? 'מצא ז׳אנר במכשיר (חינם)' : 'Auto-Detect Genre (Free)')}
+                          ? (genreProgressText || (isHe ? 'מזהה סגנון במכשיר...' : 'Detecting genre...'))
+                          : (isHe ? 'מצא ז׳אנר אוטומטי במכשיר' : 'Auto-Detect Genre')}
                       </span>
                     </button>
                   </div>
 
                   {genreDetectionNotice && (
-                    <div
-                      className={`p-2.5 rounded-xl border text-[11px] flex flex-wrap items-center justify-between gap-2 ${
-                        genreDetectionNotice.success
-                          ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-200'
-                          : 'bg-rose-500/10 border-rose-500/35 text-rose-200'
-                      }`}
-                    >
+                    <div className="p-3 rounded-xl border border-white/25 bg-black text-white text-[11px] flex flex-wrap items-center justify-between gap-2">
                       {genreDetectionNotice.success ? (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                            <span>
-                              {isHe
-                                ? `זוהה ז׳אנר: ${genreDetectionNotice.hebrewGenre} (${Math.round(genreDetectionNotice.confidence * 100)}% התאמה)`
-                                : `Detected: ${genreDetectionNotice.genre} (${Math.round(genreDetectionNotice.confidence * 100)}%)`}
-                              {genreDetectionNotice.mood ? ` • אווירה: ${genreDetectionNotice.mood}` : ''}
-                              {genreDetectionNotice.bpmEstimate ? ` • ~${genreDetectionNotice.bpmEstimate} BPM` : ''}
-                            </span>
-                          </div>
-                          {genreDetectionNotice.reasonHe && (
-                            <span className="text-[10px] text-emerald-300/80 block w-full ps-6">
-                              {genreDetectionNotice.reasonHe}
-                            </span>
-                          )}
-                        </>
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-white shrink-0" />
+                          <span>
+                            {isHe
+                              ? `זוהה סגנון: ${genreDetectionNotice.hebrewGenre} (${Math.round(genreDetectionNotice.confidence * 100)}% התאמה)`
+                              : `Detected: ${genreDetectionNotice.genre} (${Math.round(genreDetectionNotice.confidence * 100)}%)`}
+                            {genreDetectionNotice.bpmEstimate ? ` • ~${genreDetectionNotice.bpmEstimate} BPM` : ''}
+                          </span>
+                        </div>
                       ) : (
-                        <span>{genreDetectionNotice.error}</span>
+                        <span className="text-neutral-300">{genreDetectionNotice.error}</span>
                       )}
                     </div>
                   )}
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
-                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'זיהוי אוטומטי / ללא' : 'Auto / None' },
+                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'זיהוי אוטומטי' : 'Auto Detect' },
                       ...CANONICAL_GENRES.map((g) => ({
                         id: g.id,
                         label: isHe ? g.labelHe : g.labelEn,
@@ -2047,10 +2097,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           key={g.id}
                           type="button"
                           onClick={() => setGenreInput(g.id)}
-                          className={`py-2 px-3 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                          className={`py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
                             isSelected
-                              ? 'bg-emerald-500 text-black border-emerald-400 shadow-lg scale-[1.02]'
-                              : 'bg-neutral-900 text-neutral-300 border-neutral-800 hover:border-neutral-700 hover:text-white'
+                              ? 'bg-white text-black border-white font-black shadow-md'
+                              : 'bg-black text-neutral-300 border-white/15 hover:border-white/50 hover:text-white'
                           }`}
                         >
                           {g.label}
@@ -2060,214 +2110,258 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </div>
 
                   {genreInput === 'אחר' && (
-                    <div className="pt-2">
+                    <div className="pt-1">
                       <input
                         type="text"
                         value={customGenreText}
                         onChange={(e) => setCustomGenreText(e.target.value)}
                         placeholder={isHe ? 'פרט את סגנון השיר (למשל: אינדי, רגאיי, מטאל)...' : 'Specify custom genre...'}
-                        className="w-full px-4 py-2.5 rounded-xl bg-neutral-900 border border-emerald-500/50 text-white placeholder-neutral-500 text-xs font-bold focus:outline-none focus:border-emerald-400"
+                        className="w-full px-4 py-2.5 rounded-xl bg-black border border-white/30 text-white placeholder-neutral-500 text-xs font-bold focus:outline-none focus:border-white"
                         autoFocus
                       />
                     </div>
                   )}
                 </div>
 
-                {/* 4. ON-DEVICE WHISPER SUBTITLES (DUAL LANGUAGE HEBREW & ENGLISH, LETTERS ONLY, SAVED IN CLOUD) */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="text-xs font-extrabold text-white flex items-center gap-2">
-                      <Captions className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? 'כתוביות על המכשיר (עברית ואנגלית, אותיות בלבד) • נשמרות באחסון' : 'On-Device Dual Subtitles (He + En, Letters Only)'}</span>
-                    </label>
+                {/* 4. SUBTITLES SWITCH (DEFAULT ON) + ON-DEVICE TRANSCRIPTION ENGINE */}
+                <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center text-white shrink-0 mt-0.5">
+                        <Captions className="w-4.5 h-4.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-xs sm:text-sm font-black text-white block">
+                          {includeSubtitles
+                            ? (isHe ? 'כתוביות לשיר (דלוק כברירת מחדל)' : 'Song Subtitles (On by default)')
+                            : (isHe ? 'כתוביות לשיר (לא יתווספו לשיר זה כתוביות)' : 'Subtitles Off (No subtitles will be added)')}
+                        </span>
+                        <span className="text-[11px] text-neutral-400 block mt-0.5">
+                          {includeSubtitles
+                            ? (isHe
+                                ? 'תמלול מדויק על המכשיר בעברית ובאנגלית • כבה כדי לפרסם בלי כתוביות (לא יוסיף לשיר זה כתוביות)'
+                                : 'Accurate on-device Hebrew & English transcription • Toggle off to skip subtitles')
+                            : (isHe
+                                ? 'מצב כבוי — לא ייווצרו ולא יישמרו כתוביות לשיר זה'
+                                : 'Subtitles disabled — this track will publish without subtitles')}
+                        </span>
+                      </div>
+                    </div>
 
+                    {/* Interactive Black/White Toggle Switch (ON by default) */}
                     <button
                       type="button"
-                      disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
-                      onClick={async () => {
-                        setIsTranscribingUpload(true);
-                        setWhisperProgressText(isHe ? 'מכין תמלול מקומי במכשיר...' : 'Preparing local transcription...');
-                        setWhisperUploadNotice(null);
-                        const wRes = await transcribeTrackWithWhisperAI({
-                          audioFile: rawAudioFile || undefined,
-                          track: !rawAudioFile && audioStreamUrl.trim() ? {
-                            id: 'draft',
-                            name: songTitle || 'שיר',
-                            artistName: currentArtist.name || 'אמן',
-                            albumName: albumTitle || 'Single',
-                            duration: 180,
-                            audioUrl: audioStreamUrl.trim(),
-                            coverUrl: coverArtUrl.trim(),
-                          } : undefined,
-                          language: isHe ? 'he' : 'en',
-                          onProgress: (txt) => setWhisperProgressText(txt),
-                        });
-                        setIsTranscribingUpload(false);
-                        setWhisperProgressText('');
-                        if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
-                          setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
-                          setWhisperDraftSegmentsHe(wRes.segmentsHe);
-                          setWhisperDraftSegmentsEn(wRes.segmentsEn);
-                          setWhisperDraftLyricsHe(wRes.lyricsHe || '');
-                          setWhisperDraftLyricsEn(wRes.lyricsEn || '');
-                          setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
-                          setWhisperUploadNotice(
-                            isHe
-                              ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית (אותיות בלבד ויישמרו בפרסום)`
-                              : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
-                          );
-                        } else {
-                          setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
-                        }
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-extrabold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      role="switch"
+                      aria-checked={includeSubtitles}
+                      onClick={() => setIncludeSubtitles((prev) => !prev)}
+                      dir="ltr"
+                      className={`w-13 h-7 rounded-full p-1 transition-colors flex items-center cursor-pointer shrink-0 border ${
+                        includeSubtitles
+                          ? 'bg-white border-white justify-end'
+                          : 'bg-neutral-800 border-white/25 justify-start'
+                      }`}
+                      title={includeSubtitles ? (isHe ? 'כבה כתוביות לשיר זה' : 'Turn subtitles off') : (isHe ? 'הפעל כתוביות לשיר זה' : 'Turn subtitles on')}
                     >
-                      {isTranscribingUpload ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                      <span>
-                        {isTranscribingUpload
-                          ? (whisperProgressText || (isHe ? 'מתמלל על המכשיר...' : 'Transcribing locally...'))
-                          : (isHe ? 'צור כתוביות עברית + אנגלית במכשיר' : 'Generate Hebrew + English Subtitles')}
-                      </span>
+                      <span
+                        className={`w-5 h-5 rounded-full transition-transform shadow-sm ${
+                          includeSubtitles ? 'bg-black' : 'bg-white'
+                        }`}
+                      />
                     </button>
                   </div>
 
-                  {whisperUploadNotice && (
-                    <p className="text-[11px] text-emerald-300 font-bold bg-emerald-950/50 border border-emerald-500/30 px-3 py-1.5 rounded-xl">
-                      {whisperUploadNotice}
-                    </p>
-                  )}
+                  {includeSubtitles ? (
+                    <div className="space-y-3 pt-3 border-t border-white/10">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="inline-flex items-center rounded-xl bg-black border border-white/20 p-0.5 text-[11px] font-bold">
+                          {([
+                            { id: 'auto', label: isHe ? 'זיהוי שפה אוטומטי' : 'Auto' },
+                            { id: 'he', label: 'עברית' },
+                            { id: 'en', label: 'English' },
+                          ] as const).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setSubtitleLangChoice(opt.id)}
+                              className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                                subtitleLangChoice === opt.id ? 'bg-white text-black font-black' : 'text-neutral-400 hover:text-white'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
 
-                  {(whisperDraftLyricsHe || whisperDraftLyricsEn) && (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => {
-                            setUploadSubtitleLangTab('he');
-                            if (whisperDraftLyricsHe) setLyricsInput(whisperDraftLyricsHe);
+                          disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
+                          onClick={async () => {
+                            setIsTranscribingUpload(true);
+                            setWhisperProgressText(isHe ? 'מפעיל מנוע כתוביות מדויק במכשיר...' : 'Starting on-device subtitles engine...');
+                            setWhisperUploadNotice(null);
+                            const wRes = await transcribeTrackWithWhisperAI({
+                              audioFile: rawAudioFile || undefined,
+                              track: !rawAudioFile && audioStreamUrl.trim() ? {
+                                id: 'draft',
+                                name: songTitle || 'שיר',
+                                artistName: currentArtist.name || 'אמן',
+                                albumName: albumTitle || 'Single',
+                                duration: 180,
+                                audioUrl: audioStreamUrl.trim(),
+                                coverUrl: coverArtUrl.trim(),
+                              } : undefined,
+                              language: isHe ? 'he' : 'en',
+                              subtitleLanguageHint: subtitleLangChoice,
+                              onProgress: (txt) => setWhisperProgressText(txt),
+                            });
+                            setIsTranscribingUpload(false);
+                            setWhisperProgressText('');
+                            if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
+                              setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
+                              setWhisperDraftSegmentsHe(wRes.segmentsHe);
+                              setWhisperDraftSegmentsEn(wRes.segmentsEn);
+                              setWhisperDraftLyricsHe(wRes.lyricsHe || '');
+                              setWhisperDraftLyricsEn(wRes.lyricsEn || '');
+                              setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
+                              setWhisperUploadNotice(
+                                isHe
+                                  ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית — ניתן לערוך או לפרסם ישירות`
+                                  : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
+                              );
+                            } else {
+                              setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
+                            }
                           }}
-                          className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
-                            uploadSubtitleLangTab === 'he'
-                              ? 'bg-emerald-500 text-black border-emerald-400'
-                              : 'bg-neutral-900 text-neutral-300 border-neutral-700'
-                          }`}
+                          className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
                         >
-                          עברית ({whisperDraftSegmentsHe?.length || 0})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setUploadSubtitleLangTab('en');
-                            if (whisperDraftLyricsEn) setLyricsInput(whisperDraftLyricsEn);
-                          }}
-                          className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
-                            uploadSubtitleLangTab === 'en'
-                              ? 'bg-emerald-500 text-black border-emerald-400'
-                              : 'bg-neutral-900 text-neutral-300 border-neutral-700'
-                          }`}
-                        >
-                          English ({whisperDraftSegmentsEn?.length || 0})
+                          {isTranscribingUpload ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3.5 h-3.5" />
+                          )}
+                          <span>
+                            {isTranscribingUpload
+                              ? (whisperProgressText || (isHe ? 'מתמלל במכשיר...' : 'Transcribing...'))
+                              : (isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now')}
+                          </span>
                         </button>
                       </div>
-                    </div>
-                  )}
 
-                  <textarea
-                    rows={3}
-                    value={uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput}
-                    onChange={(e) => {
-                      if (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn) {
-                        setWhisperDraftLyricsEn(e.target.value);
-                      } else {
-                        setLyricsInput(e.target.value);
-                      }
-                    }}
-                    placeholder={isHe
-                      ? 'הקלד מילים או לחץ על צור כתוביות עברית + אנגלית במכשיר לתמלול נקי מאותיות בלבד שיישמר אוטומטית בענן'
-                      : 'Type lyrics or generate dual Hebrew and English subtitles'}
-                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-400 text-xs font-sans leading-relaxed transition-all"
-                  />
+                      {whisperUploadNotice && (
+                        <p className="text-[11px] text-white font-bold bg-black border border-white/25 px-3 py-2 rounded-xl">
+                          {whisperUploadNotice}
+                        </p>
+                      )}
+
+                      {(whisperDraftLyricsHe || whisperDraftLyricsEn) && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUploadSubtitleLangTab('he');
+                              if (whisperDraftLyricsHe) setLyricsInput(whisperDraftLyricsHe);
+                            }}
+                            className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                              uploadSubtitleLangTab === 'he'
+                                ? 'bg-white text-black border-white font-black'
+                                : 'bg-black text-neutral-300 border-white/20'
+                            }`}
+                          >
+                            עברית ({whisperDraftSegmentsHe?.length || 0})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUploadSubtitleLangTab('en');
+                              if (whisperDraftLyricsEn) setLyricsInput(whisperDraftLyricsEn);
+                            }}
+                            className={`px-3 py-1 rounded-lg text-[11px] font-bold cursor-pointer border transition-all ${
+                              uploadSubtitleLangTab === 'en'
+                                ? 'bg-white text-black border-white font-black'
+                                : 'bg-black text-neutral-300 border-white/20'
+                            }`}
+                          >
+                            English ({whisperDraftSegmentsEn?.length || 0})
+                          </button>
+                        </div>
+                      )}
+
+                      <textarea
+                        rows={3}
+                        value={uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput}
+                        onChange={(e) => {
+                          if (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn) {
+                            setWhisperDraftLyricsEn(e.target.value);
+                          } else {
+                            setLyricsInput(e.target.value);
+                          }
+                        }}
+                        placeholder={isHe
+                          ? 'אופציונלי: ערוך/הדבק מילים כאן, או השאר ריק והמערכת תיצור כתוביות אוטומטית בפרסום'
+                          : 'Optional: edit/paste lyrics here, or leave empty to auto-transcribe on publish'}
+                        className="w-full px-4 py-3 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white text-xs leading-relaxed transition-colors"
+                      />
+                    </div>
+                  ) : null}
                 </div>
 
-                {/* AI GENERATED TRACK TOGGLE */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-purple-950/30 border border-purple-500/40 space-y-2 text-xs">
-                  <div className="flex items-center gap-3">
+                {/* 5. AI BADGE + COPYRIGHT CERTIFICATION */}
+                <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-4 text-xs">
+                  <label htmlFor="rightsAiCheck" className="flex items-center gap-3 cursor-pointer select-none">
                     <input
                       type="checkbox"
                       id="rightsAiCheck"
                       checked={isAiGeneratedInput}
                       onChange={(e) => setIsAiGeneratedInput(e.target.checked)}
-                      className="w-5 h-5 rounded border-purple-400 bg-neutral-900 text-purple-500 focus:ring-purple-500 cursor-pointer flex-shrink-0"
+                      className="w-4.5 h-4.5 rounded border-white/40 bg-black accent-white cursor-pointer flex-shrink-0"
                     />
-                    <label htmlFor="rightsAiCheck" className="font-bold text-xs text-purple-200 cursor-pointer select-none flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-purple-400" />
-                      <span>{isHe ? 'השיר נוצר באמצעות בינה מלאכותית (יסומן בתווית AI בנגן ובכרטיס)' : 'AI-generated song (Marked with AI badge)'}</span>
-                    </label>
-                  </div>
-                </div>
+                    <span className="font-bold text-white flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-white" />
+                      <span>{isHe ? 'השיר נוצר באמצעות בינה מלאכותית (יסומן בתווית AI)' : 'AI-generated song (Marked with AI badge)'}</span>
+                    </span>
+                  </label>
 
-                {/* 5. MANDATORY RIGHTS & COPYRIGHT CERTIFICATION CHECKBOX */}
-                <div className="p-4 sm:p-5 rounded-2xl bg-neutral-950 border border-amber-500/40 space-y-2 text-xs">
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      id="rightsCertCheck"
-                      required
-                      checked={hasCertifiedRights}
-                      onChange={(e) => setHasCertifiedRights(e.target.checked)}
-                      className="mt-1 w-5 h-5 rounded border-amber-400 bg-neutral-900 text-amber-500 focus:ring-amber-500 cursor-pointer flex-shrink-0"
-                    />
-                    <label htmlFor="rightsCertCheck" className="font-bold text-xs text-neutral-300 leading-relaxed cursor-pointer select-none">
-                      <span className="text-amber-300 font-black block mb-0.5">
-                        {isHe ? 'אישור זכויות יוצרים ותנאי שימוש (חובה) *' : 'Rights & Copyright Certification (Required) *'}
-                      </span>
-                      {isHe
-                        ? 'אני מאשר/ת מפורשות שהשיר והתמונה תואמים את תנאי השימוש, מותרים ברישיון תקף ויש לי את כל הזכויות וההרשאות להעלותם לשרת ולהפיצם בפלטפורמה.'
-                        : 'I certify that the track and artwork comply with terms, are legally licensed, and I hold full rights to upload and distribute them on the platform.'}
-                    </label>
-                  </div>
-                </div>
-
-                {/* Cloudflare R2 / Cloud Storage Status Card (100% Server-Side Protection) */}
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-emerald-500/[0.04] border border-emerald-500/30 text-xs">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
-                      <Cloud className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">
-                          {r2Status.configured ? 'אחסון Cloudflare R2' : 'אחסון ענן מאובטח'}
+                  <div className="pt-3 border-t border-white/10">
+                    <label htmlFor="rightsCertCheck" className="flex items-start gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        id="rightsCertCheck"
+                        required
+                        checked={hasCertifiedRights}
+                        onChange={(e) => setHasCertifiedRights(e.target.checked)}
+                        className="mt-1 w-4.5 h-4.5 rounded border-white/40 bg-black accent-white cursor-pointer flex-shrink-0"
+                      />
+                      <span className="text-xs text-neutral-300 leading-relaxed">
+                        <span className="text-white font-black block mb-0.5">
+                          {isHe ? 'אישור זכויות יוצרים ותנאי שימוש (חובה) *' : 'Rights & Copyright Certification (Required) *'}
                         </span>
-                        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold flex items-center gap-1">
-                          <Check className="w-3 h-3" />
-                          <span>{r2Status.configured ? 'Cloudflare R2 מחובר' : 'סנכרון ענן פעיל'}</span>
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-neutral-400 mt-0.5">
                         {isHe
-                          ? 'כל השירים והתמונות נשמרים ומסונכרנים בצורה מאובטחת בענן (100% מוגן בשרת)'
-                          : 'All songs and artwork are saved directly to Cloud Storage (keys secured server-side)'}
-                      </p>
+                          ? 'אני מאשר/ת שהשיר והעטיפה תואמים את תנאי השימוש, מותרים ברישיון תקף ויש לי את כל הזכויות להעלותם ולהפיצם בפלטפורמה.'
+                          : 'I certify that the track and artwork comply with terms and I hold full rights to upload and distribute them.'}
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="w-4 h-4 text-white" />
+                      <span>{r2Status.configured ? 'אחסון Cloudflare R2 מחובר ומוכן' : 'אחסון ענן פעיל'}</span>
                     </div>
+                    <Check className="w-4 h-4 text-white" />
                   </div>
                 </div>
 
                 {/* Live Error Notification */}
                 {publishErrorMessage && (
-                  <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-3 animate-fadeIn">
-                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="p-4 rounded-2xl bg-neutral-950 border border-white/35 text-white text-xs flex items-start gap-3 animate-fadeIn">
+                    <AlertCircle className="w-5 h-5 text-white shrink-0 mt-0.5" />
                     <div className="flex-1">
-                      <p className="font-bold text-rose-300 mb-1">{isHe ? 'שגיאה בפרסום' : 'Publishing Error'}</p>
-                      <p className="leading-relaxed">{publishErrorMessage}</p>
-                      <button 
+                      <p className="font-black mb-1">{isHe ? 'שגיאה בפרסום' : 'Publishing Error'}</p>
+                      <p className="text-neutral-300 leading-relaxed">{publishErrorMessage}</p>
+                      <button
                         type="button"
                         onClick={() => setPublishErrorMessage(null)}
-                        className="mt-2 text-rose-300 font-bold hover:underline cursor-pointer text-[11px]"
+                        className="mt-2 text-white font-bold underline cursor-pointer text-[11px]"
                       >
                         {isHe ? 'סגור הודעה' : 'Dismiss'}
                       </button>
@@ -2275,45 +2369,56 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 )}
 
-                {/* Live Progress Step & Speed Bar */}
+                {/* Live Progress Bar */}
                 {isPublishing && (
-                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs space-y-2.5">
+                  <div className="p-4 rounded-2xl bg-neutral-950 border border-white/30 text-white text-xs space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <RefreshCw className="w-4 h-4 text-emerald-400 animate-spin shrink-0" />
+                        <RefreshCw className="w-4 h-4 text-white animate-spin shrink-0" />
                         <span className="font-bold text-white text-xs truncate">{publishProgressStep}</span>
                       </div>
-                      <span className="font-mono font-black text-emerald-300 text-xs shrink-0">
+                      <span className="font-bold text-white text-xs shrink-0">
                         {uploadProgressPercent}%
                       </span>
                     </div>
-                    <div className="w-full h-2 rounded-full bg-black/60 overflow-hidden border border-emerald-500/20">
+                    <div className="w-full h-2 rounded-full bg-black overflow-hidden border border-white/20">
                       <div
-                        className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all duration-150"
+                        className="h-full bg-white transition-all duration-150"
                         style={{ width: `${Math.max(4, uploadProgressPercent)}%` }}
                       />
                     </div>
                   </div>
                 )}
 
-                {/* 6. PUBLISH BUTTON */}
-                <button
-                  type="submit"
-                  disabled={isPublishing || !audioStreamUrl || !songTitle || !coverArtUrl || !hasCertifiedRights}
-                  className="w-full py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-black font-black text-sm transition-all cursor-pointer shadow-2xl flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  {isPublishing ? (
-                    <span className="flex items-center gap-2">
-                      <RefreshCw className="w-5 h-5 animate-spin text-black" />
-                      <span>{publishProgressStep || (isHe ? 'מעלה ושומר באחסון הענן...' : 'Publishing to cloud...')}</span>
-                    </span>
-                  ) : (
-                    <>
-                      <Upload className="w-5 h-5 text-black" />
-                      <span>{isHe ? 'פרסם שיר לאחסון הענן' : 'Publish Song to Cloud'}</span>
-                    </>
-                  )}
-                </button>
+                {/* 6. BOTTOM ACTION ROW: CANCEL + PUBLISH */}
+                <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={isPublishing}
+                    onClick={() => setActiveTab('profile')}
+                    className="sm:w-36 py-4 rounded-2xl bg-neutral-950 hover:bg-neutral-900 border border-white/20 text-white font-bold text-sm transition-all cursor-pointer disabled:opacity-40"
+                  >
+                    {isHe ? 'ביטול' : 'Cancel'}
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isPublishing || !audioStreamUrl || !songTitle || !coverArtUrl || !hasCertifiedRights}
+                    className="flex-1 py-4 rounded-2xl bg-white hover:bg-neutral-200 active:scale-[0.99] text-black font-black text-sm transition-all cursor-pointer shadow-[0_0_30px_rgba(255,255,255,0.16)] flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isPublishing ? (
+                      <span className="flex items-center gap-2">
+                        <RefreshCw className="w-5 h-5 animate-spin text-black" />
+                        <span>{publishProgressStep || (isHe ? 'מפרסם שיר...' : 'Publishing...')}</span>
+                      </span>
+                    ) : (
+                      <>
+                        <Upload className="w-5 h-5 text-black" />
+                        <span>{isHe ? 'פרסם שיר' : 'Publish Song'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </form>
             </div>
           </div>

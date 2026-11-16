@@ -138,8 +138,9 @@ function normalizePcmForVocals(pcm: Float32Array): Float32Array {
 
 /**
  * Decodes any audio File/Blob or URL directly on the device into mono 16kHz Float32Array PCM.
- * When isolateVocals=true, applies a vocal bandpass chain (150Hz highpass -> 1.8kHz presence -> 4.2kHz lowpass)
- * so heavy kick drums & sub-bass don't drown out singing vocals.
+ * When isolateVocals=true, applies a clean 90Hz highpass filter to remove sub-bass kick rumble
+ * while preserving the entire 90Hz–8000Hz vocal spectrum (including sibilants/consonants like ש, ס, צ, s, t)
+ * and center-sums stereo channels naturally before normalizing amplitude.
  */
 export async function decodeAudioToMono16k(
   source: File | Blob | string,
@@ -181,24 +182,14 @@ export async function decodeAudioToMono16k(
     bufferSource.buffer = decoded;
 
     if (options?.isolateVocals) {
+      // Gentle 90Hz highpass clears kick/sub-bass without muting consonant clarity (ש/ס/צ/s/t/sh stay crisp)
       const highpass = offlineCtx.createBiquadFilter();
       highpass.type = 'highpass';
-      highpass.frequency.value = 150;
-
-      const presence = offlineCtx.createBiquadFilter();
-      presence.type = 'peaking';
-      presence.frequency.value = 1800;
-      presence.Q.value = 0.9;
-      presence.gain.value = 4.0;
-
-      const lowpass = offlineCtx.createBiquadFilter();
-      lowpass.type = 'lowpass';
-      lowpass.frequency.value = 4200;
+      highpass.frequency.value = 90;
+      highpass.Q.value = 0.7;
 
       bufferSource.connect(highpass);
-      highpass.connect(presence);
-      presence.connect(lowpass);
-      lowpass.connect(offlineCtx.destination);
+      highpass.connect(offlineCtx.destination);
     } else {
       bufferSource.connect(offlineCtx.destination);
     }
@@ -215,42 +206,57 @@ export async function decodeAudioToMono16k(
   }
 }
 
-const yieldToUI = () => new Promise<void>((resolve) => setTimeout(resolve, 25));
+const yieldToUI = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+let activeWhisperModelName = 'Xenova/whisper-small';
 
 /**
- * Loads or reuses cached On-Device Whisper Base AI pipeline via same-origin proxy + WASM q8 (100% free, zero API keys).
+ * Loads or reuses cached On-Device Whisper Small AI pipeline (high-accuracy speech/lyric model)
+ * via same-origin proxy + WASM q8 (100% free, zero API keys), falling back to whisper-base only on OOM/init error.
  */
 async function getOnDeviceWhisperPipeline(
   onProgress?: (statusText: string, percent?: number) => void
 ) {
   if (!whisperPipelinePromise) {
     whisperPipelinePromise = (async () => {
-      onProgress?.('טוען מודל Whisper Base למכשיר (100% חינם)...', 5);
+      onProgress?.('טוען מנוע כתוביות מדויק למכשיר (Whisper Small)...', 5);
 
-      const loadedPipeline = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base', {
-        dtype: 'q8',
-        device: 'wasm',
-        progress_callback: (info: any) => {
-          if (info?.status === 'progress' && typeof info.progress === 'number') {
-            const rawPct = Math.min(100, Math.max(0, info.progress));
-            const scaled = Math.min(48, Math.max(6, Math.round(6 + rawPct * 0.42)));
-            onProgress?.(`מוריד ושומר מודל כתוביות איכותי במכשיר (${Math.round(rawPct)}%)`, scaled);
-          } else if (info?.status === 'initiate' || info?.status === 'download') {
-            onProgress?.('מתחבר להורדת מודל Whisper Base למכשיר...', 8);
-          } else if (info?.status === 'ready') {
-            onProgress?.('מנוע Whisper Base המקומי מוכן לפעולה', 50);
-          }
-        },
-      });
+      const loadModel = async (modelId: string, label: string) =>
+        pipeline('automatic-speech-recognition', modelId, {
+          dtype: 'q8',
+          device: 'wasm',
+          progress_callback: (info: any) => {
+            if (info?.status === 'progress' && typeof info.progress === 'number') {
+              const rawPct = Math.min(100, Math.max(0, info.progress));
+              const scaled = Math.min(48, Math.max(6, Math.round(6 + rawPct * 0.42)));
+              onProgress?.(`מוריד ושומר מנוע ${label} במכשיר (${Math.round(rawPct)}%)`, scaled);
+            } else if (info?.status === 'initiate' || info?.status === 'download') {
+              onProgress?.(`מתחבר להורדת מנוע ${label} למכשיר...`, 8);
+            } else if (info?.status === 'ready') {
+              onProgress?.(`מנוע ${label} המקומי מוכן`, 50);
+            }
+          },
+        });
 
-      onProgress?.('מנוע Whisper Base המקומי מוכן לפעולה', 50);
-      return loadedPipeline;
+      try {
+        activeWhisperModelName = 'Xenova/whisper-small';
+        const loaded = await loadModel('Xenova/whisper-small', 'Whisper Small');
+        onProgress?.('מנוע Whisper Small המקומי מוכן', 50);
+        return loaded;
+      } catch (smallErr) {
+        console.warn('[OnDeviceWhisper] whisper-small load failed, falling back to whisper-base:', smallErr);
+        activeWhisperModelName = 'Xenova/whisper-base';
+        onProgress?.('עובר למודל Whisper Base חלופי למכשיר...', 10);
+        const fallback = await loadModel('Xenova/whisper-base', 'Whisper Base');
+        onProgress?.('מנוע כתוביות מקומי מוכן', 50);
+        return fallback;
+      }
     })().catch((err) => {
       whisperPipelinePromise = null;
       throw err;
     });
   } else {
-    onProgress?.('טוען מנוע Whisper Base שמור במכשיר...', 48);
+    onProgress?.(`טוען מנוע כתוביות שמור במכשיר...`, 48);
   }
 
   return whisperPipelinePromise;
@@ -396,6 +402,7 @@ export async function transcribeAudioOnDevice(options: {
   audioFile?: File | Blob | null;
   audioUrl?: string;
   language?: 'he' | 'en';
+  subtitleLanguageHint?: 'auto' | 'he' | 'en';
   trackDuration?: number;
   hintTitle?: string;
   onProgress?: (statusText: string, percent?: number) => void;
@@ -416,24 +423,35 @@ export async function transcribeAudioOnDevice(options: {
       return { success: false, error: 'לא נבחר קובץ שמע לתמלול מקומי' };
     }
 
-    options.onProgress?.('מפענח ומבודד ערוץ שירה במכשיר...', 3);
-    const { pcm, duration } = await decodeAudioToMono16k(source, 210, { isolateVocals: true });
+    options.onProgress?.('מפענח שמע באיכות מלאה במכשיר...', 3);
+    const { pcm, duration } = await decodeAudioToMono16k(source, 240, { isolateVocals: true });
     const totalDuration = options.trackDuration && options.trackDuration > 10 ? options.trackDuration : duration || 180;
 
     const transcriber = await getOnDeviceWhisperPipeline(options.onProgress);
     await yieldToUI();
 
     const SAMPLE_RATE = 16000;
-    const CHUNK_SECONDS = 22;
+    const CHUNK_SECONDS = 28;
+    const STRIDE_SECONDS = 25; // 3s overlap prevents cutting words across chunk boundaries
     const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
-    const totalChunks = Math.max(1, Math.ceil(pcm.length / CHUNK_SAMPLES));
+    const STRIDE_SAMPLES = STRIDE_SECONDS * SAMPLE_RATE;
+    const totalChunks = Math.max(1, Math.ceil(Math.max(0, pcm.length - CHUNK_SAMPLES) / STRIDE_SAMPLES) + 1);
 
-    // Decide whether track title/hint strongly indicates Hebrew; otherwise let Whisper auto-detect per audio
+    // Resolve language lock: explicit user hint > Hebrew characters in title > auto-detect & lock from first voiced chunk
     const titleHasHebrew = /[\u0590-\u05FF]/.test(options.hintTitle || '');
+    let lockedWhisperLang: 'hebrew' | 'english' | undefined =
+      options.subtitleLanguageHint === 'he'
+        ? 'hebrew'
+        : options.subtitleLanguageHint === 'en'
+          ? 'english'
+          : titleHasHebrew
+            ? 'hebrew'
+            : undefined;
 
     const rawSegments: SubtitleSegment[] = [];
     for (let i = 0; i < totalChunks; i++) {
-      const startSample = i * CHUNK_SAMPLES;
+      const startSample = i * STRIDE_SAMPLES;
+      if (startSample >= pcm.length) break;
       const endSample = Math.min(pcm.length, startSample + CHUNK_SAMPLES);
       const chunkPcm = pcm.subarray(startSample, endSample);
       const offsetSec = startSample / SAMPLE_RATE;
@@ -443,7 +461,7 @@ export async function transcribeAudioOnDevice(options: {
       options.onProgress?.(`מתמלל שירה במכשיר (חלק ${i + 1} מתוך ${totalChunks})...`, pct);
       await yieldToUI();
 
-      // Skip near-silent chunks to save CPU time and prevent Whisper hallucinations
+      // Skip silence / very quiet tails to prevent Whisper hallucinations
       if (computeChunkRms(chunkPcm) < 0.008 || chunkDurSec < 0.8) {
         continue;
       }
@@ -451,14 +469,14 @@ export async function transcribeAudioOnDevice(options: {
       try {
         const decodeOptions: Record<string, any> = {
           return_timestamps: true,
-          max_new_tokens: 112,
-          repetition_penalty: 1.25,
-          no_repeat_ngram_size: 3,
+          max_new_tokens: 180,
+          repetition_penalty: 1.05,
+          no_repeat_ngram_size: 5,
           condition_on_prev_tokens: false,
           task: 'transcribe',
         };
-        if (titleHasHebrew) {
-          decodeOptions.language = 'hebrew';
+        if (lockedWhisperLang) {
+          decodeOptions.language = lockedWhisperLang;
         }
 
         const chunkResult: any = await transcriber(chunkPcm, decodeOptions);
@@ -470,9 +488,34 @@ export async function transcribeAudioOnDevice(options: {
           `whisper_c${i}`
         );
 
+        // Lock song-wide language once we get reliable script signal on auto-detect
+        if (!lockedWhisperLang && chunkSegs.length > 0 && (!options.subtitleLanguageHint || options.subtitleLanguageHint === 'auto')) {
+          const joined = chunkSegs.map((s) => s.text).join(' ');
+          const heChars = (joined.match(/[\u0590-\u05FF]/g) || []).length;
+          const enChars = (joined.match(/[a-zA-Z]/g) || []).length;
+          if (heChars >= 6 && heChars > enChars * 1.5) {
+            lockedWhisperLang = 'hebrew';
+          } else if (enChars >= 8 && enChars > heChars * 1.5) {
+            lockedWhisperLang = 'english';
+          }
+        }
+
         for (const seg of chunkSegs) {
           const prev = rawSegments[rawSegments.length - 1];
-          if (prev && prev.text.toLowerCase() === seg.text.toLowerCase()) {
+          // Overlap region guard: merge/skip duplicate segments created inside the 3s overlap window
+          if (prev && seg.startTime < prev.endTime - 0.3) {
+            const prevWords = new Set(prev.text.toLowerCase().split(/\s+/));
+            const curWords = seg.text.toLowerCase().split(/\s+/);
+            const overlapHits = curWords.filter((w) => prevWords.has(w)).length;
+            if (overlapHits >= Math.max(1, Math.floor(curWords.length * 0.5)) || prev.text.toLowerCase() === seg.text.toLowerCase()) {
+              prev.endTime = Number(Math.max(prev.endTime, seg.endTime).toFixed(2));
+              if (seg.text.length > prev.text.length + 4 && seg.startTime >= prev.startTime) {
+                prev.text = seg.text;
+              }
+              continue;
+            }
+          }
+          if (prev && prev.text.toLowerCase() === seg.text.toLowerCase() && seg.startTime - prev.endTime < 2.0) {
             prev.endTime = Number(Math.max(prev.endTime, seg.endTime).toFixed(2));
           } else {
             rawSegments.push(seg);
@@ -495,12 +538,12 @@ export async function transcribeAudioOnDevice(options: {
     // Separate Hebrew vs English and generate companion dual-language subtitles in 1 clean batch
     const hebrewCount = rawSegments.reduce((acc, s) => acc + (s.text.match(/[\u0590-\u05FF]/g)?.length || 0), 0);
     const latinCount = rawSegments.reduce((acc, s) => acc + (s.text.match(/[a-zA-Z]/g)?.length || 0), 0);
-    const detectedPrimaryIsHe = hebrewCount >= latinCount;
+    const detectedPrimaryIsHe = lockedWhisperLang === 'english' ? false : lockedWhisperLang === 'hebrew' ? true : hebrewCount >= latinCount;
 
     let segmentsHe: SubtitleSegment[] = [];
     let segmentsEn: SubtitleSegment[] = [];
 
-    options.onProgress?.('מתרגם כתוביות לעברית ולאנגלית...', 92);
+    options.onProgress?.('משלים ומסנכרן כתוביות עברית ואנגלית...', 92);
     await yieldToUI();
 
     if (detectedPrimaryIsHe) {
@@ -546,7 +589,7 @@ export async function transcribeAudioOnDevice(options: {
       lyrics: primaryLyrics,
       lyricsHe,
       lyricsEn,
-      provider: 'on-device-whisper-wasm',
+      provider: activeWhisperModelName,
     };
   } catch (err: any) {
     console.error('[OnDeviceWhisper] Error:', err);

@@ -200,6 +200,7 @@ export async function transcribeTrackWithWhisperAI(
     track?: JamendoTrack;
     audioFile?: File | Blob;
     language?: 'he' | 'en';
+    subtitleLanguageHint?: 'auto' | 'he' | 'en';
     onProgress?: (statusText: string, percent?: number) => void;
   }
 ): Promise<{
@@ -217,6 +218,7 @@ export async function transcribeTrackWithWhisperAI(
     audioFile: options.audioFile,
     audioUrl: options.track?.audioUrl,
     language: options.language || 'he',
+    subtitleLanguageHint: options.subtitleLanguageHint,
     trackDuration: options.track?.duration || 180,
     hintTitle: options.track?.name,
     onProgress: options.onProgress,

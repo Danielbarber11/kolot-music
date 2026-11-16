@@ -1,5 +1,5 @@
-// Kolot Music Service Worker v2 - Network-First Navigation (Prevents White Screen on Deploy)
-const CACHE_NAME = 'kolot-music-v2';
+// Kolot Music Service Worker v3 - Network-First Navigation (Prevents White Screen on Deploy)
+const CACHE_NAME = 'kolot-music-v3';
 
 self.addEventListener('install', (event) => {
   // Activate immediately so old broken caches are purged right away

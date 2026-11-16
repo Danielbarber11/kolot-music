@@ -1345,6 +1345,39 @@ export default {
       }
     };
 
+    if (pathname === '/api/auth/google/start' && request.method === 'GET') {
+      const { clientId, sessionSecret } = getGoogleCreds();
+      if (!clientId) {
+        const errMsg = 'מזהה ההתחברות של Google (Client_ID) אינו מוגדר ב-Cloudflare Variables.';
+        const html = `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${errMsg}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`;
+        return new Response(html, {
+          status: 500,
+          headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+        });
+      }
+      const appOrigin = resolveSafeWorkerOrigin(url.searchParams.get('origin') || '');
+      const redirectUri = `${appOrigin}/auth/callback`;
+      const nonceBytes = new Uint8Array(12);
+      crypto.getRandomValues(nonceBytes);
+      const state = await signWorkerHmac(
+        {
+          redirectUri,
+          nonce: toB64Url(nonceBytes),
+          exp: Date.now() + 10 * 60 * 1000,
+        },
+        sessionSecret
+      );
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid profile email');
+      authUrl.searchParams.set('prompt', 'select_account');
+      authUrl.searchParams.set('access_type', 'online');
+      authUrl.searchParams.set('state', state);
+      return Response.redirect(authUrl.toString(), 302);
+    }
+
     if (pathname === '/api/auth/google/url' && request.method === 'GET') {
       const { clientId, sessionSecret } = getGoogleCreds();
       if (!clientId) {

@@ -16,6 +16,7 @@ interface AuthModalProps {
   onClose: () => void;
   lang: Language;
   initialMode?: 'login' | 'register';
+  initialError?: string | null;
   onSuccess?: (user: AuthUser) => void;
 }
 
@@ -23,13 +24,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
   lang,
+  initialError = null,
   onSuccess,
 }) => {
-  if (!isOpen) return null;
   const isHe = lang === 'he';
 
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
+
+  React.useEffect(() => {
+    setErrorMessage(initialError || null);
+  }, [initialError, isOpen]);
+
+  if (!isOpen) return null;
 
   const handleGoogleSignIn = async () => {
     setErrorMessage(null);

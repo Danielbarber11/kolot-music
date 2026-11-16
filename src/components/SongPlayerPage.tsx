@@ -2,8 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Play,
   Pause,
-  RotateCcw,
-  RotateCw,
   Heart,
   Download,
   ArrowRight,
@@ -39,6 +37,68 @@ import { getCachedArtistProfiles, fetchAllArtistProfiles, saveCachedCloudTracks,
 import { generateSynchronizedLyrics, transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
+
+const SkipBack10Icon: React.FC<{ className?: string }> = ({ className = 'w-6 h-6' }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M3 3v5h5"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <text
+      x="12"
+      y="14.7"
+      textAnchor="middle"
+      fill="currentColor"
+      stroke="none"
+      fontSize="7.8"
+      fontWeight="400"
+      fontFamily="system-ui, -apple-system, sans-serif"
+    >
+      10
+    </text>
+  </svg>
+);
+
+const SkipForward10Icon: React.FC<{ className?: string }> = ({ className = 'w-6 h-6' }) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M21 3v5h-5"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <text
+      x="12"
+      y="14.7"
+      textAnchor="middle"
+      fill="currentColor"
+      stroke="none"
+      fontSize="7.8"
+      fontWeight="400"
+      fontFamily="system-ui, -apple-system, sans-serif"
+    >
+      10
+    </text>
+  </svg>
+);
 
 export const ScrollingSongTitle: React.FC<{ title: string }> = ({ title }) => {
   const isHe = isHebrewText(title);
@@ -143,6 +203,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [isTranscribingWhisper, setIsTranscribingWhisper] = useState(false);
   const [whisperProgressText, setWhisperProgressText] = useState<string>('');
   const [whisperError, setWhisperError] = useState<string | null>(null);
+  const [transcribeLangHint, setTranscribeLangHint] = useState<'auto' | 'he' | 'en'>('auto');
   const [showLiveCaptions, setShowLiveCaptions] = useState<boolean>(
     !!(
       (track.subtitleSegments && track.subtitleSegments.length > 0) ||
@@ -211,6 +272,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     const res = await transcribeTrackWithWhisperAI({
       track,
       language: isHe ? 'he' : 'en',
+      subtitleLanguageHint: transcribeLangHint,
       onProgress: (txt) => setWhisperProgressText(txt),
     });
 
@@ -563,8 +625,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* 3. PLAY BUTTON & CONTROLS ROW */}
-        <div className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
+        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" so Skip Back sits Left and Skip Forward sits Right of Play) */}
+        <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
             onClick={() => onToggleLike(track.id)}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
@@ -579,11 +641,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
           <button
             onClick={() => seekRelative(-10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex flex-col items-center justify-center transition-colors shadow-lg cursor-pointer"
-            title="-10s"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center transition-colors shadow-lg cursor-pointer"
+            title={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
+            aria-label={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
           >
-            <RotateCcw className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="text-[8px] sm:text-[9px] font-mono font-bold mt-0.5">-10s</span>
+            <SkipBack10Icon className="w-5.5 h-5.5 sm:w-6 sm:h-6" />
           </button>
 
           <motion.button
@@ -601,11 +663,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
           <button
             onClick={() => seekRelative(10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex flex-col items-center justify-center transition-colors shadow-lg cursor-pointer"
-            title="+10s"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center transition-colors shadow-lg cursor-pointer"
+            title={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
+            aria-label={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
           >
-            <RotateCw className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="text-[8px] sm:text-[9px] font-mono font-bold mt-0.5">+10s</span>
+            <SkipForward10Icon className="w-5.5 h-5.5 sm:w-6 sm:h-6" />
           </button>
 
           <button
@@ -712,23 +774,39 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                   )}
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleGenerateWhisperSubtitles}
-                  disabled={isTranscribingWhisper}
-                  className="px-3.5 py-1.5 rounded-full text-[11px] font-extrabold bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-60"
-                >
-                  {isTranscribingWhisper ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-300" />
-                  ) : (
-                    <Captions className="w-3.5 h-3.5 text-emerald-300" />
-                  )}
-                  <span>
-                    {isTranscribingWhisper
-                      ? (whisperProgressText || (isHe ? 'מתמלל במכשיר...' : 'Transcribing on-device...'))
-                      : (isHe ? 'צור כתוביות עברית ואנגלית (חינם במכשיר)' : 'Generate Hebrew & English Subtitles (Free)')}
-                  </span>
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleGenerateWhisperSubtitles}
+                    disabled={isTranscribingWhisper}
+                    className="px-3.5 py-1.5 rounded-full text-[11px] font-extrabold bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-60"
+                  >
+                    {isTranscribingWhisper ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                    ) : (
+                      <Captions className="w-3.5 h-3.5 text-white" />
+                    )}
+                    <span>
+                      {isTranscribingWhisper
+                        ? (whisperProgressText || (isHe ? 'מתמלל במכשיר...' : 'Transcribing on-device...'))
+                        : (isHe ? 'צור כתוביות עברית ואנגלית (חינם במכשיר)' : 'Generate Hebrew & English Subtitles (Free)')}
+                    </span>
+                  </button>
+                  <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
+                    {(['auto', 'he', 'en'] as const).map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setTranscribeLangHint(opt)}
+                        className={`px-2 py-0.5 rounded-full transition-colors cursor-pointer ${
+                          transcribeLangHint === opt ? 'bg-white text-black' : 'text-white/75 hover:text-white'
+                        }`}
+                      >
+                        {opt === 'auto' ? (isHe ? 'אוטו' : 'Auto') : opt === 'he' ? 'עברית' : 'EN'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
             {whisperError && (
@@ -870,27 +948,44 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <button
-              type="button"
-              onClick={handleGenerateWhisperSubtitles}
-              disabled={isTranscribingWhisper}
-              className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isTranscribingWhisper ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : syncedLyrics.isWhisperSynced ? (
-                <RefreshCw className="w-3.5 h-3.5" />
-              ) : (
-                <Mic className="w-3.5 h-3.5" />
-              )}
-              <span>
-                {isTranscribingWhisper
-                  ? (whisperProgressText || (isHe ? 'יוצר כתוביות עברית ואנגלית...' : 'Creating Hebrew & English subtitles...'))
-                  : syncedLyrics.isWhisperSynced
-                    ? (isHe ? 'צור מחדש כתוביות עברית ואנגלית' : 'Re-generate Hebrew & English Subtitles')
-                    : (isHe ? 'צור כתוביות עברית ואנגלית (יישמרו באחסון)' : 'Create Hebrew & English Subtitles')}
-              </span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleGenerateWhisperSubtitles}
+                disabled={isTranscribingWhisper}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isTranscribingWhisper ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : syncedLyrics.isWhisperSynced ? (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                ) : (
+                  <Mic className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isTranscribingWhisper
+                    ? (whisperProgressText || (isHe ? 'יוצר כתוביות עברית ואנגלית...' : 'Creating Hebrew & English subtitles...'))
+                    : syncedLyrics.isWhisperSynced
+                      ? (isHe ? 'צור מחדש כתוביות עברית ואנגלית' : 'Re-generate Hebrew & English Subtitles')
+                      : (isHe ? 'צור כתוביות עברית ואנגלית (יישמרו באחסון)' : 'Create Hebrew & English Subtitles')}
+                </span>
+              </button>
+
+              <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[10px] font-bold">
+                {(['auto', 'he', 'en'] as const).map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setTranscribeLangHint(opt)}
+                    className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                      transcribeLangHint === opt ? 'bg-white text-black' : 'text-white/75 hover:text-white'
+                    }`}
+                  >
+                    {opt === 'auto' ? (isHe ? 'אוטומטי' : 'Auto') : opt === 'he' ? 'עברית' : 'EN'}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div className="flex items-center gap-2">
               {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (

@@ -113,10 +113,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [showPromoBanner, setShowPromoBanner] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [authModalError, setAuthModalError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
 
   const openLoginModal = () => {
     setAuthModalMode('login');
+    setAuthModalError(null);
     setIsAuthModalOpen(true);
   };
 
@@ -161,14 +163,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
   };
 
   const handleGoogleSignInClick = async () => {
+    setAuthModalError(null);
     try {
       const user = await loginWithGoogle();
       if (user) {
         setAuthUser(user);
         setIsArtistPortalOpen(true);
       }
-    } catch (e) {
-      console.warn('Google sign-in skipped or cancelled:', e);
+    } catch (e: any) {
+      const msg =
+        e?.message ||
+        (isHe
+          ? 'לא ניתן היה לפתוח את חלון ההתחברות עם Google. אפשר חלונות קופצים ונסה שוב.'
+          : 'Could not complete Google Sign-In. Please allow popups and try again.');
+      setAuthModalError(msg);
+      setAuthModalMode('login');
+      setIsAuthModalOpen(true);
     }
   };
 
@@ -1992,11 +2002,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
       {/* GOOGLE OAUTH AUTH MODAL */}
       <AuthModal
         isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
+        onClose={() => {
+          setIsAuthModalOpen(false);
+          setAuthModalError(null);
+        }}
         lang={lang}
         initialMode={authModalMode}
+        initialError={authModalError}
         onSuccess={(user) => {
           setAuthUser(user);
+          setAuthModalError(null);
           setIsArtistPortalOpen(true);
         }}
       />

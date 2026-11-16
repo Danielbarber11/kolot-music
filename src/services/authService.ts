@@ -139,33 +139,27 @@ export function onAuthUserChanged(callback: (user: AuthUser | null) => void): ()
  * Initiates Server-Side Google OAuth 2.0 via Cloudflare / Express environment credentials (Client_ID + Client_secret).
  * Never stores Client_secret or PII in the browser bundle.
  */
-export async function loginWithGoogle(): Promise<AuthUser | null> {
-  const urlRes = await fetch(
-    `/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`,
-    { cache: 'no-store' }
+export function loginWithGoogle(): Promise<AuthUser | null> {
+  const startUrl = `/api/auth/google/start?origin=${encodeURIComponent(window.location.origin)}`;
+  const width = 520;
+  const height = 650;
+  const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+  const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+
+  // Open popup SYNCHRONOUSLY inside click handler before any await so Chrome/Safari/PWA never block it!
+  const popup = window.open(
+    startUrl,
+    'kolot_google_oauth',
+    `width=${width},height=${height},left=${left},top=${top},popup=yes`
   );
-  const urlData = await urlRes.json().catch(() => ({}));
-  if (!urlRes.ok || !urlData?.url) {
-    throw new Error(urlData?.error || 'לא ניתן להתחבר ל-Google כרגע (Client_ID חסר בשרת).');
+
+  if (!popup) {
+    return Promise.reject(
+      new Error('הדפדפן חסם את חלון ההתחברות הקופץ. אנא אשר חלונות קופצים בדפדפן ונסה שוב.')
+    );
   }
 
   return new Promise<AuthUser | null>((resolve, reject) => {
-    const width = 520;
-    const height = 650;
-    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
-    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
-
-    const popup = window.open(
-      urlData.url,
-      'kolot_google_oauth',
-      `width=${width},height=${height},left=${left},top=${top},popup=yes`
-    );
-
-    if (!popup) {
-      reject(new Error('הדפדפן חסם את חלון ההתחברות. אנא אשר חלונות קופצים ונסה שוב.'));
-      return;
-    }
-
     let settled = false;
     let pollTimer: number | null = null;
     let timeoutTimer: number | null = null;
@@ -209,7 +203,6 @@ export async function loginWithGoogle(): Promise<AuthUser | null> {
       if (popup.closed) {
         settled = true;
         cleanup();
-        // Check /api/auth/me in case HttpOnly cookie succeeded before postMessage
         void refreshCurrentAuthUser()
           .then((u) => resolve(u))
           .catch(() => resolve(null));
