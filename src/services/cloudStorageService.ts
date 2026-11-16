@@ -833,18 +833,45 @@ export async function saveTrackGenreInCloud(
   }
 }
 
+export async function fetchBootstrapFromCloud(): Promise<{
+  tracks: JamendoTrack[];
+  profiles: any[];
+  albums: Album[];
+} | null> {
+  try {
+    const res = await fetch('/api/bootstrap', {
+      headers: getR2AuthHeaders(),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const data = await safeJson(res, 'טעינת נתונים מ-R2');
+    if (data?.success) {
+      return {
+        tracks: Array.isArray(data.tracks) ? data.tracks.filter(isCloudPlayableTrack) : [],
+        profiles: Array.isArray(data.profiles) ? data.profiles : [],
+        albums: Array.isArray(data.albums) ? data.albums : [],
+      };
+    }
+  } catch (err) {
+    console.warn('Bootstrap fetch fallback notice:', err);
+  }
+  return null;
+}
+
 export async function incrementTrackPlaysInCloud(track: JamendoTrack): Promise<number> {
-  const plays = (track.playsCount || 0) + 1;
-  const updatedTrack = { ...track, playsCount: plays };
-  await fetch('/api/storage/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      path: `tracks/${track.id}.json`,
-      content: JSON.stringify(updatedTrack, null, 2)
-    })
-  });
-  return plays;
+  const optimistic = (track.playsCount || 0) + 1;
+  try {
+    const res = await fetch('/api/storage/track-play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackId: track.id }),
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data?.playsCount) return Number(data.playsCount);
+    }
+  } catch {}
+  return optimistic;
 }
 
 // Exports for use in components

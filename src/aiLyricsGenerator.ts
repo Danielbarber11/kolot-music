@@ -159,17 +159,11 @@ export function generateSynchronizedLyrics(
   }
 
   if (rawLines.length === 0) {
-    if (preferredLang === 'en') {
-      rawLines = [
-        'Click Generate Subtitles to transcribe locally for free',
-        `${songName} ${artistName}`.trim(),
-      ];
-    } else {
-      rawLines = [
-        'לחץ על צור כתוביות על המכשיר לתמלול אוטומטי',
-        `${songName} ${artistName}`.trim(),
-      ];
-    }
+    return {
+      lines: [],
+      previewText: '',
+      isWhisperSynced: false,
+    };
   }
 
   const lineCount = rawLines.length;

@@ -4,7 +4,7 @@ import { markSongAsDeleted } from './deletedTracksService';
 const DB_NAME = 'kolot_music_db_v3';
 
 /**
- * Local disk/IndexedDB caching is disabled — all tracks are stored 100% in Cloudflare R2 & Firebase.
+ * Local disk/IndexedDB caching is disabled — all tracks are stored 100% in Cloudflare R2.
  * Also purges ALL legacy localStorage PII/auth/profile keys on every boot so zero sensitive user data resides in localStorage.
  */
 export async function persistTrackToStorage(_track: JamendoTrack, _audioBlob?: Blob): Promise<void> {

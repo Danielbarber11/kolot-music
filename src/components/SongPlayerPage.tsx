@@ -27,8 +27,12 @@ import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistProfileModal } from './ArtistProfileModal';
 import { ArtistPortalModal } from './ArtistPortalModal';
 import { ReportSongModal } from './ReportSongModal';
-import { onAuthUserChanged, saveArtistTrackToFirebase, incrementTrackPlaysInFirebase, getEffectiveArtistAvatarForTrack, getGoogleAccountPhotoUrl } from '../services/firebaseService';
-import { User as FirebaseUser } from 'firebase/auth';
+import {
+  AuthUser,
+  onAuthUserChanged,
+  getEffectiveArtistAvatarForTrack,
+  getGoogleAccountPhotoUrl,
+} from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveTrackSubtitlesInCloud } from '../services/cloudStorageService';
 import { getCachedArtistProfiles, fetchAllArtistProfiles, saveCachedCloudTracks, getInstantSongPool, updateMemoryTrack, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar } from '../services/multiMusicService';
@@ -105,7 +109,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
-  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
 
@@ -255,8 +259,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       lyricsHe: res.lyricsHe,
       lyricsEn: res.lyricsEn,
     }).catch(() => {});
-
-    saveArtistTrackToFirebase(updatedTrackObj).catch(() => {});
   };
 
   useEffect(() => {
@@ -268,7 +270,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   useEffect(() => {
     if (track.id) {
-      incrementTrackPlaysInFirebase(track.id).catch(() => {});
       incrementTrackPlaysInCloud(track).catch(() => {});
     }
   }, [track.id]);
@@ -405,7 +406,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (track.id) {
       track.bgColor = activeBgColor;
       updateTrackColorInCloud(track.id, activeBgColor, track).catch(() => {});
-      saveArtistTrackToFirebase(track).catch(() => {});
     }
   }, [track.id, activeBgColor]);
 
@@ -940,55 +940,65 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 transition={{ duration: 0.22 }}
                 className="pt-3 border-t border-white/10 space-y-3"
               >
-                <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
-                  {syncedLyrics.lines.map((line, lIdx) => {
-                    const isLineActive = lIdx === activeLineIndex;
-                    const mm = Math.floor(line.startTime / 60);
-                    const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
+                {syncedLyrics.lines.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-white/60">
+                    {isHe
+                      ? 'עדיין אין כתוביות לשיר זה. לחץ למעלה ליצירת כתוביות על המכשיר.'
+                      : 'No subtitles yet for this track. Click above to transcribe on-device.'}
+                  </div>
+                ) : (
+                  <>
+                    <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
+                      {syncedLyrics.lines.map((line, lIdx) => {
+                        const isLineActive = lIdx === activeLineIndex;
+                        const mm = Math.floor(line.startTime / 60);
+                        const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
 
-                    return (
-                      <div
-                        key={line.id}
-                        onClick={() => {
-                          if (audioRef.current) {
-                            audioRef.current.currentTime = line.startTime;
-                            setCurrentTime(line.startTime);
-                          }
-                        }}
-                        className={`p-2.5 rounded-2xl transition-all cursor-pointer flex items-start gap-2.5 leading-relaxed ${
-                          isLineActive
-                            ? 'bg-white/15 border border-white/25 shadow-lg'
-                            : 'hover:bg-white/5'
-                        }`}
-                      >
-                        <span className="text-[10px] font-mono text-emerald-300/80 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
-                          {mm}:{ss}
-                        </span>
-                        <div className="flex flex-wrap items-center gap-1.5 flex-1">
-                          {line.words.map((w, wIdx) => {
-                            const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
+                        return (
+                          <div
+                            key={line.id}
+                            onClick={() => {
+                              if (audioRef.current) {
+                                audioRef.current.currentTime = line.startTime;
+                                setCurrentTime(line.startTime);
+                              }
+                            }}
+                            className={`p-2.5 rounded-2xl transition-all cursor-pointer flex items-start gap-2.5 leading-relaxed ${
+                              isLineActive
+                                ? 'bg-white/15 border border-white/25 shadow-lg'
+                                : 'hover:bg-white/5'
+                            }`}
+                          >
+                            <span className="text-[10px] font-mono text-emerald-300/80 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
+                              {mm}:{ss}
+                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5 flex-1">
+                              {line.words.map((w, wIdx) => {
+                                const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
 
-                            return (
-                              <span
-                                key={wIdx}
-                                className={`text-xs sm:text-sm transition-all duration-150 ${
-                                  isWordActive
-                                    ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
-                                    : 'text-white font-medium hover:text-emerald-300'
-                                }`}
-                              >
-                                {w.text}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="text-[10px] text-white/50 text-center">
-                  {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
-                </p>
+                                return (
+                                  <span
+                                    key={wIdx}
+                                    className={`text-xs sm:text-sm transition-all duration-150 ${
+                                      isWordActive
+                                        ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
+                                        : 'text-white font-medium hover:text-emerald-300'
+                                    }`}
+                                  >
+                                    {w.text}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-white/50 text-center">
+                      {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
+                    </p>
+                  </>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

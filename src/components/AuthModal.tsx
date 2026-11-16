@@ -8,8 +8,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Language } from '../types';
-import { loginWithGoogle } from '../services/firebaseService';
-import { User as FirebaseUser } from 'firebase/auth';
+import { AuthUser, loginWithGoogle } from '../services/authService';
 import { Logo } from './Logo';
 
 interface AuthModalProps {
@@ -17,7 +16,7 @@ interface AuthModalProps {
   onClose: () => void;
   lang: Language;
   initialMode?: 'login' | 'register';
-  onSuccess?: (user: FirebaseUser) => void;
+  onSuccess?: (user: AuthUser) => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -44,18 +43,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     } catch (err: any) {
       console.warn('Google sign-in error:', err);
-      const code = err?.code || '';
-      if (code === 'auth/popup-closed-by-user') {
-        setErrorMessage(isHe ? 'חלון ההתחברות נסגר. נסה שוב.' : 'Sign-in window was closed. Try again.');
-      } else if (code === 'auth/popup-blocked') {
-        setErrorMessage(isHe ? 'חלון קופץ נחסם בדפדפן. אנא אפשר חלונות קופצים בדפדפן.' : 'Popup was blocked by browser. Please allow popups.');
-      } else {
-        setErrorMessage(
-          isHe
-            ? 'ההתחברות באמצעות Google נכשלה. אנא ודא חיבור לאינטרנט ונסה שוב.'
-            : 'Google sign-in failed. Please check internet connection and try again.'
-        );
-      }
+      setErrorMessage(
+        err?.message ||
+          (isHe
+            ? 'ההתחברות באמצעות Google נכשלה. אנא נסה שוב.'
+            : 'Google sign-in failed. Please try again.')
+      );
     } finally {
       setIsLoading(false);
     }

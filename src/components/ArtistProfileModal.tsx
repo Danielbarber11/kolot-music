@@ -15,10 +15,15 @@ import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums, getCachedArtistProfiles, fetchAllArtistProfiles } from '../services/multiMusicService';
-import { getStreamingMediaUrl, deleteTrackFromCloud } from '../services/cloudStorageService';
+import { deleteTrackFromCloud, getStreamingMediaUrl } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteArtistTrackFromFirebase, getEffectiveArtistAvatarForTrack, auth, checkIsCurrentUserAdmin, upgradeGooglePhotoQuality, onAuthUserChanged } from '../services/firebaseService';
+import {
+  getEffectiveArtistAvatarForTrack,
+  getCurrentAuthUser,
+  upgradeGooglePhotoQuality,
+  onAuthUserChanged,
+} from '../services/authService';
 
 interface ArtistProfileModalProps {
   artistName: string;
@@ -63,17 +68,11 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [avatarImgError, setAvatarImgError] = useState(false);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
-  const [currentUid, setCurrentUid] = useState<string | null>(() => auth.currentUser?.uid || null);
-  const [isCurrentUserAdmin, setIsCurrentUserAdmin] = useState(false);
+  const [currentUid, setCurrentUid] = useState<string | null>(() => getCurrentAuthUser()?.uid || null);
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
       setCurrentUid(user?.uid || null);
-      if (user) {
-        checkIsCurrentUserAdmin().then(setIsCurrentUserAdmin).catch(() => setIsCurrentUserAdmin(false));
-      } else {
-        setIsCurrentUserAdmin(false);
-      }
     });
     return () => unsub();
   }, []);
@@ -173,7 +172,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const artistBio = artistInfo?.bio || sampleTrack?.artistBio || '';
 
-  // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl -> Track coverUrl
+  // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl (never invent an avatar from song coverUrl)
   let rawAvatarUrl: string | undefined = artistInfo?.avatarUrl;
 
   if (!isAuthenticCover(rawAvatarUrl) && sampleTrack) {
@@ -186,13 +185,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
       (isAuthenticCover(currentTrack?.artistAvatarUrl) ? currentTrack : undefined);
     if (trackWithAvatar?.artistAvatarUrl) {
       rawAvatarUrl = trackWithAvatar.artistAvatarUrl;
-    }
-  }
-
-  if (!isAuthenticCover(rawAvatarUrl)) {
-    const trackWithCover = artistTracks.find((t) => isAuthenticCover(t.coverUrl)) || (isAuthenticCover(sampleTrack?.coverUrl) ? sampleTrack : undefined);
-    if (trackWithCover?.coverUrl) {
-      rawAvatarUrl = trackWithCover.coverUrl;
     }
   }
 
@@ -233,7 +225,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     const cleanCurrent = currentUid.replace(/^artist_/, '').toLowerCase().trim();
     const trackUid = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
 
-    if (isCurrentUserAdmin) return true;
     if (trackUid && trackUid === cleanCurrent) return true;
 
     const ownsProfile = mergedArtists.some((a) => {
@@ -272,7 +263,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
     await Promise.allSettled([
       removeTrackFromStorage(trackId),
-      deleteArtistTrackFromFirebase(trackId),
       deleteTrackFromCloud(trackId),
     ]);
   };

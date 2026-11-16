@@ -57,15 +57,14 @@ import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
 import { AuthModal } from './AuthModal';
 import {
+  AuthUser,
   onAuthUserChanged,
-  saveArtistTrackToFirebase,
   loginWithGoogle,
-  deleteArtistTrackFromFirebase,
+  updateCurrentAuthUserProfile,
   getEffectiveUserAvatar,
   getEffectiveArtistAvatarForTrack,
   getGoogleAccountPhotoUrl,
-} from '../services/firebaseService';
-import { User as FirebaseUser } from 'firebase/auth';
+} from '../services/authService';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { deleteTrackFromCloud, getStreamingMediaUrl, saveTrackGenreInCloud } from '../services/cloudStorageService';
@@ -114,7 +113,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [showPromoBanner, setShowPromoBanner] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
-  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
 
   const openLoginModal = () => {
     setAuthModalMode('login');
@@ -173,7 +172,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   };
 
-  // Auth & Versioned Terms Gate (100% Cloudflare R2 Profiles + Firebase Auth SDK)
+  // Auth & Versioned Terms Gate (100% Cloudflare R2 Profiles + Server-Side Google OAuth)
   useEffect(() => {
     const unsub = onAuthUserChanged(async (user) => {
       setAuthUser(user);
@@ -196,17 +195,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setActiveArtistProfile(mergedProfile);
           upsertMemoryArtistProfile(mergedProfile);
         } else {
-          const providerId = user.providerData?.[0]?.providerId || '';
-          const providerName = providerId.includes('yahoo')
-            ? 'Yahoo'
-            : providerId.includes('facebook')
-              ? 'Facebook'
-              : providerId.includes('microsoft')
-                ? 'Microsoft'
-                : providerId.includes('google')
-                  ? 'Google'
-                  : 'אימייל';
-
           const draftProfile: ArtistProfile = {
             id: user.uid,
             name: user.displayName || (isHe ? 'אמן' : 'Artist'),
@@ -217,7 +205,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             termsVersionAccepted: hasAccepted ? CURRENT_TERMS_VERSION : 0,
             isPrivate: false,
             tracksCount: 0,
-            providerPlatform: `חשבון ${providerName}`,
+            providerPlatform: isHe ? 'חשבון Google' : 'Google Account',
             joinedDate: new Date().getFullYear().toString(),
           };
           setActiveArtistProfile(draftProfile);
@@ -459,16 +447,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
         const cleanUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
         const nameKey = a.name.toLowerCase().trim();
         const key = cleanUid || nameKey;
-        const trackForCover = allTracks.find((t) => {
+        const trackWithAvatar = allTracks.find((t) => {
           const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
           return (
             ((cleanUid && tUid === cleanUid) || t.artistName?.toLowerCase().trim() === nameKey) &&
-            (t.artistAvatarUrl || t.coverUrl)
+            !!t.artistAvatarUrl
           );
         });
-        const resolved = getStreamingMediaUrl(
-          a.avatarUrl || trackForCover?.artistAvatarUrl || trackForCover?.coverUrl
-        );
+        const resolved = getStreamingMediaUrl(a.avatarUrl || trackWithAvatar?.artistAvatarUrl);
 
         map.set(key, {
           uid: a.googleUid || a.id,
@@ -484,30 +470,30 @@ export const SongsView: React.FC<SongsViewProps> = ({
       if (!t.artistName) return;
       const cleanUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
       const nameKey = t.artistName.toLowerCase().trim();
-      const key = (cleanUid && map.has(cleanUid) ? cleanUid : nameKey);
-      const trackImage = getStreamingMediaUrl(t.artistAvatarUrl || t.coverUrl);
+      const key = cleanUid && map.has(cleanUid) ? cleanUid : nameKey;
+      const trackAvatar = getStreamingMediaUrl(t.artistAvatarUrl);
 
       if (!map.has(key)) {
         // Also check if an existing entry matches by artist name
         const byNameEntry = Array.from(map.values()).find((v) => v.name.toLowerCase().trim() === nameKey);
         if (byNameEntry) {
           byNameEntry.count += 1;
-          if (!byNameEntry.avatarUrl && trackImage) byNameEntry.avatarUrl = trackImage;
+          if (!byNameEntry.avatarUrl && trackAvatar) byNameEntry.avatarUrl = trackAvatar;
           if (!byNameEntry.uid && t.uploadedByUid) byNameEntry.uid = t.uploadedByUid;
           return;
         }
         map.set(key, {
           uid: t.uploadedByUid,
           name: t.artistName,
-          avatarUrl: trackImage || undefined,
+          avatarUrl: trackAvatar || undefined,
           genre: t.genre || 'אמן',
           count: 1,
         });
       } else {
         const existing = map.get(key)!;
         existing.count += 1;
-        if (!existing.avatarUrl && trackImage) {
-          existing.avatarUrl = trackImage;
+        if (!existing.avatarUrl && trackAvatar) {
+          existing.avatarUrl = trackAvatar;
         }
       }
     });
@@ -660,10 +646,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             saveCachedCloudTracks(next);
             return next;
           });
-          await Promise.allSettled([
-            saveTrackGenreInCloud(updatedTrack, res.genre),
-            saveArtistTrackToFirebase(updatedTrack),
-          ]);
+          await saveTrackGenreInCloud(updatedTrack, res.genre);
         }
       } catch {}
     }
@@ -939,13 +922,13 @@ export const SongsView: React.FC<SongsViewProps> = ({
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                 {searchArtistResults.map((artist) => {
-                  const trackForCover = allTracks.find(
+                  const trackWithAvatar = allTracks.find(
                     (t) =>
                       t.artistName?.toLowerCase().trim() === artist.name?.toLowerCase().trim() &&
-                      (t.artistAvatarUrl || t.coverUrl)
+                      !!t.artistAvatarUrl
                   );
                   const effectiveArtistImg = getStreamingMediaUrl(
-                    artist.avatarUrl || trackForCover?.artistAvatarUrl || trackForCover?.coverUrl
+                    artist.avatarUrl || trackWithAvatar?.artistAvatarUrl
                   );
 
                   return (
@@ -968,8 +951,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-neutral-900">
-                            {artist.name[0] || <User className="w-10 h-10 text-white/50" />}
+                          <div className="w-full h-full flex items-center justify-center text-white/50 bg-neutral-900">
+                            <User className="w-10 h-10 text-white/40" />
                           </div>
                         )}
                       </div>
@@ -1109,7 +1092,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 if (!featuredTrack) return null;
 
                 const resolvedFeaturedAvatar =
-                  getEffectiveArtistAvatarForTrack(featuredTrack, allArtists) || featuredTrack.coverUrl;
+                  getEffectiveArtistAvatarForTrack(featuredTrack, allArtists);
                 const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
 
                 return (
@@ -1533,16 +1516,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   <div className="flex gap-4 overflow-x-auto pb-3 custom-scrollbar select-none flex-nowrap">
                     {popularArtists.slice(0, 12).map((artist, idx) => {
                       const artistCleanUid = (artist.uid || '').replace(/^artist_/, '').toLowerCase().trim();
-                      const trackForCover = allTracks.find((t) => {
+                      const trackWithAvatar = allTracks.find((t) => {
                         const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
                         return (
                           ((artistCleanUid && tUid === artistCleanUid) ||
                             t.artistName?.toLowerCase().trim() === artist.name?.toLowerCase().trim()) &&
-                          (t.artistAvatarUrl || t.coverUrl)
+                          !!t.artistAvatarUrl
                         );
                       });
                       const effectiveImg = getStreamingMediaUrl(
-                        artist.avatarUrl || trackForCover?.artistAvatarUrl || trackForCover?.coverUrl
+                        artist.avatarUrl || trackWithAvatar?.artistAvatarUrl
                       );
 
                       return (
@@ -1566,8 +1549,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center text-white font-black text-xl bg-neutral-900">
-                                {artist.name[0] || <User className="w-12 h-12 text-white/40" />}
+                              <div className="w-full h-full flex items-center justify-center text-white/40 bg-neutral-900">
+                                <User className="w-12 h-12 text-white/40" />
                               </div>
                             )}
                           </div>
@@ -1869,7 +1852,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
               }
               await Promise.allSettled([
                 removeTrackFromStorage(trackId),
-                deleteArtistTrackFromFirebase(trackId),
                 deleteTrackFromCloud(trackId),
               ]);
             }}
@@ -1900,7 +1882,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
               setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
               await Promise.allSettled([
                 removeTrackFromStorage(trackId),
-                deleteArtistTrackFromFirebase(trackId),
                 deleteTrackFromCloud(trackId),
               ]);
             }}
@@ -1926,6 +1907,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
         onArtistUpdated={(updatedArtist) => {
           setActiveArtistProfile(updatedArtist);
           upsertMemoryArtistProfile(updatedArtist);
+          updateCurrentAuthUserProfile({
+            displayName: updatedArtist.name,
+            photoURL: updatedArtist.avatarUrl || '',
+          });
           const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
           const cleanUpdatedName = (updatedArtist.name || '').toLowerCase().trim();
           updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
@@ -1969,7 +1954,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
           await Promise.allSettled([
             removeTrackFromStorage(trackId),
-            deleteArtistTrackFromFirebase(trackId),
             deleteTrackFromCloud(trackId),
           ]);
         }}
@@ -2000,13 +1984,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
           await Promise.allSettled([
             removeTrackFromStorage(trackId),
-            deleteArtistTrackFromFirebase(trackId),
             deleteTrackFromCloud(trackId),
           ]);
         }}
       />
 
-      {/* MULTI-PROVIDER AUTH MODAL (Google, Microsoft, Email/Pass, FB, Yahoo) */}
+      {/* GOOGLE OAUTH AUTH MODAL */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}

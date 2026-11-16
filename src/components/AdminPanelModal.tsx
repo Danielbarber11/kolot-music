@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, ArtistProfile, Language } from '../types';
-import { getTrackReportsFromFirebase, dismissTrackReportInFirebase } from '../services/firebaseService';
+import { getTrackReportsFromR2, dismissTrackReportInR2 } from '../services/authService';
 import {
   getCloudStorageConfig,
   calculateRealStorageUsage,
@@ -79,33 +79,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   useEffect(() => {
     let active = true;
     const loadReports = async () => {
-      const fbReports = await getTrackReportsFromFirebase().catch(() => []);
-      const combined = [...fbReports];
-      try {
-        const listRes = await fetch('/api/storage/list?prefix=reports/', { cache: 'no-store' });
-        if (listRes.ok) {
-          const listData = await listRes.json();
-          const files: Array<{ key: string; url: string }> = Array.isArray(listData?.files) ? listData.files : [];
-          const cloudReports = await Promise.all(
-            files
-              .filter((f) => f.key.endsWith('.json'))
-              .map(async (f) => {
-                try {
-                  const r = await fetch(f.url, { cache: 'no-store' });
-                  return r.ok ? ((await r.json()) as TrackReport) : null;
-                } catch {
-                  return null;
-                }
-              })
-          );
-          cloudReports.forEach((cr) => {
-            if (cr && cr.id && !combined.some((c) => c.id === cr.id)) {
-              combined.push(cr);
-            }
-          });
-        }
-      } catch {}
-      if (active) setReports(combined);
+      const r2Reports = await getTrackReportsFromR2().catch(() => []);
+      if (active) setReports(r2Reports);
     };
     loadReports().catch(() => {});
     return () => {
@@ -116,7 +91,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const handleDismissReport = async (reportId: string) => {
     setReports((prev) => prev.filter((r) => r.id !== reportId));
     await Promise.allSettled([
-      dismissTrackReportInFirebase(reportId),
+      dismissTrackReportInR2(reportId),
       fetch(`/api/storage/delete?path=${encodeURIComponent(`reports/${reportId}.json`)}`, {
         method: 'DELETE',
       }).catch(() => {}),
@@ -382,8 +357,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                   <h4 className="font-extrabold text-amber-300">{isHe ? 'אבטחה ואחסון:' : 'Security & Database:'}</h4>
                   <p className="text-white/80 leading-relaxed text-[11px]">
                     {isHe
-                      ? 'נתוני המשתמשים, החשבונות והדיווחים נשמרים ב-Firebase Firestore (פרטי). השירים והמדיה הציבורית נשמרים בשרת מאובטח ב-Cloudflare R2.'
-                      : 'Private credentials & reports stored in Firebase. Public songs hosted on Cloudflare R2.'}
+                      ? 'נתוני הפרופילים, הדיווחים, השירים והמדיה מאוחסנים בשרת מאובטח ב-Cloudflare R2.'
+                      : 'Profiles, reports, songs, and media are hosted securely on Cloudflare R2.'}
                   </p>
                 </div>
               </div>
@@ -395,7 +370,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <h4 className="text-xs font-black text-rose-300 flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4 text-rose-400" />
-                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים על שירים (ב-Firebase)' : 'User Track Reports'}</span>
+                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים על שירים (ב-Cloudflare R2)' : 'User Track Reports'}</span>
                   </h4>
                   <span className="text-xs font-mono font-bold text-rose-400">{reports.length} דיווחים</span>
                 </div>

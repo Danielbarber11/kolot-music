@@ -1,8 +1,8 @@
 import { JamendoTrack, Album, ArtistProfile, CURRENT_TERMS_VERSION } from '../types';
-import { getArtistTracksFromFirebase } from './firebaseService';
 import { clearAllLocalDeviceStorage } from './localTrackStorage';
 import {
   fetchTracksFromCloud,
+  fetchBootstrapFromCloud,
   computeTrackBgColor,
   fetchArtistProfilesFromCloud,
   fetchArtistProfileByUidFromCloud,
@@ -345,15 +345,11 @@ export async function saveTermsAcceptedToR2(uid: string, name: string, avatarUrl
   }
 }
 
-export const checkTermsAcceptedInFirestore = checkTermsAcceptedInR2;
-export const saveTermsAcceptedToFirestore = saveTermsAcceptedToR2;
-
 let inFlightSongsPromise: Promise<JamendoTrack[]> | null = null;
 const batchListeners = new Set<(tracks: JamendoTrack[]) => void>();
 
 /**
- * Fetches all saved tracks live from Cloudflare R2 & Firebase Firestore (100% Cloud-Native)
- * and streams the fastest source immediately (< 1s) without blocking on the slower one.
+ * Fetches all saved tracks live from Cloudflare R2 (100% Cloud-Native).
  */
 export async function fetchAllRealSongs(
   onProgress?: (count: number) => void,
@@ -386,16 +382,8 @@ export async function fetchAllRealSongs(
 
   inFlightSongsPromise = (async () => {
     try {
-      await Promise.allSettled([
-        getArtistTracksFromFirebase().then((fb) => {
-          mergeAndEmit(fb);
-          return fb;
-        }),
-        fetchTracksFromCloud().then((r2) => {
-          mergeAndEmit(r2);
-          return r2;
-        }),
-      ]);
+      const r2Tracks = await fetchTracksFromCloud().catch(() => []);
+      mergeAndEmit(r2Tracks);
       if (onProgress) onProgress(latestMerged.length);
       return latestMerged;
     } finally {
@@ -423,16 +411,78 @@ export function getTotalSongCount(): number {
   return getInstantSongPool().length;
 }
 
+let bootstrapPromise: Promise<{ tracks: JamendoTrack[]; profiles: ArtistProfile[]; albums: Album[] }> | null = null;
+let hasBootstrapped = false;
+
+/**
+ * Fast single-roundtrip bootstrap loading tracks + profiles + albums together from /api/bootstrap.
+ * Populates all session caches cleanly before UI reveals so cards & profiles never pop in belatedly.
+ */
+export function fetchBootstrapData(force = false): Promise<{
+  tracks: JamendoTrack[];
+  profiles: ArtistProfile[];
+  albums: Album[];
+}> {
+  if (!force && hasBootstrapped) {
+    return Promise.resolve({
+      tracks: getInstantSongPool(),
+      profiles: getCachedArtistProfiles(),
+      albums: getCachedAlbums(),
+    });
+  }
+  if (!force && bootstrapPromise) return bootstrapPromise;
+
+  bootstrapPromise = (async () => {
+    try {
+      const boot = await fetchBootstrapFromCloud();
+      if (boot) {
+        const deletedIds = getDeletedSongIds();
+        const cleanedTracks = deduplicateTracks(boot.tracks).filter(
+          (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
+        );
+        saveCachedCloudTracks(cleanedTracks);
+
+        const profileMap = new Map<string, ArtistProfile>();
+        boot.profiles.forEach((ca: any) => {
+          const key = String(ca?.googleUid || ca?.id || '').replace(/^artist_/, '').trim();
+          if (!key) return;
+          profileMap.set(key, { ...ca, id: key, googleUid: key });
+        });
+        memorySessionProfiles = Array.from(profileMap.values());
+        saveCachedAlbums(boot.albums);
+        hasBootstrapped = true;
+        return {
+          tracks: cleanedTracks,
+          profiles: memorySessionProfiles,
+          albums: memorySessionAlbums,
+        };
+      }
+
+      // Fallback to parallel direct endpoints if /api/bootstrap was unavailable
+      const [tracks, profiles, albums] = await Promise.all([
+        fetchAllRealSongs(),
+        fetchAllArtistProfiles(),
+        fetchRealAlbums(),
+      ]);
+      hasBootstrapped = true;
+      return { tracks, profiles, albums };
+    } finally {
+      bootstrapPromise = null;
+    }
+  })();
+
+  return bootstrapPromise;
+}
+
+// Start eager prefetch immediately when module evaluates (overlaps with React/DOM init)
+if (typeof window !== 'undefined') {
+  void fetchBootstrapData();
+}
+
 let initPromise: Promise<any> | null = null;
 export function initializeMultiMusicService(): Promise<any> {
   if (initPromise) return initPromise;
-
-  initPromise = Promise.allSettled([
-    fetchAllRealSongs(),
-    fetchAllArtistProfiles(),
-    fetchRealAlbums(),
-  ]);
-
+  initPromise = fetchBootstrapData();
   return initPromise;
 }
 

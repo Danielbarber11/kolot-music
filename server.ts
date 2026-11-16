@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -1017,10 +1018,11 @@ app.get('/api/storage/raw/*', async (req, res) => {
   if (!filePath) return res.status(400).send('Missing path');
 
   const isJson = filePath.toLowerCase().endsWith('.json');
+  const isAvatar = filePath.toLowerCase().startsWith('avatars/');
 
   try {
     const { client, bucket, publicUrl } = await getR2Context(req);
-    if (publicUrl && !isJson) {
+    if (publicUrl && !isJson && !isAvatar) {
       return res.redirect(`${publicUrl}/${filePath}`);
     }
 
@@ -2355,6 +2357,627 @@ app.post('/api/storage/report', async (req, res) => {
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Failed to save report' });
+  }
+});
+
+app.get('/api/storage/reports', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const listData = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'reports/' }));
+    const keys = (listData.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+    const reports = (
+      await Promise.all(
+        keys.map(async (k) => {
+          try {
+            const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+            const txt = obj.Body ? await obj.Body.transformToString('utf-8') : '';
+            return txt ? JSON.parse(txt) : null;
+          } catch {
+            return null;
+          }
+        })
+      )
+    ).filter(Boolean);
+    return res.json({ success: true, reports });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, reports: [], error: err?.message || 'Failed to load reports' });
+  }
+});
+
+app.delete('/api/storage/reports/:id', async (req, res) => {
+  try {
+    const cleanId = String(req.params.id || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false, error: 'Missing report id' });
+    const { client, bucket } = await getR2Context(req);
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `reports/${cleanId}.json` }));
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to delete report' });
+  }
+});
+
+// 4i. Fast Track Play Counter (100% R2)
+app.post('/api/storage/track-play', async (req, res) => {
+  try {
+    const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false });
+    const { client, bucket } = await getR2Context(req);
+    const key = `tracks/${cleanId}.json`;
+    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!obj.Body) return res.json({ success: false, playsCount: 1 });
+    const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
+    const playsCount = (Number(trackData.playsCount) || 0) + 1;
+    const updated = { ...trackData, playsCount };
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+        ContentType: 'application/json',
+      })
+    );
+    return res.json({ success: true, playsCount });
+  } catch {
+    return res.json({ success: false, playsCount: 1 });
+  }
+});
+
+// 4j. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
+app.get('/api/bootstrap', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const readJsonKey = async (key: string) => {
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (!obj.Body) return null;
+        return JSON.parse(await obj.Body.transformToString('utf-8'));
+      } catch {
+        return null;
+      }
+    };
+
+    const [tracksList, profilesList, albumsList, indexData] = await Promise.all([
+      client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'tracks/' })).catch(() => null),
+      client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'profiles/' })).catch(() => null),
+      client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'albums/' })).catch(() => null),
+      readJsonKey('tracks_index.json'),
+    ]);
+
+    const trackMap = new Map<string, any>();
+    if (Array.isArray(indexData)) {
+      indexData.forEach((t: any) => {
+        if (t?.id && t?.name && t?.audioUrl) {
+          const { uploadedByEmail: _omit, ...cleanTrack } = t;
+          trackMap.set(cleanTrack.id, cleanTrack);
+        }
+      });
+    }
+
+    const trackKeys = (tracksList?.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+    const profileKeys = (profilesList?.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+    const albumKeys = (albumsList?.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+
+    const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
+      Promise.all(trackKeys.map((k) => readJsonKey(k))),
+      Promise.all(profileKeys.map(async (k) => ({ key: k, data: await readJsonKey(k) }))),
+      Promise.all(albumKeys.map((k) => readJsonKey(k))),
+    ]);
+
+    loadedTracks.forEach((t: any) => {
+      if (t?.id && t?.name && t?.audioUrl) {
+        const { uploadedByEmail: _omit, ...cleanTrack } = t;
+        trackMap.set(cleanTrack.id, cleanTrack);
+      }
+    });
+
+    const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+    for (const item of loadedProfiles) {
+      const clean = sanitizePublicProfile(item.data);
+      if (!clean) continue;
+      const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
+      if (!uid) continue;
+      const ts = Math.max(
+        Date.parse(String(clean.updatedAt || '')) || 0,
+        Date.parse(String(clean.acceptedTermsAt || '')) || 0
+      );
+      const isCanonicalKey = !item.key.startsWith('profiles/artist_');
+      const prev = profileMap.get(uid);
+      if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
+        profileMap.set(uid, {
+          data: { ...clean, id: uid, googleUid: uid },
+          ts,
+          isCanonicalKey,
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      tracks: Array.from(trackMap.values()),
+      profiles: Array.from(profileMap.values()).map((entry) => entry.data),
+      albums: loadedAlbums.filter(Boolean),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      tracks: [],
+      profiles: [],
+      albums: [],
+      error: err?.message || 'Bootstrap failed',
+    });
+  }
+});
+
+// -------------------------------------------------------------
+// 5. SERVER-SIDE GOOGLE OAUTH 2.0 + R2 AVATAR PERSISTENCE
+// -------------------------------------------------------------
+function getGoogleOAuthCreds() {
+  const clientId = sanitizeKey(
+    process.env.Client_ID || process.env.CLIENT_ID || process.env.GOOGLE_CLIENT_ID
+  );
+  const clientSecret = sanitizeKey(
+    process.env.Client_secret || process.env.CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET
+  );
+  const sessionSecret =
+    clientSecret || sanitizeKey(process.env.R2_SECRET_ACCESS_KEY) || 'kolot-music-session-hmac-key';
+  return { clientId, clientSecret, sessionSecret };
+}
+
+function upgradeGooglePhotoQualityServer(url?: string | null): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes('googleusercontent.com')) {
+    if (/=s\d+(-c)?$/.test(trimmed)) return trimmed.replace(/=s\d+(-c)?$/, '=s400-c');
+    if (/=w\d+-h\d+/.test(trimmed)) return trimmed.replace(/=w\d+-h\d+[^&]*/, '=s400-c');
+  }
+  return trimmed;
+}
+
+function signHmacToken(payloadObj: Record<string, any>, secret: string): string {
+  const encoded = Buffer.from(JSON.stringify(payloadObj), 'utf-8').toString('base64url');
+  const sig = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+function verifyHmacToken(token: string, secret: string): any | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [encoded, sig] = parts;
+    const expected = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8'));
+    if (parsed?.exp && Date.now() > Number(parsed.exp)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookiesHeader(cookieHeader?: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  cookieHeader.split(';').forEach((pair) => {
+    const idx = pair.indexOf('=');
+    if (idx > 0) {
+      const k = pair.slice(0, idx).trim();
+      const v = pair.slice(idx + 1).trim();
+      try {
+        out[k] = decodeURIComponent(v);
+      } catch {
+        out[k] = v;
+      }
+    }
+  });
+  return out;
+}
+
+function extractSessionFromRequest(req: express.Request, secret: string): { session: any; token: string } | null {
+  const authHdr = String(req.headers.authorization || '').trim();
+  let token = '';
+  if (authHdr.toLowerCase().startsWith('bearer ')) {
+    token = authHdr.slice(7).trim();
+  }
+  if (!token) {
+    const cookies = parseCookiesHeader(req.headers.cookie);
+    token = cookies['kolot_session'] || '';
+  }
+  if (!token) return null;
+  const session = verifyHmacToken(token, secret);
+  return session?.uid ? { session, token } : null;
+}
+
+function resolveSafeAppOrigin(req: express.Request, explicitOrigin?: string): string {
+  const isValidOrigin = (val?: string) => {
+    if (!val) return false;
+    return /^https:\/\/[a-zA-Z0-9.-]+(?::\d+)?$/.test(val) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(val);
+  };
+  if (explicitOrigin && isValidOrigin(explicitOrigin.trim().replace(/\/+$/, ''))) {
+    return explicitOrigin.trim().replace(/\/+$/, '');
+  }
+  const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
+  if (isValidOrigin(appUrl)) return appUrl;
+  const fwdHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const fwdProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() || 'https';
+  if (fwdHost) return `${fwdProto}://${fwdHost}`;
+  const host = req.get('host') || `localhost:${PORT}`;
+  const proto = host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https';
+  return `${proto}://${host}`;
+}
+
+async function purgeOldAvatarsInR2(client: S3Client, bucket: string, uid: string, keepKey?: string) {
+  const cleanUid = uid.replace(/^artist_/, '').trim();
+  const prefixes = [`avatars/${cleanUid}`, `avatars/artist_${cleanUid}`];
+  for (const prefix of prefixes) {
+    try {
+      const listed = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix }));
+      const toDelete = (listed.Contents || []).map((c) => c.Key).filter((k): k is string => !!k && k !== keepKey);
+      await Promise.allSettled(toDelete.map((k) => client.send(new DeleteObjectCommand({ Bucket: bucket, Key: k }))));
+    } catch {}
+  }
+}
+
+async function importExternalAvatarToR2(
+  client: S3Client,
+  bucket: string,
+  uid: string,
+  externalPhotoUrl: string
+): Promise<string | null> {
+  try {
+    const cleanUid = uid.replace(/^artist_/, '').trim();
+    const res = await fetch(externalPhotoUrl, {
+      headers: { 'User-Agent': 'Kolot-Avatar-Sync/1.0', Accept: 'image/*' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    if (!contentType.startsWith('image/')) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength === 0 || buf.byteLength > 6 * 1024 * 1024) return null;
+
+    const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+    const newKey = `avatars/${cleanUid}_${Date.now()}.${ext}`;
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: newKey,
+        Body: buf,
+        ContentType: contentType,
+      })
+    );
+    await purgeOldAvatarsInR2(client, bucket, cleanUid, newKey);
+    return `/api/storage/raw/${newKey}`;
+  } catch (err: any) {
+    console.warn('[Google Avatar Import] R2 sync skipped:', err?.message);
+    return null;
+  }
+}
+
+app.get('/api/auth/google/url', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const { clientId, sessionSecret } = getGoogleOAuthCreds();
+  if (!clientId) {
+    return res.status(500).json({
+      success: false,
+      error: 'מזהה ההתחברות של Google (Client_ID) אינו מוגדר במשתני הסביבה בשרת.',
+    });
+  }
+
+  const appOrigin = resolveSafeAppOrigin(req, String(req.query.origin || ''));
+  const redirectUri = `${appOrigin}/auth/callback`;
+  const state = signHmacToken(
+    {
+      redirectUri,
+      nonce: crypto.randomBytes(12).toString('hex'),
+      exp: Date.now() + 10 * 60 * 1000,
+    },
+    sessionSecret
+  );
+
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'openid profile email');
+  authUrl.searchParams.set('prompt', 'select_account');
+  authUrl.searchParams.set('access_type', 'online');
+  authUrl.searchParams.set('state', state);
+
+  return res.json({
+    success: true,
+    url: authUrl.toString(),
+    redirectUri,
+  });
+});
+
+app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const renderPopupResult = (ok: boolean, payload: any, errMsg?: string) => {
+    const safeJson = JSON.stringify(payload).replace(/</g, '\\u003c');
+    const safeErr = JSON.stringify(errMsg || '').replace(/</g, '\\u003c');
+    return res
+      .status(ok ? 200 : 400)
+      .set('Content-Type', 'text/html; charset=utf-8')
+      .send(`<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head><meta charset="utf-8"><title>Kolot Music Auth</title></head>
+<body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;">
+  <div>
+    <p style="font-size:16px;font-weight:bold;">${ok ? 'ההתחברות עם Google הצליחה — החלון נסגר...' : 'ההתחברות בוטלה או נכשלה'}</p>
+    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${errMsg}</p>` : ''}
+  </div>
+  <script>
+    (function() {
+      try {
+        if (window.opener) {
+          window.opener.postMessage(${ok ? safeJson : `{ type: 'OAUTH_AUTH_ERROR', error: ${safeErr} }`}, '*');
+        }
+      } catch (e) {}
+      setTimeout(function() { window.close(); }, ${ok ? 250 : 1800});
+    })();
+  </script>
+</body>
+</html>`);
+  };
+
+  try {
+    const code = String(req.query.code || '');
+    const stateRaw = String(req.query.state || '');
+    const oauthErr = String(req.query.error || '');
+    if (oauthErr) {
+      return renderPopupResult(false, {}, `Google החזיר שגיאה: ${oauthErr}`);
+    }
+    if (!code || !stateRaw) {
+      return renderPopupResult(false, {}, 'חסרים פרטי אימות מהתחברות Google.');
+    }
+
+    const { clientId, clientSecret, sessionSecret } = getGoogleOAuthCreds();
+    if (!clientId || !clientSecret) {
+      return renderPopupResult(false, {}, 'הגדרות השרת (Client_ID / Client_secret) חסרות.');
+    }
+
+    const verifiedState = verifyHmacToken(stateRaw, sessionSecret);
+    const redirectUri =
+      verifiedState?.redirectUri || `${resolveSafeAppOrigin(req)}/auth/callback`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }).toString(),
+    });
+
+    const tokenData: any = await tokenRes.json().catch(() => ({}));
+    if (!tokenRes.ok || !tokenData.access_token) {
+      return renderPopupResult(
+        false,
+        {},
+        tokenData?.error_description || tokenData?.error || 'שגיאה באימות הקוד מול Google'
+      );
+    }
+
+    const userRes = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const googleUser: any = await userRes.json().catch(() => ({}));
+    if (!userRes.ok || !googleUser?.sub) {
+      return renderPopupResult(false, {}, 'לא ניתן היה לקרוא את פרטי החשבון מ-Google.');
+    }
+
+    const uid = String(googleUser.sub).replace(/[^a-zA-Z0-9_\-]/g, '');
+    const displayName = String(googleUser.name || 'אמן').trim();
+    const googlePhotoUrl = upgradeGooglePhotoQualityServer(googleUser.picture);
+
+    // Sync Google account & store Google avatar in Cloudflare R2 (never overwriting an artist's custom uploaded R2 avatar)
+    let canonicalAvatarUrl = googlePhotoUrl;
+    try {
+      const { client, bucket } = await getR2Context(req);
+      let existingProfile: any = null;
+      try {
+        const pObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `profiles/${uid}.json` }));
+        if (pObj.Body) existingProfile = JSON.parse(await pObj.Body.transformToString('utf-8'));
+      } catch {}
+      if (!existingProfile) {
+        try {
+          const legacyObj = await client.send(
+            new GetObjectCommand({ Bucket: bucket, Key: `profiles/artist_${uid}.json` })
+          );
+          if (legacyObj.Body) existingProfile = JSON.parse(await legacyObj.Body.transformToString('utf-8'));
+        } catch {}
+      }
+
+      const existingAvatar = String(existingProfile?.avatarUrl || '').trim();
+      const hasR2StoredAvatar =
+        !!existingAvatar &&
+        !existingAvatar.includes('googleusercontent.com') &&
+        (existingAvatar.includes('/avatars/') || existingAvatar.includes('/api/storage/raw/'));
+
+      if (hasR2StoredAvatar) {
+        canonicalAvatarUrl = existingAvatar;
+      } else if (googlePhotoUrl) {
+        const importedR2Url = await importExternalAvatarToR2(client, bucket, uid, googlePhotoUrl);
+        if (importedR2Url) {
+          canonicalAvatarUrl = importedR2Url;
+        }
+      }
+
+      if (existingProfile || canonicalAvatarUrl) {
+        const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};
+        const nextProfile = {
+          ...cleanExisting,
+          id: uid,
+          googleUid: uid,
+          name: cleanExisting.name || displayName,
+          avatarUrl: canonicalAvatarUrl || '',
+          isConnected: true,
+          isPrivate: cleanExisting.isPrivate ?? false,
+          tracksCount: cleanExisting.tracksCount ?? 0,
+          joinedDate: cleanExisting.joinedDate || new Date().getFullYear().toString(),
+          providerPlatform: 'חשבון גוגל',
+          updatedAt: new Date().toISOString(),
+        };
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: `profiles/${uid}.json`,
+            Body: Buffer.from(JSON.stringify(nextProfile, null, 2), 'utf-8'),
+            ContentType: 'application/json',
+          })
+        );
+        await client
+          .send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/artist_${uid}.json` }))
+          .catch(() => {});
+      }
+    } catch (r2SyncErr: any) {
+      console.warn('[OAuth Callback R2 Avatar Sync] non-fatal notice:', r2SyncErr?.message);
+    }
+
+    const sessionPayload = {
+      uid,
+      displayName,
+      photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
+      googlePhotoUrl: googlePhotoUrl || undefined,
+      exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    };
+    const sessionToken = signHmacToken(sessionPayload, sessionSecret);
+
+    const isHttps = redirectUri.startsWith('https://');
+    res.setHeader(
+      'Set-Cookie',
+      `kolot_session=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; Max-Age=2592000; ${
+        isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'
+      }`
+    );
+
+    return renderPopupResult(true, {
+      type: 'OAUTH_AUTH_SUCCESS',
+      sessionToken,
+      user: {
+        uid,
+        displayName,
+        photoURL: sessionPayload.photoURL,
+        googlePhotoUrl: sessionPayload.googlePhotoUrl,
+      },
+    });
+  } catch (err: any) {
+    return renderPopupResult(false, {}, err?.message || 'שגיאה בתהליך ההתחברות');
+  }
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const { sessionSecret } = getGoogleOAuthCreds();
+  const parsed = extractSessionFromRequest(req, sessionSecret);
+  if (!parsed) {
+    return res.json({ success: true, user: null });
+  }
+
+  const { session } = parsed;
+  let liveAvatar = session.photoURL;
+  let liveName = session.displayName;
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const obj = await client
+      .send(new GetObjectCommand({ Bucket: bucket, Key: `profiles/${session.uid}.json` }))
+      .catch(() => null);
+    if (obj?.Body) {
+      const p = JSON.parse(await obj.Body.transformToString('utf-8'));
+      if (p?.avatarUrl) liveAvatar = p.avatarUrl;
+      if (p?.name) liveName = p.name;
+    }
+  } catch {}
+
+  return res.json({
+    success: true,
+    user: {
+      uid: session.uid,
+      displayName: liveName || session.displayName,
+      photoURL: liveAvatar || session.googlePhotoUrl || undefined,
+      googlePhotoUrl: session.googlePhotoUrl || undefined,
+    },
+  });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const origin = resolveSafeAppOrigin(req);
+  const isHttps = origin.startsWith('https://');
+  res.setHeader(
+    'Set-Cookie',
+    `kolot_session=; Path=/; HttpOnly; Max-Age=0; ${isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'}`
+  );
+  return res.json({ success: true });
+});
+
+app.post('/api/auth/restore-google-avatar', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    if (!parsed) {
+      return res.status(401).json({ success: false, error: 'נדרש חיבור מחדש לחשבון Google.' });
+    }
+
+    const { session } = parsed;
+    const googlePhotoUrl = upgradeGooglePhotoQualityServer(session.googlePhotoUrl);
+    if (!googlePhotoUrl) {
+      return res.status(404).json({ success: false, error: 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' });
+    }
+
+    const { client, bucket } = await getR2Context(req);
+    const r2AvatarUrl = await importExternalAvatarToR2(client, bucket, session.uid, googlePhotoUrl);
+    if (!r2AvatarUrl) {
+      return res.status(502).json({ success: false, error: 'הורדת תמונת Google אל אחסון R2 נכשלה.' });
+    }
+
+    let existingProfile: any = {};
+    try {
+      const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `profiles/${session.uid}.json` }));
+      if (obj.Body) existingProfile = JSON.parse(await obj.Body.transformToString('utf-8'));
+    } catch {}
+
+    const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};
+    const updatedProfile = {
+      ...cleanExisting,
+      id: session.uid,
+      googleUid: session.uid,
+      name: String(req.body?.name || '').trim() || cleanExisting.name || session.displayName || 'אמן',
+      avatarUrl: r2AvatarUrl,
+      isConnected: true,
+      hasAcceptedTerms: cleanExisting.hasAcceptedTerms ?? true,
+      isPrivate: false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: `profiles/${session.uid}.json`,
+        Body: Buffer.from(JSON.stringify(updatedProfile, null, 2), 'utf-8'),
+        ContentType: 'application/json',
+      })
+    );
+    await client
+      .send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/artist_${session.uid}.json` }))
+      .catch(() => {});
+
+    return res.json({
+      success: true,
+      avatarUrl: r2AvatarUrl,
+      profile: updatedProfile,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' });
   }
 });
 

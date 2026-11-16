@@ -6,12 +6,9 @@ import { SplashScreen } from './components/SplashScreen';
 import { Language, JamendoTrack, ArtistProfile, Album } from './types';
 import {
   getInstantSongPool,
-  fetchAllRealSongs,
+  fetchBootstrapData,
   getCachedArtistProfiles,
-  fetchAllArtistProfiles,
   getCachedAlbums,
-  fetchRealAlbums,
-  initializeMultiMusicService,
 } from './services/multiMusicService';
 import { getStreamingMediaUrl } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
@@ -64,26 +61,23 @@ export default function App() {
     }
   });
 
-  // Coordinate initial feed + top cover & avatar image decode capped at 850ms so entry feels instant with zero image flash
+  // Coordinate single-roundtrip /api/bootstrap + top cover & avatar image decode BEFORE dismissing SplashScreen
+  // so initial tracks, cards, and covers appear together immediately without an empty flash.
   useEffect(() => {
     let active = true;
 
     const preloadDataAndTopCovers = async () => {
       try {
-        await initializeMultiMusicService();
-        const freshTracks = await fetchAllRealSongs().catch(() => getInstantSongPool());
-        const freshArtists = await fetchAllArtistProfiles().catch(() => getCachedArtistProfiles());
-        const freshAlbums = await fetchRealAlbums().catch(() => getCachedAlbums());
-
+        const boot = await fetchBootstrapData();
         if (!active) return;
-        if (freshTracks.length > 0) setAllTracks(freshTracks);
-        if (freshArtists.length > 0) setAllArtists(freshArtists);
-        if (freshAlbums.length > 0) setAllAlbums(freshAlbums);
+        setAllTracks(boot.tracks);
+        setAllArtists(boot.profiles);
+        setAllAlbums(boot.albums);
 
         const topImageUrls = [
-          ...freshTracks.slice(0, 10).map((t) => t.coverUrl),
-          ...freshArtists.slice(0, 6).map((a) => a.avatarUrl),
-          ...freshAlbums.slice(0, 4).map((al) => al.coverUrl),
+          ...boot.tracks.slice(0, 12).map((t) => t.coverUrl),
+          ...boot.profiles.slice(0, 8).map((a) => a.avatarUrl),
+          ...boot.albums.slice(0, 6).map((al) => al.coverUrl),
         ];
         await preloadAndDecodeImages(topImageUrls);
       } catch {
@@ -91,28 +85,11 @@ export default function App() {
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 850));
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 2400));
 
     Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
       if (active) setIsInitializing(false);
     });
-
-    // Continue refreshing full data in background even after splash lifts
-    fetchAllRealSongs(undefined, (batch) => {
-      if (active && batch.length > 0) setAllTracks(batch);
-    }).catch(() => {});
-
-    fetchAllArtistProfiles()
-      .then((profiles) => {
-        if (active && profiles.length > 0) setAllArtists(profiles);
-      })
-      .catch(() => {});
-
-    fetchRealAlbums()
-      .then((albums) => {
-        if (active && albums.length > 0) setAllAlbums(albums);
-      })
-      .catch(() => {});
 
     return () => {
       active = false;

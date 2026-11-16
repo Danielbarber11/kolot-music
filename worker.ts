@@ -32,6 +32,13 @@ export interface Env {
   R2_PUBLIC_URL?: string;
   GEMINI_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  Client_ID?: string;
+  CLIENT_ID?: string;
+  GOOGLE_CLIENT_ID?: string;
+  Client_secret?: string;
+  CLIENT_SECRET?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  APP_URL?: string;
 }
 
 function sanitizeEndpoint(raw?: string): string {
@@ -1023,7 +1030,7 @@ export default {
       }
     }
 
-    // 12. Public Track Report fallback endpoint (saves directly in R2 reports/)
+    // 12. Public Track Report endpoints (100% R2 reports/)
     if (pathname === '/api/storage/report' && request.method === 'POST') {
       try {
         const rep: any = await request.json();
@@ -1042,6 +1049,551 @@ export default {
         return jsonResponse({ success: true });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Report save failed' }, 500);
+      }
+    }
+
+    const r2ReadJson = async (key: string) => {
+      try {
+        if (env.R2_BUCKET) {
+          const obj = await env.R2_BUCKET.get(key);
+          return obj ? JSON.parse(await obj.text()) : null;
+        }
+        const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+        return r.ok ? await r.json() : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const r2WriteJson = async (key: string, data: unknown) => {
+      const bodyBytes = encoder.encode(JSON.stringify(data, null, 2));
+      if (env.R2_BUCKET) {
+        await env.R2_BUCKET.put(key, bodyBytes, { httpMetadata: { contentType: 'application/json' } });
+      } else {
+        await signedR2Fetch(creds, 'PUT', `/${creds.bucket}/${encodeS3Path(key)}`, {}, bodyBytes, {
+          'Content-Type': 'application/json',
+        });
+      }
+    };
+
+    const r2DeleteKey = async (key: string) => {
+      if (env.R2_BUCKET) {
+        await env.R2_BUCKET.delete(key);
+      } else {
+        await signedR2Fetch(creds, 'DELETE', `/${creds.bucket}/${encodeS3Path(key)}`);
+      }
+    };
+
+    const r2ListKeys = async (prefix: string): Promise<string[]> => {
+      const keys: string[] = [];
+      if (env.R2_BUCKET) {
+        let cursor: string | undefined;
+        do {
+          const listed = await env.R2_BUCKET.list({ prefix, cursor });
+          listed.objects.forEach((o) => keys.push(o.key));
+          cursor = listed.truncated ? listed.cursor : undefined;
+        } while (cursor);
+      } else {
+        let token = '';
+        do {
+          const q: Record<string, string> = { 'list-type': '2', prefix };
+          if (token) q['continuation-token'] = token;
+          const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
+          if (!listRes.ok) break;
+          const xml = await listRes.text();
+          parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
+            if (it.Key) keys.push(it.Key);
+          });
+          const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
+          const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
+          token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
+        } while (token);
+      }
+      return keys;
+    };
+
+    if (pathname === '/api/storage/reports' && request.method === 'GET') {
+      try {
+        const keys = (await r2ListKeys('reports/')).filter((k) => k.endsWith('.json'));
+        const reports = (await Promise.all(keys.map((k) => r2ReadJson(k)))).filter(Boolean);
+        return jsonResponse({ success: true, reports });
+      } catch (err: any) {
+        return jsonResponse({ success: false, reports: [], error: err?.message || 'Reports list failed' }, 500);
+      }
+    }
+
+    if (pathname.startsWith('/api/storage/reports/') && request.method === 'DELETE') {
+      try {
+        const cleanId = pathname.replace(/^\/api\/storage\/reports\//, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false, error: 'Missing report id' }, 400);
+        await r2DeleteKey(`reports/${cleanId}.json`);
+        return jsonResponse({ success: true });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Report delete failed' }, 500);
+      }
+    }
+
+    // 13. Fast Track Play Counter (100% R2)
+    if (pathname === '/api/storage/track-play' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false }, 400);
+        const key = `tracks/${cleanId}.json`;
+        const trackData = await r2ReadJson(key);
+        if (!trackData) return jsonResponse({ success: false, playsCount: 1 });
+        const playsCount = (Number(trackData.playsCount) || 0) + 1;
+        await r2WriteJson(key, { ...trackData, playsCount });
+        return jsonResponse({ success: true, playsCount });
+      } catch {
+        return jsonResponse({ success: false, playsCount: 1 });
+      }
+    }
+
+    // 14. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
+    if (pathname === '/api/bootstrap' && request.method === 'GET') {
+      try {
+        const [trackKeysAll, profileKeysAll, albumKeysAll, indexData] = await Promise.all([
+          r2ListKeys('tracks/').catch(() => []),
+          r2ListKeys('profiles/').catch(() => []),
+          r2ListKeys('albums/').catch(() => []),
+          r2ReadJson('tracks_index.json'),
+        ]);
+
+        const trackMap = new Map<string, any>();
+        if (Array.isArray(indexData)) {
+          indexData.forEach((t: any) => {
+            if (t?.id && t?.name && t?.audioUrl) {
+              const { uploadedByEmail: _omit, ...cleanTrack } = t;
+              trackMap.set(cleanTrack.id, cleanTrack);
+            }
+          });
+        }
+
+        const trackKeys = trackKeysAll.filter((k) => k.endsWith('.json'));
+        const profileKeys = profileKeysAll.filter((k) => k.endsWith('.json'));
+        const albumKeys = albumKeysAll.filter((k) => k.endsWith('.json'));
+
+        const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
+          Promise.all(trackKeys.map((k) => r2ReadJson(k))),
+          Promise.all(profileKeys.map(async (k) => ({ key: k, data: await r2ReadJson(k) }))),
+          Promise.all(albumKeys.map((k) => r2ReadJson(k))),
+        ]);
+
+        loadedTracks.forEach((t: any) => {
+          if (t?.id && t?.name && t?.audioUrl) {
+            const { uploadedByEmail: _omit, ...cleanTrack } = t;
+            trackMap.set(cleanTrack.id, cleanTrack);
+          }
+        });
+
+        const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+        for (const item of loadedProfiles) {
+          if (!item?.data || typeof item.data !== 'object') continue;
+          const { googleEmail: _omitEmail, ...clean } = item.data;
+          const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
+          if (!uid) continue;
+          const ts = Math.max(
+            Date.parse(String(clean.updatedAt || '')) || 0,
+            Date.parse(String(clean.acceptedTermsAt || '')) || 0
+          );
+          const isCanonicalKey = !item.key.startsWith('profiles/artist_');
+          const prev = profileMap.get(uid);
+          if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
+            profileMap.set(uid, {
+              data: { ...clean, id: uid, googleUid: uid },
+              ts,
+              isCanonicalKey,
+            });
+          }
+        }
+
+        return jsonResponse({
+          success: true,
+          tracks: Array.from(trackMap.values()),
+          profiles: Array.from(profileMap.values()).map((entry) => entry.data),
+          albums: loadedAlbums.filter(Boolean),
+        });
+      } catch (err: any) {
+        return jsonResponse(
+          { success: false, tracks: [], profiles: [], albums: [], error: err?.message || 'Bootstrap failed' },
+          500
+        );
+      }
+    }
+
+    // 15. Server-Side Google OAuth 2.0 + R2 Avatar Persistence
+    const getGoogleCreds = () => {
+      const clientId = (env.Client_ID || env.CLIENT_ID || env.GOOGLE_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
+      const clientSecret = (env.Client_secret || env.CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || '').trim().replace(/^["']|["']$/g, '');
+      const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
+      return { clientId, clientSecret, sessionSecret };
+    };
+
+    const toB64Url = (bytes: Uint8Array) =>
+      uint8ToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+
+    const fromB64Url = (str: string) => {
+      const b64 = str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4);
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    };
+
+    const signWorkerHmac = async (payloadObj: Record<string, any>, secret: string) => {
+      const encoded = toB64Url(encoder.encode(JSON.stringify(payloadObj)));
+      const sigBytes = await hmacSha256(secret, encoded);
+      return `${encoded}.${toB64Url(sigBytes)}`;
+    };
+
+    const verifyWorkerHmac = async (token: string, secret: string): Promise<any | null> => {
+      try {
+        const parts = token.split('.');
+        if (parts.length !== 2) return null;
+        const [encoded, sig] = parts;
+        const expected = toB64Url(await hmacSha256(secret, encoded));
+        if (sig.length !== expected.length) return null;
+        let diff = 0;
+        for (let i = 0; i < sig.length; i++) diff |= sig.charCodeAt(i) ^ expected.charCodeAt(i);
+        if (diff !== 0) return null;
+        const parsed = JSON.parse(new TextDecoder().decode(fromB64Url(encoded)));
+        if (parsed?.exp && Date.now() > Number(parsed.exp)) return null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    };
+
+    const extractWorkerSession = async (secret: string): Promise<{ session: any; token: string } | null> => {
+      const authHdr = (request.headers.get('authorization') || '').trim();
+      let token = '';
+      if (authHdr.toLowerCase().startsWith('bearer ')) {
+        token = authHdr.slice(7).trim();
+      }
+      if (!token) {
+        const cookieHdr = request.headers.get('cookie') || '';
+        for (const pair of cookieHdr.split(';')) {
+          const idx = pair.indexOf('=');
+          if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
+            try {
+              token = decodeURIComponent(pair.slice(idx + 1).trim());
+            } catch {
+              token = pair.slice(idx + 1).trim();
+            }
+          }
+        }
+      }
+      if (!token) return null;
+      const session = await verifyWorkerHmac(token, secret);
+      return session?.uid ? { session, token } : null;
+    };
+
+    const resolveSafeWorkerOrigin = (explicitOrigin?: string) => {
+      const valid = (v?: string) =>
+        !!v && (/^https:\/\/[a-zA-Z0-9.-]+(?::\d+)?$/.test(v) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(v));
+      const cleanExplicit = (explicitOrigin || '').trim().replace(/\/+$/, '');
+      if (valid(cleanExplicit)) return cleanExplicit;
+      const cleanAppUrl = (env.APP_URL || '').trim().replace(/\/+$/, '');
+      if (valid(cleanAppUrl)) return cleanAppUrl;
+      return url.origin;
+    };
+
+    const upgradeGooglePhotoWorker = (photoUrl?: string | null): string | undefined => {
+      if (!photoUrl || typeof photoUrl !== 'string') return undefined;
+      const trimmed = photoUrl.trim();
+      if (!trimmed) return undefined;
+      if (trimmed.includes('googleusercontent.com')) {
+        if (/=s\d+(-c)?$/.test(trimmed)) return trimmed.replace(/=s\d+(-c)?$/, '=s400-c');
+        if (/=w\d+-h\d+/.test(trimmed)) return trimmed.replace(/=w\d+-h\d+[^&]*/, '=s400-c');
+      }
+      return trimmed;
+    };
+
+    const purgeOldAvatarsWorker = async (uid: string, keepKey?: string) => {
+      const cleanUid = uid.replace(/^artist_/, '').trim();
+      for (const prefix of [`avatars/${cleanUid}`, `avatars/artist_${cleanUid}`]) {
+        try {
+          const existing = await r2ListKeys(prefix);
+          await Promise.allSettled(existing.filter((k) => k && k !== keepKey).map((k) => r2DeleteKey(k)));
+        } catch {}
+      }
+    };
+
+    const importExternalAvatarWorker = async (uid: string, externalUrl: string): Promise<string | null> => {
+      try {
+        const cleanUid = uid.replace(/^artist_/, '').trim();
+        const res = await fetch(externalUrl, {
+          headers: { 'User-Agent': 'Kolot-Avatar-Sync/1.0', Accept: 'image/*' },
+        });
+        if (!res.ok) return null;
+        const ct = res.headers.get('content-type') || 'image/jpeg';
+        if (!ct.startsWith('image/')) return null;
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes.byteLength === 0 || bytes.byteLength > 6 * 1024 * 1024) return null;
+        const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : 'jpg';
+        const newKey = `avatars/${cleanUid}_${Date.now()}.${ext}`;
+        if (env.R2_BUCKET) {
+          await env.R2_BUCKET.put(newKey, bytes, { httpMetadata: { contentType: ct } });
+        } else {
+          await signedR2Fetch(creds, 'PUT', `/${creds.bucket}/${encodeS3Path(newKey)}`, {}, bytes, { 'Content-Type': ct });
+        }
+        await purgeOldAvatarsWorker(cleanUid, newKey);
+        return `/api/storage/raw/${newKey}`;
+      } catch {
+        return null;
+      }
+    };
+
+    if (pathname === '/api/auth/google/url' && request.method === 'GET') {
+      const { clientId, sessionSecret } = getGoogleCreds();
+      if (!clientId) {
+        return jsonResponse(
+          { success: false, error: 'מזהה ההתחברות של Google (Client_ID) אינו מוגדר ב-Cloudflare Variables.' },
+          500
+        );
+      }
+      const appOrigin = resolveSafeWorkerOrigin(url.searchParams.get('origin') || '');
+      const redirectUri = `${appOrigin}/auth/callback`;
+      const nonceBytes = new Uint8Array(12);
+      crypto.getRandomValues(nonceBytes);
+      const state = await signWorkerHmac(
+        {
+          redirectUri,
+          nonce: toB64Url(nonceBytes),
+          exp: Date.now() + 10 * 60 * 1000,
+        },
+        sessionSecret
+      );
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid profile email');
+      authUrl.searchParams.set('prompt', 'select_account');
+      authUrl.searchParams.set('access_type', 'online');
+      authUrl.searchParams.set('state', state);
+      return jsonResponse({ success: true, url: authUrl.toString(), redirectUri });
+    }
+
+    if ((pathname === '/auth/callback' || pathname === '/auth/callback/') && request.method === 'GET') {
+      const renderPopupResult = (ok: boolean, payload: any, errMsg?: string, extraHeaders: Record<string, string> = {}) => {
+        const safeJson = JSON.stringify(payload).replace(/</g, '\\u003c');
+        const safeErr = JSON.stringify(errMsg || '').replace(/</g, '\\u003c');
+        const html = `<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head><meta charset="utf-8"><title>Kolot Music Auth</title></head>
+<body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;">
+  <div>
+    <p style="font-size:16px;font-weight:bold;">${ok ? 'ההתחברות עם Google הצליחה — החלון נסגר...' : 'ההתחברות בוטלה או נכשלה'}</p>
+    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${errMsg}</p>` : ''}
+  </div>
+  <script>
+    (function() {
+      try {
+        if (window.opener) {
+          window.opener.postMessage(${ok ? safeJson : `{ type: 'OAUTH_AUTH_ERROR', error: ${safeErr} }`}, '*');
+        }
+      } catch (e) {}
+      setTimeout(function() { window.close(); }, ${ok ? 250 : 1800});
+    })();
+  </script>
+</body>
+</html>`;
+        return new Response(html, {
+          status: ok ? 200 : 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders },
+        });
+      };
+
+      try {
+        const code = url.searchParams.get('code') || '';
+        const stateRaw = url.searchParams.get('state') || '';
+        const oauthErr = url.searchParams.get('error') || '';
+        if (oauthErr) return renderPopupResult(false, {}, `Google החזיר שגיאה: ${oauthErr}`);
+        if (!code || !stateRaw) return renderPopupResult(false, {}, 'חסרים פרטי אימות מהתחברות Google.');
+
+        const { clientId, clientSecret, sessionSecret } = getGoogleCreds();
+        if (!clientId || !clientSecret) {
+          return renderPopupResult(false, {}, 'הגדרות השרת (Client_ID / Client_secret) חסרות ב-Cloudflare.');
+        }
+
+        const verifiedState = await verifyWorkerHmac(stateRaw, sessionSecret);
+        const redirectUri = verifiedState?.redirectUri || `${url.origin}/auth/callback`;
+
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: 'authorization_code',
+          }).toString(),
+        });
+        const tokenData: any = await tokenRes.json().catch(() => ({}));
+        if (!tokenRes.ok || !tokenData.access_token) {
+          return renderPopupResult(
+            false,
+            {},
+            tokenData?.error_description || tokenData?.error || 'שגיאה באימות הקוד מול Google'
+          );
+        }
+
+        const userRes = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        const googleUser: any = await userRes.json().catch(() => ({}));
+        if (!userRes.ok || !googleUser?.sub) {
+          return renderPopupResult(false, {}, 'לא ניתן היה לקרוא את פרטי החשבון מ-Google.');
+        }
+
+        const uid = String(googleUser.sub).replace(/[^a-zA-Z0-9_\-]/g, '');
+        const displayName = String(googleUser.name || 'אמן').trim();
+        const googlePhotoUrl = upgradeGooglePhotoWorker(googleUser.picture);
+
+        let canonicalAvatarUrl = googlePhotoUrl;
+        try {
+          const existingProfile =
+            (await r2ReadJson(`profiles/${uid}.json`)) || (await r2ReadJson(`profiles/artist_${uid}.json`));
+          const existingAvatar = String(existingProfile?.avatarUrl || '').trim();
+          const hasR2StoredAvatar =
+            !!existingAvatar &&
+            !existingAvatar.includes('googleusercontent.com') &&
+            (existingAvatar.includes('/avatars/') || existingAvatar.includes('/api/storage/raw/'));
+
+          if (hasR2StoredAvatar) {
+            canonicalAvatarUrl = existingAvatar;
+          } else if (googlePhotoUrl) {
+            const importedUrl = await importExternalAvatarWorker(uid, googlePhotoUrl);
+            if (importedUrl) canonicalAvatarUrl = importedUrl;
+          }
+
+          if (existingProfile || canonicalAvatarUrl) {
+            const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};
+            const nextProfile = {
+              ...cleanExisting,
+              id: uid,
+              googleUid: uid,
+              name: cleanExisting.name || displayName,
+              avatarUrl: canonicalAvatarUrl || '',
+              isConnected: true,
+              isPrivate: cleanExisting.isPrivate ?? false,
+              tracksCount: cleanExisting.tracksCount ?? 0,
+              joinedDate: cleanExisting.joinedDate || new Date().getFullYear().toString(),
+              providerPlatform: 'חשבון גוגל',
+              updatedAt: new Date().toISOString(),
+            };
+            await r2WriteJson(`profiles/${uid}.json`, nextProfile);
+            void r2DeleteKey(`profiles/artist_${uid}.json`).catch(() => {});
+          }
+        } catch {}
+
+        const sessionPayload = {
+          uid,
+          displayName,
+          photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
+          googlePhotoUrl: googlePhotoUrl || undefined,
+          exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        };
+        const sessionToken = await signWorkerHmac(sessionPayload, sessionSecret);
+        const isHttps = redirectUri.startsWith('https://');
+        return renderPopupResult(
+          true,
+          {
+            type: 'OAUTH_AUTH_SUCCESS',
+            sessionToken,
+            user: {
+              uid,
+              displayName,
+              photoURL: sessionPayload.photoURL,
+              googlePhotoUrl: sessionPayload.googlePhotoUrl,
+            },
+          },
+          undefined,
+          {
+            'Set-Cookie': `kolot_session=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; Max-Age=2592000; ${
+              isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'
+            }`,
+          }
+        );
+      } catch (err: any) {
+        return renderPopupResult(false, {}, err?.message || 'שגיאה בתהליך ההתחברות');
+      }
+    }
+
+    if (pathname === '/api/auth/me' && request.method === 'GET') {
+      const { sessionSecret } = getGoogleCreds();
+      const parsed = await extractWorkerSession(sessionSecret);
+      if (!parsed) return jsonResponse({ success: true, user: null });
+
+      const { session } = parsed;
+      let liveAvatar = session.photoURL;
+      let liveName = session.displayName;
+      try {
+        const p = await r2ReadJson(`profiles/${session.uid}.json`);
+        if (p?.avatarUrl) liveAvatar = p.avatarUrl;
+        if (p?.name) liveName = p.name;
+      } catch {}
+
+      return jsonResponse({
+        success: true,
+        user: {
+          uid: session.uid,
+          displayName: liveName || session.displayName,
+          photoURL: liveAvatar || session.googlePhotoUrl || undefined,
+          googlePhotoUrl: session.googlePhotoUrl || undefined,
+        },
+      });
+    }
+
+    if (pathname === '/api/auth/logout' && request.method === 'POST') {
+      const isHttps = url.protocol === 'https:';
+      return jsonResponse(
+        { success: true },
+        200,
+        {
+          'Set-Cookie': `kolot_session=; Path=/; HttpOnly; Max-Age=0; ${isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'}`,
+        }
+      );
+    }
+
+    if (pathname === '/api/auth/restore-google-avatar' && request.method === 'POST') {
+      try {
+        const { sessionSecret } = getGoogleCreds();
+        const parsed = await extractWorkerSession(sessionSecret);
+        if (!parsed) {
+          return jsonResponse({ success: false, error: 'נדרש חיבור מחדש לחשבון Google.' }, 401);
+        }
+        const { session } = parsed;
+        const body: any = await request.json().catch(() => ({}));
+        const googlePhotoUrl = upgradeGooglePhotoWorker(session.googlePhotoUrl);
+        if (!googlePhotoUrl) {
+          return jsonResponse({ success: false, error: 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' }, 404);
+        }
+        const r2AvatarUrl = await importExternalAvatarWorker(session.uid, googlePhotoUrl);
+        if (!r2AvatarUrl) {
+          return jsonResponse({ success: false, error: 'הורדת תמונת Google אל אחסון R2 נכשלה.' }, 502);
+        }
+        const existingProfile = (await r2ReadJson(`profiles/${session.uid}.json`)) || {};
+        const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile;
+        const updatedProfile = {
+          ...cleanExisting,
+          id: session.uid,
+          googleUid: session.uid,
+          name: String(body?.name || '').trim() || cleanExisting.name || session.displayName || 'אמן',
+          avatarUrl: r2AvatarUrl,
+          isConnected: true,
+          hasAcceptedTerms: cleanExisting.hasAcceptedTerms ?? true,
+          isPrivate: false,
+          updatedAt: new Date().toISOString(),
+        };
+        await r2WriteJson(`profiles/${session.uid}.json`, updatedProfile);
+        void r2DeleteKey(`profiles/artist_${session.uid}.json`).catch(() => {});
+        return jsonResponse({ success: true, avatarUrl: r2AvatarUrl, profile: updatedProfile });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' }, 500);
       }
     }
 

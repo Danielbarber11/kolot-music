@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Cookie, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Language, ArtistProfile } from '../types';
-import { User as FirebaseUser } from 'firebase/auth';
+import { AuthUser } from '../services/authService';
 import { saveArtistAccountToR2 } from '../services/multiMusicService';
 
 interface CookieBannerProps {
   lang: Language;
-  currentUser?: FirebaseUser | null;
+  currentUser?: AuthUser | null;
   artistProfile?: ArtistProfile | null;
 }
 

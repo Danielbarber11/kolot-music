@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, ShieldAlert, Check, FileText, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, Language } from '../types';
-import { saveTrackReportToFirebase } from '../services/firebaseService';
+import { saveTrackReportToR2 } from '../services/authService';
 import { TrackCoverArt } from './TrackCoverArt';
 
 interface ReportSongModalProps {
@@ -64,8 +64,8 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       status: 'pending',
     };
 
-    // Save strictly to Firebase Firestore / R2 backend (zero localStorage PII)
-    await saveTrackReportToFirebase(report);
+    // Save strictly to Cloudflare R2 backend (zero localStorage PII)
+    await saveTrackReportToR2(report);
 
     setIsSubmitting(false);
     setIsSubmitted(true);
