@@ -1224,8 +1224,23 @@ export default {
 
     // 15. Server-Side Google OAuth 2.0 + R2 Avatar Persistence
     const getGoogleCreds = () => {
-      const clientId = (env.Client_ID || env.CLIENT_ID || env.GOOGLE_CLIENT_ID || '').trim().replace(/^["']|["']$/g, '');
-      const clientSecret = (env.Client_secret || env.CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || '').trim().replace(/^["']|["']$/g, '');
+      const readEnvVar = (...names: string[]): string => {
+        for (const name of names) {
+          const direct = (env as Record<string, any>)[name];
+          if (typeof direct === 'string' && direct.trim()) {
+            return direct.trim().replace(/^["']|["']$/g, '');
+          }
+        }
+        const wanted = new Set(names.map((n) => n.toLowerCase()));
+        for (const [k, v] of Object.entries(env as Record<string, any>)) {
+          if (typeof v === 'string' && v.trim() && wanted.has(k.trim().toLowerCase())) {
+            return v.trim().replace(/^["']|["']$/g, '');
+          }
+        }
+        return '';
+      };
+      const clientId = readEnvVar('Client_ID', 'CLIENT_ID', 'GOOGLE_CLIENT_ID', 'VITE_GOOGLE_CLIENT_ID');
+      const clientSecret = readEnvVar('Client_secret', 'CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET');
       const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
       return { clientId, clientSecret, sessionSecret };
     };

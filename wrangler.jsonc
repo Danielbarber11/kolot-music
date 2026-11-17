@@ -3,6 +3,7 @@
   "name": "kolot-music",
   "main": "./worker.ts",
   "compatibility_date": "2025-04-01",
+  "keep_vars": true,
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
