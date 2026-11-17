@@ -56,6 +56,7 @@ import { Footer } from './Footer';
 import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
 import { AuthModal } from './AuthModal';
+import { AccessibilityIcon } from './AccessibilityPage';
 import {
   AuthUser,
   onAuthUserChanged,
@@ -87,6 +88,8 @@ interface SongsViewProps {
   onArtistsSync?: (artists: ArtistProfile[]) => void;
   onNavigateHome: () => void;
   onPlayTrack?: (track: JamendoTrack) => void;
+  onOpenAccessibility?: () => void;
+  activeAccessibilityCount?: number;
 }
 
 export const SongsView: React.FC<SongsViewProps> = ({
@@ -97,6 +100,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
   onTracksSync,
   onArtistsSync,
   onPlayTrack,
+  onOpenAccessibility,
+  activeAccessibilityCount = 0,
 }) => {
   const isHe = lang === 'he';
 
@@ -749,6 +754,28 @@ export const SongsView: React.FC<SongsViewProps> = ({
               )}
             </button>
 
+            {/* Accessibility Button Right Next to Favorites Heart */}
+            {onOpenAccessibility && (
+              <button
+                type="button"
+                onClick={onOpenAccessibility}
+                className={`relative w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
+                  activeAccessibilityCount > 0
+                    ? 'bg-white text-black border-white shadow-sm'
+                    : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
+                }`}
+                title={isHe ? 'נגישות והגדרות נגישות' : 'Accessibility'}
+                aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
+              >
+                <AccessibilityIcon className="w-4 h-4" />
+                {activeAccessibilityCount > 0 && (
+                  <span className="sr-only">
+                    {isHe ? `${activeAccessibilityCount} התאמות נגישות פעילות` : `${activeAccessibilityCount} active accessibility features`}
+                  </span>
+                )}
+              </button>
+            )}
+
             {/* Google Sign-in Button */}
             {!authUser ? (
               <button
@@ -851,6 +878,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
             <span className="text-[10px] text-white/80 font-bold">({likedSongIds.length})</span>
           )}
         </button>
+
+        {/* Mobile Accessibility Button Right Next to Favorites Heart */}
+        {onOpenAccessibility && (
+          <button
+            type="button"
+            onClick={onOpenAccessibility}
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
+              activeAccessibilityCount > 0
+                ? 'bg-white text-black border-white shadow-sm'
+                : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
+            }`}
+            title={isHe ? 'נגישות' : 'Accessibility'}
+            aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
+          >
+            <AccessibilityIcon className="w-4 h-4" />
+          </button>
+        )}
 
         {/* Mobile Search Input Keyboard */}
         <div className="relative flex-1">
@@ -1833,6 +1877,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             lang={lang}
             onOpenPortal={() => setIsArtistPortalOpen(true)}
             onOpenTerms={() => setShowTermsModal(true)}
+            onOpenAccessibility={onOpenAccessibility}
           />
         </main>
       </div>

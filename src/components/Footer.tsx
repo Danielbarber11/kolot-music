@@ -17,17 +17,20 @@ import {
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
 import { Logo } from './Logo';
+import { AccessibilityIcon } from './AccessibilityPage';
 
 interface FooterProps {
   lang: Language;
   onOpenPortal?: () => void;
   onOpenTerms?: () => void;
+  onOpenAccessibility?: () => void;
 }
 
 export const Footer: React.FC<FooterProps> = ({
   lang,
   onOpenPortal,
   onOpenTerms,
+  onOpenAccessibility,
 }) => {
   const isHe = lang === 'he';
   const { isInstalled, isInstallable, isIOS, install } = usePWAInstall();
@@ -174,6 +177,23 @@ export const Footer: React.FC<FooterProps> = ({
                     </span>
                   </button>
                 )}
+
+                {/* 4. ACCESSIBILITY STATEMENT & TOOLS BUTTON */}
+                {onOpenAccessibility && (
+                  <button
+                    type="button"
+                    onClick={onOpenAccessibility}
+                    className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all text-xs font-medium text-white/90 group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <AccessibilityIcon className="w-4 h-4 text-white group-hover:scale-110 transition-transform" />
+                      <span>{isHe ? 'נגישות והצהרת נגישות' : 'Accessibility & Statement'}</span>
+                    </div>
+                    <span className="text-[10px] text-white/40 group-hover:text-white/70">
+                      {isHe ? 'פתח' : 'Open'}
+                    </span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -237,6 +257,18 @@ export const Footer: React.FC<FooterProps> = ({
               >
                 {isHe ? 'תנאי שימוש' : 'Terms'}
               </button>
+              {onOpenAccessibility && (
+                <>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    onClick={onOpenAccessibility}
+                    className="hover:text-white transition-colors cursor-pointer"
+                  >
+                    {isHe ? 'הצהרת נגישות' : 'Accessibility'}
+                  </button>
+                </>
+              )}
               <span>•</span>
               <button
                 type="button"

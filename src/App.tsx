@@ -12,6 +12,14 @@ import {
 } from './services/multiMusicService';
 import { getStreamingMediaUrl } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
+import { AccessibilityPage } from './components/AccessibilityPage';
+import {
+  AccessibilitySettings,
+  loadAccessibilitySettings,
+  saveAccessibilitySettings,
+  applyAccessibilitySettingsToDom,
+  countActiveAccessibilityFeatures,
+} from './services/accessibilityService';
 
 function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = Array.from(
@@ -51,6 +59,33 @@ export default function App() {
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [allAlbums, setAllAlbums] = useState<Album[]>(() => getCachedAlbums());
+
+  const [a11ySettings, setA11ySettings] = useState<AccessibilitySettings>(() => {
+    const loaded = loadAccessibilitySettings();
+    applyAccessibilitySettingsToDom(loaded);
+    return loaded;
+  });
+  const [isAccessibilityOpen, setIsAccessibilityOpen] = useState(false);
+  const [guideY, setGuideY] = useState<number>(220);
+
+  const handleUpdateAccessibility = (next: AccessibilitySettings) => {
+    setA11ySettings(next);
+    saveAccessibilitySettings(next);
+    applyAccessibilitySettingsToDom(next);
+  };
+
+  useEffect(() => {
+    applyAccessibilitySettingsToDom(a11ySettings);
+  }, [a11ySettings]);
+
+  useEffect(() => {
+    if (!a11ySettings.readingGuide) return;
+    const handleMove = (e: MouseEvent) => {
+      setGuideY(e.clientY);
+    };
+    window.addEventListener('mousemove', handleMove, { passive: true });
+    return () => window.removeEventListener('mousemove', handleMove);
+  }, [a11ySettings.readingGuide]);
 
   const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
     try {
@@ -102,6 +137,8 @@ export default function App() {
     );
   };
 
+  const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings);
+
   return (
     <SecurityGuard>
       <div className="min-h-screen bg-[#000000] text-white flex flex-col font-sans selection:bg-white selection:text-black relative">
@@ -121,6 +158,8 @@ export default function App() {
             onArtistsSync={setAllArtists}
             onNavigateHome={() => setActivePlayerTrack(null)}
             onPlayTrack={(track) => setActivePlayerTrack(track)}
+            onOpenAccessibility={() => setIsAccessibilityOpen(true)}
+            activeAccessibilityCount={activeAccessibilityCount}
           />
 
           {/* Full-Page Luxury Player Overlay with Smooth Silk Transition */}
@@ -141,6 +180,36 @@ export default function App() {
             )}
           </AnimatePresence>
         </main>
+
+        {/* FULL-SCREEN BLACK ACCESSIBILITY SETTINGS & STATEMENT PAGE */}
+        <AnimatePresence>
+          {isAccessibilityOpen && (
+            <AccessibilityPage
+              isOpen={isAccessibilityOpen}
+              onClose={() => setIsAccessibilityOpen(false)}
+              settings={a11ySettings}
+              onUpdateSettings={handleUpdateAccessibility}
+              lang={lang}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* GLOBAL GRAYSCALE OVERLAY (Preserves fixed positioning across all modals/bars) */}
+        {a11ySettings.grayscale && (
+          <div
+            aria-hidden="true"
+            className="fixed inset-0 z-[99990] pointer-events-none backdrop-grayscale"
+          />
+        )}
+
+        {/* GLOBAL READING GUIDE OVERLAY */}
+        {a11ySettings.readingGuide && (
+          <div
+            aria-hidden="true"
+            style={{ top: `${guideY}px` }}
+            className="fixed left-0 right-0 h-1 -translate-y-1/2 z-[99991] pointer-events-none bg-white/80 shadow-[0_0_16px_rgba(255,255,255,0.85)]"
+          />
+        )}
       </div>
     </SecurityGuard>
   );

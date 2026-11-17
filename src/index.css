@@ -63,6 +63,12 @@ html, body {
   -ms-overflow-style: none !important;
   background-color: #000000;
   color: #ffffff;
+  font-weight: 400;
+}
+
+/* Uniform regular typography across the entire site */
+body, h1, h2, h3, h4, h5, h6, p, span, a, button, input, textarea, select, label, li, strong, b {
+  font-weight: 400 !important;
 }
 
 /* Continuous Marquee Scrolling Animations for Long Song Titles */
@@ -114,3 +120,118 @@ html, body {
   }
 }
 
+/* Content & Image Protection (Default: block text/image selection; allow text highlighting only when Accessibility toggle is enabled) */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+img,
+svg,
+video,
+canvas {
+  -webkit-user-drag: none !important;
+  user-drag: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+/* Accessibility: Reading-Only Text Selection (Copying & Images remain blocked by event guards) */
+html.kolot-allow-select body,
+html.kolot-allow-select main,
+html.kolot-allow-select header,
+html.kolot-allow-select footer,
+html.kolot-allow-select section,
+html.kolot-allow-select article,
+html.kolot-allow-select h1,
+html.kolot-allow-select h2,
+html.kolot-allow-select h3,
+html.kolot-allow-select h4,
+html.kolot-allow-select p,
+html.kolot-allow-select span,
+html.kolot-allow-select li,
+html.kolot-allow-select div {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+html.kolot-allow-select button,
+html.kolot-allow-select [role="button"],
+html.kolot-allow-select img,
+html.kolot-allow-select svg {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+/* Accessibility: High Contrast */
+html.kolot-a11y-contrast body {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+}
+
+html.kolot-a11y-contrast * {
+  border-color: rgba(255, 255, 255, 0.45) !important;
+}
+
+html.kolot-a11y-contrast .text-neutral-400,
+html.kolot-a11y-contrast .text-neutral-500,
+html.kolot-a11y-contrast .text-white\/40,
+html.kolot-a11y-contrast .text-white\/50,
+html.kolot-a11y-contrast .text-white\/60 {
+  color: #f3f4f6 !important;
+}
+
+/* Accessibility: Highlight Links & Buttons */
+html.kolot-a11y-links a,
+html.kolot-a11y-links button {
+  outline: 2px solid rgba(255, 255, 255, 0.75) !important;
+  outline-offset: 2px !important;
+  text-decoration: underline !important;
+  text-underline-offset: 3px !important;
+}
+
+/* Accessibility: Strong Keyboard Focus Ring */
+html.kolot-a11y-focus *:focus-visible {
+  outline: 3px solid #ffffff !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.25) !important;
+}
+
+/* Accessibility: Readable Sans-Serif Font */
+html.kolot-a11y-readable,
+html.kolot-a11y-readable * {
+  font-family: Arial, "Segoe UI", Tahoma, sans-serif !important;
+}
+
+/* Accessibility: Extra Line & Letter Spacing */
+html.kolot-a11y-spacing,
+html.kolot-a11y-spacing * {
+  letter-spacing: 0.04em !important;
+  word-spacing: 0.12em !important;
+  line-height: 1.7 !important;
+}
+
+/* Accessibility: Stop Animations & Motion */
+html.kolot-a11y-no-motion *,
+html.kolot-a11y-no-motion *::before,
+html.kolot-a11y-no-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Accessibility: Large High-Contrast Cursor */
+html.kolot-a11y-cursor,
+html.kolot-a11y-cursor * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'%3E%3Cpath d='M4 3l12 28 4-11 11-4z' fill='%23ffffff' stroke='%23000000' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E") 4 3, auto !important;
+}
