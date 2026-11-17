@@ -1361,9 +1361,11 @@ export default {
     };
 
     if (pathname === '/api/auth/google/start' && request.method === 'GET') {
-      const { clientId, sessionSecret } = getGoogleCreds();
-      if (!clientId) {
-        const errMsg = 'מזהה ההתחברות של Google (Client_ID) אינו מוגדר ב-Cloudflare Variables.';
+      const { clientId, clientSecret, sessionSecret } = getGoogleCreds();
+      if (!clientId || !clientSecret) {
+        const missing = [!clientId ? 'Client_ID' : '', !clientSecret ? 'Client_secret' : ''].filter(Boolean).join(' + ');
+        const envKeyList = Object.keys((env as Record<string, any>) || {}).join(', ') || 'none';
+        const errMsg = `מזהה ההתחברות של Google (${missing}) אינו מוגדר ב-Cloudflare Runtime Variables & Secrets. (מפתחות פעילים כרגע ב-Worker: ${envKeyList})`;
         const html = `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${errMsg}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`;
         return new Response(html, {
           status: 500,
@@ -1394,10 +1396,16 @@ export default {
     }
 
     if (pathname === '/api/auth/google/url' && request.method === 'GET') {
-      const { clientId, sessionSecret } = getGoogleCreds();
-      if (!clientId) {
+      const { clientId, clientSecret, sessionSecret } = getGoogleCreds();
+      if (!clientId || !clientSecret) {
+        const missing = [!clientId ? 'Client_ID' : '', !clientSecret ? 'Client_secret' : ''].filter(Boolean).join(' + ');
+        const envKeys = Object.keys((env as Record<string, any>) || {});
         return jsonResponse(
-          { success: false, error: 'מזהה ההתחברות של Google (Client_ID) אינו מוגדר ב-Cloudflare Variables.' },
+          {
+            success: false,
+            error: `מזהה ההתחברות של Google (${missing}) אינו מוגדר ב-Cloudflare Runtime Variables & Secrets.`,
+            envKeys,
+          },
           500
         );
       }
