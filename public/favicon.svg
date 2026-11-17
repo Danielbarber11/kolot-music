@@ -1,25 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 20 160 160" style="background: transparent;">
   <defs>
-    <linearGradient id="kolotSilver" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF" />
-      <stop offset="50%" stop-color="#E5E7EB" />
-      <stop offset="100%" stop-color="#FFFFFF" />
+    <linearGradient id="darkLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2c2c2c" />
+      <stop offset="50%" stop-color="#141414" />
+      <stop offset="100%" stop-color="#000000" />
     </linearGradient>
+    <filter id="softShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#000000" flood-opacity="0.28" />
+    </filter>
   </defs>
-  <rect width="512" height="512" rx="112" fill="#000000" />
-  <rect x="6" y="6" width="500" height="500" rx="108" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="6" />
-  <g transform="translate(256, 266) scale(0.84) translate(-600, -340)">
-    <path
-      d="M600 540 C600 540, 380 400, 380 260 C380 180, 448 140, 512 140 C560 140, 588 168, 600 192 C612 168, 640 140, 688 140 C752 140, 820 180, 820 260 C820 400, 600 540, 600 540 Z"
-      fill="none"
-      stroke="url(#kolotSilver)"
-      stroke-width="30"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-    <path
-      d="M624 168 L624 368 C624 404, 592 428, 556 428 C524 428, 504 408, 504 380 C504 352, 528 328, 564 328 C580 328, 592 332, 600 340 L600 140 C600 140, 656 168, 688 208 C704 228, 704 256, 696 272 C688 248, 660 212, 624 196 Z"
-      fill="url(#kolotSilver)"
-    />
+
+  <g filter="url(#softShadow)">
+    <path d="M100 156 C80 138, 46 112, 46 82 C46 58, 66 48, 82 54 C88 56, 93 61, 96 66"
+          fill="none"
+          stroke="url(#darkLogoGrad)"
+          stroke-width="10"
+          stroke-linecap="round"
+          stroke-linejoin="round" />
+
+    <path d="M100 156 C120 138, 154 112, 154 82 C154 62, 138 50, 122 54"
+          fill="none"
+          stroke="url(#darkLogoGrad)"
+          stroke-width="10"
+          stroke-linecap="round"
+          stroke-linejoin="round" />
+
+    <path d="M101 38 L108 38 C112 52, 128 62, 130 82 C131 94, 125 104, 118 110 C122 98, 122 86, 118 76 C115 69, 110 64, 108 62 L108 116 C108 126, 98 134, 87 134 C78 134, 72 128, 72 120 C72 110, 81 102, 92 102 C96 102, 99 103, 101 105 Z"
+          fill="url(#darkLogoGrad)" />
   </g>
 </svg>
