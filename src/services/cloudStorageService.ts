@@ -125,8 +125,10 @@ function xhrSend(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url, true);
-    xhr.withCredentials = true;
-    const allHeaders = { ...getR2AuthHeaders(), ...headers };
+    const isSameOrigin = url.startsWith('/') || (typeof window !== 'undefined' && url.startsWith(window.location.origin));
+    xhr.withCredentials = isSameOrigin;
+    xhr.timeout = 120000;
+    const allHeaders = isSameOrigin ? { ...getR2AuthHeaders(), ...headers } : { ...headers };
     for (const [k, v] of Object.entries(allHeaders)) {
       xhr.setRequestHeader(k, v);
     }
@@ -143,6 +145,9 @@ function xhrSend(
     xhr.onerror = () => {
       reject(new Error('תקלת רשת בהעלאת הקובץ לענן'));
     };
+    xhr.ontimeout = () => {
+      reject(new Error('העלאת הקובץ ארכה יותר מדי זמן — בדוק חיבור לאינטרנט ונסה שוב'));
+    };
     xhr.onabort = () => {
       reject(new Error('ההעלאה בוטלה'));
     };
@@ -151,8 +156,8 @@ function xhrSend(
 }
 
 /**
- * Uploads any Blob/File directly to Cloudflare R2 via Presigned PUT URL (fastest, supports huge files up to 1GB),
- * seamlessly falling back to XHR multipart /api/storage/upload if direct CORS PUT fails.
+ * Uploads any Blob/File directly to Cloudflare R2 via Presigned/Stream PUT URL for large audio files,
+ * skipping the extra presign roundtrip for small files (covers) and falling back cleanly to multipart upload.
  */
 async function uploadBinaryFastToR2(
   blob: File | Blob,
@@ -160,33 +165,36 @@ async function uploadBinaryFastToR2(
   contentType: string,
   onProgress?: (percent: number) => void
 ): Promise<{ success: boolean; url?: string; error?: string }> {
-  // 1. Try Direct Presigned PUT (browser -> Cloudflare R2 directly, zero Express buffering)
-  try {
-    const presignRes = await fetch('/api/storage/presign', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: r2Path, contentType }),
-    });
-    if (presignRes.ok) {
-      const presignData = await safeJson(presignRes, 'קבלת כתובת העלאה מהירה נכשלה');
-      if (presignData.success && presignData.uploadUrl && presignData.url) {
-        const directRes = await xhrSend(
-          'PUT',
-          presignData.uploadUrl,
-          blob,
-          { 'Content-Type': contentType },
-          onProgress
-        );
-        if (directRes.status >= 200 && directRes.status < 300) {
-          return { success: true, url: presignData.url };
+  // 1. Direct Stream / Presigned PUT for larger binary files (> 1.5MB)
+  if (blob.size > 1.5 * 1024 * 1024) {
+    try {
+      const presignRes = await fetch('/api/storage/presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+        credentials: 'include',
+        body: JSON.stringify({ path: r2Path, contentType }),
+      });
+      if (presignRes.ok) {
+        const presignData = await safeJson(presignRes, 'קבלת כתובת העלאה מהירה נכשלה');
+        if (presignData.success && presignData.uploadUrl && presignData.url) {
+          const directRes = await xhrSend(
+            'PUT',
+            presignData.uploadUrl,
+            blob,
+            { 'Content-Type': contentType },
+            onProgress
+          );
+          if (directRes.status >= 200 && directRes.status < 300) {
+            return { success: true, url: presignData.url };
+          }
         }
       }
+    } catch (directErr) {
+      console.warn('[FastUpload] Direct R2 PUT unavailable, using server multipart fallback:', directErr);
     }
-  } catch (directErr) {
-    console.warn('[FastUpload] Direct R2 PUT unavailable, using server multipart fallback:', directErr);
   }
 
-  // 2. Seamless Fallback: Streaming XHR POST -> /api/storage/upload
+  // 2. Single-roundtrip Direct POST -> /api/storage/upload (optimal for small covers & fallback)
   const formData = new FormData();
   formData.append('file', blob);
   formData.append('path', r2Path);

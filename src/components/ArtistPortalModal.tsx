@@ -962,23 +962,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     let effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
 
-    // Fast (<250ms) on-device DSP genre classification when untagged — zero network, zero model wait
-    if (!effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי') {
-      try {
-        const autoCls = await classifyTrackAudio({
-          audioFile: rawAudioFile || undefined,
-          audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
-          songTitle: songTitle.trim(),
-          artistName: performingArtistInput.trim() || currentArtist.name,
-          lyrics: lyricsInput.trim(),
-          deepClassify: false,
-        });
-        if (autoCls.success && autoCls.genre) {
-          effectiveGenre = autoCls.genre;
-        }
-      } catch {}
-    }
-
     const trackId = `artist_track_${Date.now()}`;
     const tempTrackForColor: JamendoTrack = {
       id: trackId,
@@ -991,19 +974,62 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
     };
 
-    // Extract accurate color from the cover quickly (capped at 250ms so publish never stalls)
+    // Run lightweight genre resolution + cover color extraction in parallel, strictly capped at <= 400ms so upload begins immediately
     let computedColor = getTrackInstantColor(tempTrackForColor);
-    try {
-      if (coverArtUrl.trim()) {
-        const extractedBefore = await Promise.race([
-          extractImageColor(coverArtUrl.trim()),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
-        ]);
-        if (extractedBefore) {
-          computedColor = extractedBefore;
-        }
-      }
-    } catch {}
+    const prepPromises: Promise<void>[] = [];
+
+    if (!effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי') {
+      prepPromises.push(
+        (async () => {
+          try {
+            const autoCls = await Promise.race([
+              classifyTrackAudio({
+                audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
+                songTitle: songTitle.trim(),
+                artistName: performingArtistInput.trim() || currentArtist.name,
+                lyrics: lyricsInput.trim(),
+                deepClassify: false,
+              }),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
+            ]);
+            if (autoCls?.success && autoCls.genre) {
+              effectiveGenre = autoCls.genre;
+            } else {
+              const fastMetaCls = await classifyTrackAudio({
+                songTitle: songTitle.trim(),
+                artistName: performingArtistInput.trim() || currentArtist.name,
+                lyrics: lyricsInput.trim(),
+                deepClassify: false,
+              });
+              if (fastMetaCls.success && fastMetaCls.genre) {
+                effectiveGenre = fastMetaCls.genre;
+              }
+            }
+          } catch {}
+        })()
+      );
+    }
+
+    if (coverArtUrl.trim()) {
+      prepPromises.push(
+        (async () => {
+          try {
+            const extractedBefore = await Promise.race([
+              extractImageColor(coverArtUrl.trim()),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+            ]);
+            if (extractedBefore) {
+              computedColor = extractedBefore;
+            }
+          } catch {}
+        })()
+      );
+    }
+
+    if (prepPromises.length > 0) {
+      await Promise.all(prepPromises);
+    }
+
     const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.8) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
 
     const updatedArtist: ArtistProfile = {
@@ -1012,7 +1038,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       tracksCount: (currentArtist.tracksCount || 0) + 1,
     };
     setCurrentArtist(updatedArtist);
-    saveArtistAccountToR2(updatedArtist).catch(() => {});
 
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist');
 
@@ -1030,43 +1055,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       finalDraftLyricsHe = '';
       finalDraftLyricsEn = '';
       sanitizedManualLyrics = '';
-    } else {
-      const hasDraftAlready =
-        !!(finalDraftSegments && finalDraftSegments.length > 0) ||
-        !!(finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0) ||
-        !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0);
-
-      if (!hasDraftAlready && !sanitizedManualLyrics && (rawAudioFile || audioStreamUrl.trim())) {
-        try {
-          setPublishProgressStep(isHe ? 'יוצר כתוביות מדויקות על המכשיר...' : 'Generating on-device subtitles...');
-          setUploadProgressPercent(12);
-          const autoSubRes = await transcribeTrackWithWhisperAI({
-            audioFile: rawAudioFile || undefined,
-            track: !rawAudioFile && audioStreamUrl.trim() ? {
-              id: trackId,
-              name: songTitle.trim(),
-              artistName: finalArtistName,
-              albumName: albumTitle.trim() || 'Single',
-              duration: 180,
-              audioUrl: audioStreamUrl.trim(),
-              coverUrl: coverArtUrl.trim(),
-            } : undefined,
-            language: isHe ? 'he' : 'en',
-            subtitleLanguageHint: subtitleLangChoice,
-            onProgress: (txt) => setPublishProgressStep(txt),
-          });
-          if (autoSubRes.success) {
-            finalDraftSegments = autoSubRes.segments || autoSubRes.segmentsHe;
-            finalDraftSegmentsHe = autoSubRes.segmentsHe;
-            finalDraftSegmentsEn = autoSubRes.segmentsEn;
-            finalDraftLyricsHe = autoSubRes.lyricsHe || '';
-            finalDraftLyricsEn = autoSubRes.lyricsEn || '';
-          }
-        } catch (subErr) {
-          console.warn('[PublishTrack] Auto-subtitle skipped gracefully:', subErr);
-        }
-      }
     }
+    // Note: Never block publishing with slow on-device Whisper AI transcription; pre-generated drafts & typed lyrics attach immediately,
+    // and subtitles can be generated anytime inside the player without delaying song upload.
 
     const hasAnyDraftSubtitles =
       includeSubtitles &&
@@ -2345,8 +2336,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           }
                         }}
                         placeholder={isHe
-                          ? 'אופציונלי: ערוך/הדבק מילים כאן, או השאר ריק והמערכת תיצור כתוביות אוטומטית בפרסום'
-                          : 'Optional: edit/paste lyrics here, or leave empty to auto-transcribe on publish'}
+                          ? 'אופציונלי: הזן מילים או לחץ "צור כתוביות עכשיו" (השיר מפורסם מיידית תוך שניות)'
+                          : 'Optional: paste lyrics or click "Generate Subtitles Now" (publishing stays instant)'}
                         className="w-full px-4 py-3 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white text-xs leading-relaxed transition-colors"
                       />
                     </div>
