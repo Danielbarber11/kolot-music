@@ -992,7 +992,7 @@ export default {
           `If purely instrumental output only: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track'}.`;
 
         let textOut = '';
-        for (const modelName of ['gemini-3.5-transcribe', 'gemini-2.5-flash']) {
+        for (const modelName of ['gemini-3.5-transcribe', 'gemini-4-hydrogen']) {
           try {
             const geminiRes = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,

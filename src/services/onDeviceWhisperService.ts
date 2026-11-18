@@ -383,10 +383,142 @@ export async function buildInstantSubtitlesFromLyrics(
   };
 }
 
+function encodePcm16kToWavBlob(pcm: Float32Array): Blob {
+  const numSamples = pcm.length;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (off: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true);
+  view.setUint32(28, 32000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function parseBrowserTimedTranscript(raw: string, durationSeconds: number): SubtitleSegment[] {
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const parsed: SubtitleSegment[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\[?(\d{1,2}):(\d{2})(?:\s*[-–]\s*(\d{1,2}):(\d{2}))?\]?\s*(.+)$/);
+    if (m) {
+      const startTime = Number(m[1]) * 60 + Number(m[2]);
+      const endTime =
+        m[3] && m[4]
+          ? Number(m[3]) * 60 + Number(m[4])
+          : Math.min(durationSeconds, startTime + 4);
+      const text = sanitizeSubtitleLettersOnly(m[5]);
+      if (text && !isHallucinationPhrase(text)) {
+        parsed.push({
+          id: `chrome_ai_${parsed.length}`,
+          startTime: Number(Math.max(0, startTime).toFixed(2)),
+          endTime: Number(Math.max(startTime + 0.9, endTime).toFixed(2)),
+          text,
+        });
+      }
+    }
+  }
+  if (parsed.length > 0) return parsed;
+  const plainLines = lines
+    .map((l) => sanitizeSubtitleLettersOnly(l))
+    .filter((t) => t && !isHallucinationPhrase(t));
+  if (plainLines.length === 0) return [];
+  const step = Math.max(1.8, Math.min(durationSeconds, 90) / plainLines.length);
+  return plainLines.map((text, idx) => ({
+    id: `chrome_ai_${idx}`,
+    startTime: Number((idx * step).toFixed(2)),
+    endTime: Number(Math.min(durationSeconds, (idx + 1) * step).toFixed(2)),
+    text,
+  }));
+}
+
+async function tryChromeBuiltInAudioAi(
+  pcm: Float32Array,
+  totalDuration: number,
+  hintTitle?: string,
+  subtitleLanguageHint?: 'auto' | 'he' | 'en',
+  signal?: AbortSignal
+): Promise<SubtitleSegment[] | null> {
+  try {
+    const lm = (globalThis as any).LanguageModel;
+    if (!lm || typeof lm.create !== 'function' || typeof lm.availability !== 'function') {
+      return null;
+    }
+    const avail = await lm.availability({ expectedInputs: [{ type: 'audio' }] }).catch(() => 'unavailable');
+    if (avail !== 'available' && avail !== 'readily') {
+      return null;
+    }
+    const maxAudioSamples = Math.min(pcm.length, 90 * 16000);
+    const wavBlob = encodePcm16kToWavBlob(pcm.subarray(0, maxAudioSamples));
+    const session = await lm.create({
+      expectedInputs: [{ type: 'audio' }],
+      signal,
+    });
+    try {
+      const langNote =
+        subtitleLanguageHint === 'en'
+          ? 'English'
+          : subtitleLanguageHint === 'he'
+            ? 'Hebrew'
+            : 'the exact language sung (Hebrew or English)';
+      const prompt = [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              value:
+                `Transcribe the sung lyrics in this audio in ${langNote}. ` +
+                `${hintTitle ? `Song title: "${hintTitle}". ` : ''}` +
+                `Format each lyric line strictly as [MM:SS - MM:SS] Lyric text with no commentary.`,
+            },
+            { type: 'audio', value: wavBlob },
+          ],
+        },
+      ];
+      const out = await session.prompt(prompt, { signal });
+      const segs = parseBrowserTimedTranscript(String(out || ''), totalDuration);
+      return segs.length > 0 ? segs : null;
+    } finally {
+      session.destroy?.();
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function hasWebGpuQuick(): Promise<boolean> {
+  try {
+    const gpu = (navigator as any)?.gpu;
+    if (!gpu || typeof gpu.requestAdapter !== 'function') return false;
+    const adapter = await gpu.requestAdapter();
+    return Boolean(adapter?.features?.has?.('shader-f16'));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Generates bilingual synchronized subtitles without ever blocking or crashing the main browser thread:
  * 1. Primary path: Fast server-side transcription via /api/ai/transcribe (~3-8s).
- * 2. Fallback path: Runs quantized Whisper Tiny (q8) inside a dedicated background Web Worker so UI & buttons stay 100% responsive.
+ * 2. Chrome Built-in Multimodal Audio AI (when installed natively in browser, 0MB download).
+ * 3. WebGPU / WASM Whisper inside dedicated background Web Worker with resetting stall watchdog.
  */
 export async function transcribeAudioOnDevice(options: {
   audioFile?: File | Blob | null;
@@ -423,9 +555,9 @@ export async function transcribeAudioOnDevice(options: {
 
     // 1. ULTRA-FAST SERVER TRANSCRIPTION FIRST (3-8s, zero browser RAM/CPU load)
     try {
-      options.onProgress?.('מייצר כתוביות במהירות בשרת...', 18);
+      options.onProgress?.('בודק תמלול מהיר בשרת...', 14);
       const localController = new AbortController();
-      const timeoutId = setTimeout(() => localController.abort(), 30000);
+      const timeoutId = setTimeout(() => localController.abort(), 24000);
       const onParentAbort = () => localController.abort();
       options.signal?.addEventListener('abort', onParentAbort, { once: true });
 
@@ -531,19 +663,12 @@ export async function transcribeAudioOnDevice(options: {
       if (options.signal?.aborted) {
         return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
       }
-      console.warn('[Subtitles] Server transcribe unavailable, starting non-blocking Web Worker:', fastErr?.message);
+      console.warn('[Subtitles] Server transcribe unavailable, probing browser AI / WebGPU worker:', fastErr?.message);
     }
 
-    // 2. NON-BLOCKING BACKGROUND WEB WORKER WHISPER ENGINE (NEVER FREEZES OR BLOCKS UI)
-    if (typeof Worker === 'undefined') {
-      return {
-        success: false,
-        error: 'מנוע הכתוביות ברקע אינו נתמך בדפדפן זה — מומלץ להדביק מילים וללחוץ "סנכרן מילים"',
-      };
-    }
-
-    options.onProgress?.('מכין שמע לתמלול ברקע...', 6);
-    const { pcm, duration } = await decodeAudioToMono16k(source, 150, {
+    const gpuAvailable = await hasWebGpuQuick();
+    options.onProgress?.('מכין שמע לתמלול מקומי מהיר...', 6);
+    const { pcm, duration } = await decodeAudioToMono16k(source, gpuAvailable ? 150 : 84, {
       isolateVocals: true,
       signal: options.signal,
     });
@@ -553,96 +678,141 @@ export async function transcribeAudioOnDevice(options: {
       return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
     }
 
-    const workerResult = await new Promise<{
-      segments: SubtitleSegment[];
-      lockedWhisperLang?: 'hebrew' | 'english';
-    }>((resolve, reject) => {
-      const worker = new Worker(new URL('../workers/whisperWorker.ts', import.meta.url), {
-        type: 'module',
+    // 2. INSTANT BROWSER BUILT-IN AUDIO AI (Chrome Prompt API, 0MB download when active in browser)
+    const chromeNativeSegs = await tryChromeBuiltInAudioAi(
+      pcm,
+      totalDuration,
+      options.hintTitle,
+      options.subtitleLanguageHint,
+      options.signal
+    );
+
+    let finalOrdered: SubtitleSegment[] = [];
+    let lockedLang: 'hebrew' | 'english' | undefined;
+    let usedProvider = 'whisper-worker';
+
+    if (chromeNativeSegs && chromeNativeSegs.length > 0) {
+      finalOrdered = chromeNativeSegs;
+      usedProvider = 'chrome-built-in-audio-ai';
+      options.onProgress?.('תומלל במהירות במנוע הדפדפן!', 88);
+    } else {
+      // 3. NON-BLOCKING BACKGROUND WEB WORKER (WebGPU GPU-accelerated first, WASM fallback)
+      if (typeof Worker === 'undefined') {
+        return {
+          success: false,
+          error: 'מנוע הכתוביות ברקע אינו נתמך בדפדפן זה — מומלץ להדביק מילים וללחוץ "סנכרן מילים"',
+        };
+      }
+
+      const workerResult = await new Promise<{
+        segments: SubtitleSegment[];
+        lockedWhisperLang?: 'hebrew' | 'english';
+        backend?: string;
+      }>((resolve, reject) => {
+        const worker = new Worker(new URL('../workers/whisperWorker.ts', import.meta.url), {
+          type: 'module',
+        });
+
+        let settled = false;
+        let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const clearStallTimer = () => {
+          if (stallTimer) {
+            clearTimeout(stallTimer);
+            stallTimer = null;
+          }
+        };
+
+        const cleanup = () => {
+          clearStallTimer();
+          options.signal?.removeEventListener('abort', onAbort);
+          try {
+            worker.terminate();
+          } catch {}
+        };
+
+        // Resetting inactivity watchdog: only fails if worker sends zero progress for 120s
+        const resetStallWatchdog = () => {
+          clearStallTimer();
+          stallTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('מנוע הכתוביות נתקע מחוסר תגובה — נסה שוב או הדבק מילים'));
+          }, 120000);
+        };
+
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        resetStallWatchdog();
+
+        worker.onmessage = (ev: MessageEvent) => {
+          const msg = ev.data;
+          if (!msg) return;
+          if (msg.type === 'progress') {
+            resetStallWatchdog();
+            options.onProgress?.(msg.statusText || 'מעבד כתוביות ברקע...', msg.percent);
+          } else if (msg.type === 'partial' && Array.isArray(msg.segments)) {
+            resetStallWatchdog();
+            const partialList: SubtitleSegment[] = msg.segments;
+            const partialLyrics = partialList.map((s) => s.text).join('\n');
+            options.onPartialSegments?.({
+              segments: partialList,
+              segmentsHe: partialList,
+              segmentsEn: partialList,
+              lyricsHe: partialLyrics,
+              lyricsEn: '',
+              completedChunks: msg.completedChunks || 1,
+              totalChunks: msg.totalChunks || 1,
+            });
+          } else if (msg.type === 'done') {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve({
+              segments: Array.isArray(msg.segments) ? msg.segments : [],
+              lockedWhisperLang: msg.lockedWhisperLang,
+              backend: msg.backend,
+            });
+          } else if (msg.type === 'error') {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error(msg.error || 'שגיאה במנוע הכתוביות ברקע'));
+          }
+        };
+
+        worker.onerror = (err) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new Error(err?.message || 'שגיאה בטעינת מנוע הכתוביות ברקע'));
+        };
+
+        worker.postMessage(
+          {
+            type: 'transcribe',
+            origin: typeof window !== 'undefined' ? window.location.origin : '',
+            pcmBuffer: pcm.buffer,
+            duration: totalDuration,
+            subtitleLanguageHint: options.subtitleLanguageHint,
+            hintTitle: options.hintTitle || '',
+          },
+          [pcm.buffer]
+        );
       });
 
-      let settled = false;
-      const cleanup = () => {
-        options.signal?.removeEventListener('abort', onAbort);
-        try {
-          worker.terminate();
-        } catch {}
-      };
+      finalOrdered = workerResult.segments;
+      lockedLang = workerResult.lockedWhisperLang;
+      usedProvider = workerResult.backend === 'webgpu' ? 'whisper-worker-webgpu' : 'whisper-worker-wasm';
+    }
 
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new DOMException('Aborted', 'AbortError'));
-      };
-
-      options.signal?.addEventListener('abort', onAbort, { once: true });
-
-      const safetyTimer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error('תם הזמן ליצירת הכתוביות — ניתן לנסות שוב או להזין מילים ידנית'));
-      }, 95000);
-
-      worker.onmessage = (ev: MessageEvent) => {
-        const msg = ev.data;
-        if (!msg) return;
-        if (msg.type === 'progress') {
-          options.onProgress?.(msg.statusText || 'מעבד כתוביות ברקע...', msg.percent);
-        } else if (msg.type === 'partial' && Array.isArray(msg.segments)) {
-          const partialList: SubtitleSegment[] = msg.segments;
-          const partialLyrics = partialList.map((s) => s.text).join('\n');
-          options.onPartialSegments?.({
-            segments: partialList,
-            segmentsHe: partialList,
-            segmentsEn: partialList,
-            lyricsHe: partialLyrics,
-            lyricsEn: '',
-            completedChunks: msg.completedChunks || 1,
-            totalChunks: msg.totalChunks || 1,
-          });
-        } else if (msg.type === 'done') {
-          clearTimeout(safetyTimer);
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve({
-            segments: Array.isArray(msg.segments) ? msg.segments : [],
-            lockedWhisperLang: msg.lockedWhisperLang,
-          });
-        } else if (msg.type === 'error') {
-          clearTimeout(safetyTimer);
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(new Error(msg.error || 'שגיאה במנוע הכתוביות ברקע'));
-        }
-      };
-
-      worker.onerror = (err) => {
-        clearTimeout(safetyTimer);
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error(err?.message || 'שגיאה בטעינת מנוע הכתוביות ברקע'));
-      };
-
-      // Transfer PCM buffer zero-copy so main UI stays completely responsive
-      worker.postMessage(
-        {
-          type: 'transcribe',
-          origin: typeof window !== 'undefined' ? window.location.origin : '',
-          pcmBuffer: pcm.buffer,
-          duration: totalDuration,
-          subtitleLanguageHint: options.subtitleLanguageHint,
-          hintTitle: options.hintTitle || '',
-        },
-        [pcm.buffer]
-      );
-    });
-
-    const finalOrdered = workerResult.segments;
     if (!finalOrdered || finalOrdered.length === 0) {
       return {
         success: false,
@@ -653,9 +823,9 @@ export async function transcribeAudioOnDevice(options: {
     const hebrewCount = finalOrdered.reduce((acc, s) => acc + (s.text.match(/[\u0590-\u05FF]/g)?.length || 0), 0);
     const latinCount = finalOrdered.reduce((acc, s) => acc + (s.text.match(/[a-zA-Z]/g)?.length || 0), 0);
     const detectedPrimaryIsHe =
-      workerResult.lockedWhisperLang === 'english'
+      lockedLang === 'english'
         ? false
-        : workerResult.lockedWhisperLang === 'hebrew'
+        : lockedLang === 'hebrew'
           ? true
           : hebrewCount >= latinCount;
 
@@ -699,7 +869,7 @@ export async function transcribeAudioOnDevice(options: {
       lyrics: primaryLyrics,
       lyricsHe,
       lyricsEn,
-      provider: 'whisper-worker-q8',
+      provider: usedProvider,
     };
   } catch (err: any) {
     if (err?.name === 'AbortError' || options.signal?.aborted) {

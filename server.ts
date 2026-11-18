@@ -1564,7 +1564,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       `Do not invent lyrics that are not heard in the audio.`;
 
     let transcribedText = '';
-    const modelsToTry = ['gemini-3.5-transcribe', 'gemini-2.5-flash'];
+    const modelsToTry = ['gemini-3.5-transcribe', 'gemini-4-hydrogen'];
     for (const modelName of modelsToTry) {
       try {
         const response = await ai.models.generateContent({

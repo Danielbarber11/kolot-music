@@ -217,7 +217,9 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                         >
                           <Heart
                             className={`w-4 h-4 ${
-                              isLiked ? 'fill-rose-500 text-rose-500' : 'text-white/40 hover:text-white'
+                              isLiked
+                                ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
+                                : 'text-white/40 hover:text-white'
                             }`}
                           />
                         </button>

@@ -1992,6 +1992,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                         setEditWhisperProgressText(txt);
                                         if (typeof pct === 'number') setEditWhisperProgressPercent(pct);
                                       },
+                                      onPartialSegments: (partial) => {
+                                        if (partial.segments.length > 0) {
+                                          setEditWhisperSegments(partial.segments);
+                                          setEditWhisperSegmentsHe(partial.segmentsHe);
+                                          setEditLyricsHe(partial.lyricsHe);
+                                          setEditLyrics(partial.lyricsHe);
+                                        }
+                                      },
                                     });
                                     setIsTranscribingEdit(false);
                                     setEditWhisperProgressText('');
@@ -2649,6 +2657,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                   onProgress: (txt, pct) => {
                                     setWhisperProgressText(txt);
                                     if (typeof pct === 'number') setWhisperProgressPercent(pct);
+                                  },
+                                  onPartialSegments: (partial) => {
+                                    if (partial.segments.length > 0) {
+                                      setWhisperDraftSegments(partial.segments);
+                                      setWhisperDraftSegmentsHe(partial.segmentsHe);
+                                      setWhisperDraftLyricsHe(partial.lyricsHe);
+                                      setLyricsInput(partial.lyricsHe);
+                                    }
                                   },
                                 });
                                 setIsTranscribingUpload(false);

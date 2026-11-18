@@ -1,7 +1,10 @@
 import { pipeline, env } from '@huggingface/transformers';
 import { SubtitleSegment } from '../types';
 
+type WhisperBackendMode = 'webgpu' | 'wasm';
+
 let cachedPipelinePromise: Promise<any> | null = null;
+let cachedBackendMode: WhisperBackendMode | null = null;
 let configuredOrigin = '';
 
 function sanitizeLettersOnly(rawText: string): string {
@@ -112,7 +115,7 @@ function buildSegmentsFromChunk(
     segments.push({
       id: `${idPrefix}_${segments.length}`,
       startTime: Number(absStart.toFixed(2)),
-      endTime: Number(absEnd.toFixed(2)),
+      endTime: Number(Math.max(absStart + 0.8, absEnd).toFixed(2)),
       text: cleanText,
     });
   });
@@ -151,7 +154,10 @@ function mergeOrdered(allSegments: SubtitleSegment[]): SubtitleSegment[] {
       const prevWords = new Set(prev.text.toLowerCase().split(/\s+/));
       const curWords = seg.text.toLowerCase().split(/\s+/);
       const overlapHits = curWords.filter((w) => prevWords.has(w)).length;
-      if (overlapHits >= Math.max(1, Math.floor(curWords.length * 0.5)) || prev.text.toLowerCase() === seg.text.toLowerCase()) {
+      if (
+        overlapHits >= Math.max(1, Math.floor(curWords.length * 0.5)) ||
+        prev.text.toLowerCase() === seg.text.toLowerCase()
+      ) {
         prev.endTime = Number(Math.max(prev.endTime, seg.endTime).toFixed(2));
         if (seg.text.length > prev.text.length + 4 && seg.startTime >= prev.startTime) {
           prev.text = seg.text;
@@ -181,47 +187,98 @@ function configureEnv(origin: string) {
     }
   }
   if (env.backends?.onnx?.wasm) {
-    // Worker already runs on its own dedicated thread off the UI thread
     env.backends.onnx.wasm.proxy = false;
-    env.backends.onnx.wasm.numThreads = 1;
+    // Enable multi-threaded WASM only when Cross-Origin-Isolated (SharedArrayBuffer available)
+    const threads =
+      typeof self !== 'undefined' && (self as any).crossOriginIsolated
+        ? Math.min(4, Math.max(1, Number(navigator?.hardwareConcurrency || 2)))
+        : 1;
+    env.backends.onnx.wasm.numThreads = threads;
   }
 }
 
-async function getWorkerPipeline(origin: string) {
-  configureEnv(origin);
-  if (!cachedPipelinePromise) {
-    cachedPipelinePromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: (info: any) => {
-        if (info?.status === 'progress' && typeof info.progress === 'number') {
-          const rawPct = Math.min(100, Math.max(0, info.progress));
-          const scaled = Math.min(48, Math.max(8, Math.round(8 + rawPct * 0.4)));
-          self.postMessage({
-            type: 'progress',
-            statusText: `טוען מנוע כתוביות ברקע (${Math.round(rawPct)}%)`,
-            percent: scaled,
-          });
-        } else if (info?.status === 'initiate' || info?.status === 'download') {
-          self.postMessage({
-            type: 'progress',
-            statusText: 'מכין מנוע כתוביות ברקע...',
-            percent: 10,
-          });
-        } else if (info?.status === 'ready') {
-          self.postMessage({
-            type: 'progress',
-            statusText: 'מנוע הכתוביות מוכן — מתחיל תמלול...',
-            percent: 50,
-          });
-        }
-      },
-    }).catch((err) => {
-      cachedPipelinePromise = null;
-      throw err;
-    });
+async function detectWebGpuF16(): Promise<boolean> {
+  try {
+    const gpu = (navigator as any)?.gpu;
+    if (!gpu || typeof gpu.requestAdapter !== 'function') return false;
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) return false;
+    return Boolean(adapter.features?.has?.('shader-f16'));
+  } catch {
+    return false;
   }
-  return cachedPipelinePromise;
+}
+
+function createProgressCallback(mode: WhisperBackendMode) {
+  return (info: any) => {
+    const modeLabel = mode === 'webgpu' ? 'GPU' : 'מכשיר';
+    if (info?.status === 'progress' && typeof info.progress === 'number') {
+      const rawPct = Math.min(100, Math.max(0, info.progress));
+      const scaled = Math.min(48, Math.max(8, Math.round(8 + rawPct * 0.4)));
+      self.postMessage({
+        type: 'progress',
+        statusText: `טוען מנוע כתוביות (${modeLabel} • ${Math.round(rawPct)}%)`,
+        percent: scaled,
+      });
+    } else if (info?.status === 'initiate' || info?.status === 'download') {
+      self.postMessage({
+        type: 'progress',
+        statusText: `מוריד מנוע כתוביות (${modeLabel})...`,
+        percent: 10,
+      });
+    } else if (info?.status === 'ready') {
+      self.postMessage({
+        type: 'progress',
+        statusText: `מנוע הכתוביות מוכן (${modeLabel}) — מתחיל תמלול...`,
+        percent: 50,
+      });
+    }
+  };
+}
+
+async function getWorkerPipeline(
+  origin: string,
+  preferredMode?: WhisperBackendMode
+): Promise<{ transcriber: any; mode: WhisperBackendMode }> {
+  configureEnv(origin);
+
+  const canWebGpu = preferredMode !== 'wasm' && (await detectWebGpuF16());
+  const targetMode: WhisperBackendMode = canWebGpu ? 'webgpu' : 'wasm';
+
+  if (cachedPipelinePromise && cachedBackendMode === targetMode) {
+    const transcriber = await cachedPipelinePromise;
+    return { transcriber, mode: targetMode };
+  }
+
+  if (targetMode === 'webgpu') {
+    try {
+      cachedBackendMode = 'webgpu';
+      cachedPipelinePromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+        dtype: 'q4f16',
+        device: 'webgpu',
+        progress_callback: createProgressCallback('webgpu'),
+      });
+      const transcriber = await cachedPipelinePromise;
+      return { transcriber, mode: 'webgpu' };
+    } catch {
+      cachedPipelinePromise = null;
+      cachedBackendMode = null;
+    }
+  }
+
+  cachedBackendMode = 'wasm';
+  cachedPipelinePromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+    dtype: 'q8',
+    device: 'wasm',
+    progress_callback: createProgressCallback('wasm'),
+  }).catch((err) => {
+    cachedPipelinePromise = null;
+    cachedBackendMode = null;
+    throw err;
+  });
+
+  const transcriber = await cachedPipelinePromise;
+  return { transcriber, mode: 'wasm' };
 }
 
 self.onmessage = async (event: MessageEvent) => {
@@ -235,14 +292,18 @@ self.onmessage = async (event: MessageEvent) => {
     const subtitleLanguageHint = data.subtitleLanguageHint as 'auto' | 'he' | 'en' | undefined;
     const hintTitle = String(data.hintTitle || '');
 
-    const transcriber = await getWorkerPipeline(origin);
+    let { transcriber, mode } = await getWorkerPipeline(origin);
 
     const SAMPLE_RATE = 16000;
+    // Fast contiguous non-overlapping 28s windows (eliminates duplicate work)
     const CHUNK_SECONDS = 28;
-    const STRIDE_SECONDS = 26;
+    const STRIDE_SECONDS = 28;
     const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
     const STRIDE_SAMPLES = STRIDE_SECONDS * SAMPLE_RATE;
-    const totalChunks = Math.max(1, Math.ceil(Math.max(0, pcm.length - CHUNK_SAMPLES) / STRIDE_SAMPLES) + 1);
+
+    // On CPU WASM limit to first 84s (3 fast chunks < 1 min) while WebGPU handles up to 150s cleanly
+    const maxProcessSamples = mode === 'webgpu' ? pcm.length : Math.min(pcm.length, 84 * SAMPLE_RATE);
+    const totalChunks = Math.max(1, Math.ceil(maxProcessSamples / STRIDE_SAMPLES));
 
     const titleHasHebrew = /[\u0590-\u05FF]/.test(hintTitle);
     let lockedWhisperLang: 'hebrew' | 'english' | undefined =
@@ -258,9 +319,9 @@ self.onmessage = async (event: MessageEvent) => {
 
     for (let i = 0; i < totalChunks; i++) {
       const startSample = i * STRIDE_SAMPLES;
-      if (startSample >= pcm.length) continue;
+      if (startSample >= maxProcessSamples) continue;
 
-      const endSample = Math.min(pcm.length, startSample + CHUNK_SAMPLES);
+      const endSample = Math.min(maxProcessSamples, startSample + CHUNK_SAMPLES);
       const chunkPcm = pcm.subarray(startSample, endSample);
       const offsetSec = startSample / SAMPLE_RATE;
       const chunkDurSec = chunkPcm.length / SAMPLE_RATE;
@@ -268,7 +329,7 @@ self.onmessage = async (event: MessageEvent) => {
       const pct = Math.min(92, Math.max(52, Math.round(52 + ((i + 1) / totalChunks) * 40)));
       self.postMessage({
         type: 'progress',
-        statusText: `מתמלל ברקע (${i + 1}/${totalChunks})...`,
+        statusText: `מתמלל ${mode === 'webgpu' ? 'ב-GPU ' : ''}(חלק ${i + 1}/${totalChunks})...`,
         percent: pct,
       });
 
@@ -278,7 +339,7 @@ self.onmessage = async (event: MessageEvent) => {
 
       const decodeOptions: Record<string, any> = {
         return_timestamps: true,
-        max_new_tokens: 96,
+        max_new_tokens: 72,
         repetition_penalty: 1.05,
         no_repeat_ngram_size: 4,
         condition_on_prev_tokens: false,
@@ -288,7 +349,23 @@ self.onmessage = async (event: MessageEvent) => {
         decodeOptions.language = lockedWhisperLang;
       }
 
-      const chunkResult: any = await transcriber(chunkPcm, decodeOptions);
+      let chunkResult: any;
+      try {
+        chunkResult = await transcriber(chunkPcm, decodeOptions);
+      } catch (inferErr) {
+        if (mode === 'webgpu') {
+          // Seamless automatic fallback to WASM if GPU shader execution fails mid-run
+          cachedPipelinePromise = null;
+          cachedBackendMode = null;
+          const fallback = await getWorkerPipeline(origin, 'wasm');
+          transcriber = fallback.transcriber;
+          mode = 'wasm';
+          chunkResult = await transcriber(chunkPcm, decodeOptions);
+        } else {
+          throw inferErr;
+        }
+      }
+
       const chunkSegs = buildSegmentsFromChunk(
         chunkResult,
         offsetSec,
@@ -324,6 +401,7 @@ self.onmessage = async (event: MessageEvent) => {
       type: 'done',
       segments: finalOrdered,
       lockedWhisperLang,
+      backend: mode,
     });
   } catch (err: any) {
     self.postMessage({

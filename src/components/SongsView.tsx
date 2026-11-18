@@ -836,27 +836,24 @@ export const SongsView: React.FC<SongsViewProps> = ({
               )}
             </div>
 
-            {/* Favorites Button */}
+            {/* Favorites Button (Pure circle icon-only, matching Accessibility button) */}
             <button
               onClick={() => {
                 setActiveTab((prev) => (prev === 'favorites' ? 'all' : 'favorites'));
               }}
-              className={`flex items-center gap-1.5 px-3.5 h-9 rounded-full text-xs sm:text-sm font-normal transition-colors cursor-pointer shrink-0 border ${
+              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
                 activeTab === 'favorites'
                   ? 'bg-white/25 text-white border-white/40 shadow-sm'
-                  : 'bg-white/10 text-white/80 hover:text-white hover:bg-white/20 border-white/15'
+                  : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
               }`}
               title={isHe ? 'מועדפים' : 'Favorites'}
+              aria-label={isHe ? 'מועדפים' : 'Favorites'}
             >
               <Heart
-                className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-white ${
+                className={`w-4 h-4 text-white ${
                   activeTab === 'favorites' ? 'fill-white' : ''
                 }`}
               />
-              <span className="hidden xs:inline">{isHe ? 'מועדפים' : 'Favorites'}</span>
-              {likedSongIds.length > 0 && (
-                <span className="text-xs text-white/70">({likedSongIds.length})</span>
-              )}
             </button>
 
             {/* Accessibility Button Right Next to Favorites Heart */}
@@ -962,27 +959,27 @@ export const SongsView: React.FC<SongsViewProps> = ({
           </button>
         )}
 
-        {/* Mobile Favorites Button */}
-        <button
-          onClick={() => {
-            setActiveTab((prev) => (prev === 'favorites' ? 'all' : 'favorites'));
-          }}
-          className={`flex items-center gap-1 px-3 h-9 rounded-full text-xs font-normal transition-colors cursor-pointer shrink-0 border ${
-            activeTab === 'favorites'
-              ? 'bg-white/25 text-white border-white/40 shadow-sm'
-              : 'bg-white/10 text-white/80 hover:text-white hover:bg-white/20 border-white/15'
-          }`}
-          title={isHe ? 'מועדפים' : 'Favorites'}
-        >
-          <Heart
-            className={`w-3.5 h-3.5 text-white ${
-              activeTab === 'favorites' ? 'fill-white' : ''
+        {/* Mobile Favorites Button (Only visible when signed in, pure circle with white Heart only) */}
+        {authUser && (
+          <button
+            onClick={() => {
+              setActiveTab((prev) => (prev === 'favorites' ? 'all' : 'favorites'));
+            }}
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
+              activeTab === 'favorites'
+                ? 'bg-white/25 text-white border-white/40 shadow-sm'
+                : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
             }`}
-          />
-          {likedSongIds.length > 0 && (
-            <span className="text-[10px] text-white/80 font-bold">({likedSongIds.length})</span>
-          )}
-        </button>
+            title={isHe ? 'מועדפים' : 'Favorites'}
+            aria-label={isHe ? 'מועדפים' : 'Favorites'}
+          >
+            <Heart
+              className={`w-4 h-4 text-white ${
+                activeTab === 'favorites' ? 'fill-white' : ''
+              }`}
+            />
+          </button>
+        )}
 
         {/* Mobile Accessibility Button Right Next to Favorites Heart */}
         {onOpenAccessibility && (
@@ -1297,7 +1294,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             <Heart
                               className={`w-3.5 h-3.5 ${
                                 likedSongIds.includes(track.id)
-                                  ? 'fill-rose-500 text-rose-500'
+                                  ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
                                   : 'text-white/40 hover:text-white'
                               }`}
                             />
@@ -1366,14 +1363,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             onClick={() => toggleFavorite(featuredTrack.id)}
                             className={`p-3 rounded-full border transition-all cursor-pointer active:scale-95 ${
                               likedSongIds.includes(featuredTrack.id)
-                                ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+                                ? 'bg-white/25 border-white/50 text-white shadow-[0_0_15px_rgba(255,255,255,0.2)]'
                                 : 'bg-white/10 hover:bg-white/20 border-white/20 text-white'
                             }`}
                             title={isHe ? 'הוסף למועדפים' : 'Favorite'}
                           >
                             <Heart
-                              className={`w-4 h-4 ${
-                                likedSongIds.includes(featuredTrack.id) ? 'fill-rose-500 text-rose-500' : ''
+                              className={`w-4 h-4 text-white ${
+                                likedSongIds.includes(featuredTrack.id) ? 'fill-white' : ''
                               }`}
                             />
                           </button>
@@ -1649,7 +1646,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           <Heart
                             className={`w-3.5 h-3.5 ${
                               likedSongIds.includes(track.id)
-                                ? 'fill-rose-500 text-rose-500'
+                                ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
                                 : 'text-white/40 hover:text-white'
                             }`}
                           />
@@ -1875,7 +1872,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           <Heart
                             className={`w-3.5 h-3.5 ${
                               likedSongIds.includes(track.id)
-                                ? 'fill-rose-500 text-rose-500'
+                                ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
                                 : 'text-white/40 hover:text-white'
                             }`}
                           />
@@ -2025,7 +2022,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               <Heart
                                 className={`w-3.5 h-3.5 ${
                                   likedSongIds.includes(track.id)
-                                    ? 'fill-rose-500 text-rose-500'
+                                    ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
                                     : 'text-white/40 hover:text-white'
                                 }`}
                               />
