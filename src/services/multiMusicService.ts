@@ -229,12 +229,25 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         lyricsEn: existing.lyricsEn || t.lyricsEn,
         hasWhisperSubtitles: !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
+        viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
       };
       trackMap.set(canonicalKey, merged);
     }
   }
 
   return sortTracksChronologically(Array.from(trackMap.values()));
+}
+
+export function incrementTrackViewInMemory(trackId: string): number {
+  let nextViews = 1;
+  memorySessionTracks = memorySessionTracks.map((t) => {
+    if (t.id === trackId) {
+      nextViews = (Number(t.viewsCount) || 0) + 1;
+      return { ...t, viewsCount: nextViews };
+    }
+    return t;
+  });
+  return nextViews;
 }
 
 export function getSavedRepoTracks(): JamendoTrack[] {

@@ -163,6 +163,7 @@ export interface JamendoTrack {
   isAiGenerated?: boolean;
   hasAutoLyrics?: boolean;
   playsCount?: number;
+  viewsCount?: number;
   featuredArtist?: string;
   writers?: string;
 }

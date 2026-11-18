@@ -191,7 +191,7 @@ export function generateSynchronizedLyrics(
   };
 }
 
-export { buildInstantSubtitlesFromLyrics } from './services/onDeviceWhisperService';
+export { buildInstantSubtitlesFromLyrics, parseSubtitleFileContent } from './services/onDeviceWhisperService';
 
 /**
  * Generates bilingual letters-only subtitle tracks without blocking the main UI thread.

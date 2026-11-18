@@ -559,26 +559,39 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" — Heart on Left, Profile Avatar on Right) */}
+        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" — Profile Avatar on Left, Heart on Right) */}
         <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
-            onClick={() => {
-              if (!authUser) {
-                setFavoriteAuthNotice(true);
-                setTimeout(() => setFavoriteAuthNotice(false), 5000);
-                onRequireAuth?.();
-                return;
-              }
-              onToggleLike(track.id);
-            }}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
-            title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
+            onClick={handleOpenArtistProfile}
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center p-1 transition-colors shadow-lg cursor-pointer"
+            title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
           >
-            <Heart
-              className={`w-5 h-5 sm:w-5.5 sm:h-5.5 transition-colors ${
-                isLiked ? 'fill-white text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]' : 'text-white/80 fill-transparent'
-              }`}
-            />
+            {(() => {
+              const resolvedArtistPhoto =
+                getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
+                (authUser && track.uploadedByUid === authUser.uid
+                  ? getGoogleAccountPhotoUrl(authUser)
+                  : undefined);
+              if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {
+                return (
+                  <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center shadow-sm">
+                    <img
+                      src={getStreamingMediaUrl(resolvedArtistPhoto)}
+                      alt={track.artistName}
+                      referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
+                      className="w-full h-full rounded-full object-cover"
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
+                  <User className="w-4 h-4 text-white" />
+                </div>
+              );
+            })()}
           </button>
 
           <button
@@ -613,36 +626,23 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
 
           <button
-            onClick={handleOpenArtistProfile}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center p-1 transition-colors shadow-lg cursor-pointer"
-            title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
-          >
-            {(() => {
-              const resolvedArtistPhoto =
-                getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
-                (authUser && track.uploadedByUid === authUser.uid
-                  ? getGoogleAccountPhotoUrl(authUser)
-                  : undefined);
-              if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {
-                return (
-                  <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center shadow-sm">
-                    <img
-                      src={getStreamingMediaUrl(resolvedArtistPhoto)}
-                      alt={track.artistName}
-                      referrerPolicy="no-referrer"
-                      loading="eager"
-                      decoding="async"
-                      className="w-full h-full rounded-full object-cover"
-                    />
-                  </div>
-                );
+            onClick={() => {
+              if (!authUser) {
+                setFavoriteAuthNotice(true);
+                setTimeout(() => setFavoriteAuthNotice(false), 5000);
+                onRequireAuth?.();
+                return;
               }
-              return (
-                <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
-                  <User className="w-4 h-4 text-white" />
-                </div>
-              );
-            })()}
+              onToggleLike(track.id);
+            }}
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
+            title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
+          >
+            <Heart
+              className={`w-5 h-5 sm:w-5.5 sm:h-5.5 transition-colors ${
+                isLiked ? 'fill-white text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]' : 'text-white/80 fill-transparent'
+              }`}
+            />
           </button>
         </div>
 
@@ -828,6 +828,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שנת הוצאה:' : 'Release Year:'}</span>
               <span className="font-bold text-white/90">{track.publishedDate || new Date().getFullYear().toString()}</span>
+            </div>
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'צפיות:' : 'Views:'}</span>
+              <span className="font-bold text-white/90 tabular-nums">{(track.viewsCount ?? 0).toLocaleString()}</span>
             </div>
 
             {track.writers && (

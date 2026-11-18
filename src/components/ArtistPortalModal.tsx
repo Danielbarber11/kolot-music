@@ -61,7 +61,7 @@ import {
 } from '../services/cloudStorageService';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
-import { transcribeTrackWithWhisperAI, buildInstantSubtitlesFromLyrics } from '../aiLyricsGenerator';
+import { parseSubtitleFileContent } from '../aiLyricsGenerator';
 import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
@@ -176,12 +176,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [whisperDraftLyricsEn, setWhisperDraftLyricsEn] = useState('');
   const [uploadSubtitleLangTab, setUploadSubtitleLangTab] = useState<'he' | 'en'>('he');
   const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
-  const [subtitleLangChoice, setSubtitleLangChoice] = useState<'auto' | 'he' | 'en'>('auto');
-  const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
-  const [whisperProgressText, setWhisperProgressText] = useState('');
-  const [whisperProgressPercent, setWhisperProgressPercent] = useState(0);
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
-  const uploadSubAbortRef = useRef<AbortController | null>(null);
+  const uploadSubFileInputRef = useRef<HTMLInputElement>(null);
+  const uploadParsedSourceRef = useRef<string>('');
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
   const [genreProgressText, setGenreProgressText] = useState('');
   const [genreDetectionNotice, setGenreDetectionNotice] = useState<AudioClassificationResult | null>(null);
@@ -255,18 +252,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editAlbum, setEditAlbum] = useState('');
   const [editLyrics, setEditLyrics] = useState('');
   const [editIncludeSubtitles, setEditIncludeSubtitles] = useState<boolean>(true);
-  const [editSubtitleLangChoice, setEditSubtitleLangChoice] = useState<'auto' | 'he' | 'en'>('auto');
   const [editWhisperSegments, setEditWhisperSegments] = useState<SubtitleSegment[] | undefined>(undefined);
   const [editWhisperSegmentsHe, setEditWhisperSegmentsHe] = useState<SubtitleSegment[] | undefined>(undefined);
   const [editWhisperSegmentsEn, setEditWhisperSegmentsEn] = useState<SubtitleSegment[] | undefined>(undefined);
   const [editLyricsHe, setEditLyricsHe] = useState('');
   const [editLyricsEn, setEditLyricsEn] = useState('');
   const [editSubLangTab, setEditSubLangTab] = useState<'he' | 'en'>('he');
-  const [isTranscribingEdit, setIsTranscribingEdit] = useState(false);
-  const [editWhisperProgressText, setEditWhisperProgressText] = useState('');
-  const [editWhisperProgressPercent, setEditWhisperProgressPercent] = useState(0);
   const [editWhisperNotice, setEditWhisperNotice] = useState<string | null>(null);
-  const editSubAbortRef = useRef<AbortController | null>(null);
+  const editSubFileInputRef = useRef<HTMLInputElement>(null);
+  const editParsedSourceRef = useRef<string>('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -308,9 +302,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       track.hasWhisperSubtitles !== false ||
         !!(track.subtitleSegments?.length || track.subtitleSegmentsHe?.length || track.subtitleSegmentsEn?.length || track.lyrics?.trim())
     );
-    setEditSubtitleLangChoice('auto');
-    setIsTranscribingEdit(false);
-    setEditWhisperProgressText('');
+    editParsedSourceRef.current = (track.lyricsHe || track.lyrics || '').trim();
     setEditWhisperNotice(null);
     setEditIsAiGenerated(!!track.isAiGenerated);
   };
@@ -327,17 +319,41 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!editingTrack || !canManageTrack(editingTrack)) return;
     setIsSavingEdit(true);
 
-    const sanitizedHe = editIncludeSubtitles
-      ? sanitizeMultilineLyrics((editLyrics || editLyricsHe || '').trim())
-      : '';
-    const sanitizedEn = editIncludeSubtitles
-      ? sanitizeMultilineLyrics((editLyricsEn || '').trim())
-      : '';
+    const rawEditPrimary = (editLyrics || editLyricsHe || '').trim();
+    const rawEditEn = (editLyricsEn || '').trim();
+
+    let nextSegments = editWhisperSegments;
+    let nextSegmentsHe = editWhisperSegmentsHe;
+    let nextSegmentsEn = editWhisperSegmentsEn;
+    let sanitizedHe = editIncludeSubtitles ? sanitizeMultilineLyrics(rawEditPrimary) : '';
+    let sanitizedEn = editIncludeSubtitles ? sanitizeMultilineLyrics(rawEditEn) : '';
+
+    if (
+      editIncludeSubtitles &&
+      (rawEditPrimary || rawEditEn) &&
+      (rawEditPrimary !== editParsedSourceRef.current ||
+        (!nextSegments?.length && !nextSegmentsHe?.length && !nextSegmentsEn?.length))
+    ) {
+      const parsed = await parseSubtitleFileContent(
+        rawEditPrimary || rawEditEn,
+        editingTrack.duration || 180,
+        isHe ? 'he' : 'en'
+      );
+      if (parsed.success) {
+        nextSegments = parsed.segments;
+        nextSegmentsHe = parsed.segmentsHe;
+        nextSegmentsEn = parsed.segmentsEn;
+        if (!sanitizedHe) sanitizedHe = parsed.lyricsHe;
+        if (!sanitizedEn) sanitizedEn = parsed.lyricsEn;
+        editParsedSourceRef.current = rawEditPrimary;
+      }
+    }
+
     const hasSubSegments =
       editIncludeSubtitles &&
-      (!!(editWhisperSegments && editWhisperSegments.length > 0) ||
-        !!(editWhisperSegmentsHe && editWhisperSegmentsHe.length > 0) ||
-        !!(editWhisperSegmentsEn && editWhisperSegmentsEn.length > 0));
+      (!!(nextSegments && nextSegments.length > 0) ||
+        !!(nextSegmentsHe && nextSegmentsHe.length > 0) ||
+        !!(nextSegmentsEn && nextSegmentsEn.length > 0));
 
     const updatedTrack: JamendoTrack = {
       ...editingTrack,
@@ -350,9 +366,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       lyrics: editIncludeSubtitles ? (sanitizedHe || sanitizedEn || undefined) : undefined,
       lyricsHe: editIncludeSubtitles ? (sanitizedHe || undefined) : undefined,
       lyricsEn: editIncludeSubtitles ? (sanitizedEn || undefined) : undefined,
-      subtitleSegments: hasSubSegments ? (editWhisperSegments && editWhisperSegments.length > 0 ? editWhisperSegments : editWhisperSegmentsHe) : undefined,
-      subtitleSegmentsHe: hasSubSegments && editWhisperSegmentsHe && editWhisperSegmentsHe.length > 0 ? editWhisperSegmentsHe : undefined,
-      subtitleSegmentsEn: hasSubSegments && editWhisperSegmentsEn && editWhisperSegmentsEn.length > 0 ? editWhisperSegmentsEn : undefined,
+      subtitleSegments: hasSubSegments ? (nextSegments && nextSegments.length > 0 ? nextSegments : nextSegmentsHe) : undefined,
+      subtitleSegmentsHe: hasSubSegments && nextSegmentsHe && nextSegmentsHe.length > 0 ? nextSegmentsHe : undefined,
+      subtitleSegmentsEn: hasSubSegments && nextSegmentsEn && nextSegmentsEn.length > 0 ? nextSegmentsEn : undefined,
       hasWhisperSubtitles: hasSubSegments,
       isAiGenerated: editIsAiGenerated,
     };
@@ -1120,12 +1136,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     const finalArtistName = performingArtistInput.trim() || currentArtist.name || verifiedUser.displayName || (isHe ? 'אמן' : 'Artist');
 
+    const rawUploadLyrics = lyricsInput.trim();
     let finalDraftSegments = whisperDraftSegments;
     let finalDraftSegmentsHe = whisperDraftSegmentsHe;
     let finalDraftSegmentsEn = whisperDraftSegmentsEn;
     let finalDraftLyricsHe = whisperDraftLyricsHe;
     let finalDraftLyricsEn = whisperDraftLyricsEn;
-    let sanitizedManualLyrics = lyricsInput.trim() ? sanitizeSubtitleLettersOnly(lyricsInput.trim()) : '';
+    let sanitizedManualLyrics = rawUploadLyrics ? sanitizeMultilineLyrics(rawUploadLyrics) : '';
 
     if (!includeSubtitles) {
       finalDraftSegments = undefined;
@@ -1134,9 +1151,21 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       finalDraftLyricsHe = '';
       finalDraftLyricsEn = '';
       sanitizedManualLyrics = '';
+    } else if (
+      rawUploadLyrics &&
+      (rawUploadLyrics !== uploadParsedSourceRef.current ||
+        (!finalDraftSegments?.length && !finalDraftSegmentsHe?.length && !finalDraftSegmentsEn?.length))
+    ) {
+      const parsed = await parseSubtitleFileContent(rawUploadLyrics, 180, isHe ? 'he' : 'en');
+      if (parsed.success) {
+        finalDraftSegments = parsed.segments;
+        finalDraftSegmentsHe = parsed.segmentsHe;
+        finalDraftSegmentsEn = parsed.segmentsEn;
+        finalDraftLyricsHe = parsed.lyricsHe;
+        finalDraftLyricsEn = parsed.lyricsEn;
+        sanitizedManualLyrics = parsed.lyricsHe || parsed.lyricsEn || sanitizedManualLyrics;
+      }
     }
-    // Note: Never block publishing with slow on-device Whisper AI transcription; pre-generated drafts & typed lyrics attach immediately,
-    // and subtitles can be generated anytime inside the player without delaying song upload.
 
     const hasAnyDraftSubtitles =
       includeSubtitles &&
@@ -1245,7 +1274,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setAlbumTitle('');
       setIsAiGeneratedInput(false);
       setIncludeSubtitles(true);
-      setSubtitleLangChoice('auto');
+      uploadParsedSourceRef.current = '';
       setLyricsInput('');
       setWhisperDraftSegments(undefined);
       setWhisperDraftSegmentsHe(undefined);
@@ -1749,8 +1778,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        editSubAbortRef.current?.abort();
-                        setIsTranscribingEdit(false);
                         setEditingTrack(null);
                       }}
                       className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 text-neutral-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
@@ -1877,7 +1904,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       </label>
                     </div>
 
-                    {/* Section 2: Subtitles & Synchronized Lyrics Studio */}
+                    {/* Section 2: Subtitles & Synchronized Lyrics Studio (File Upload or Direct Paste) */}
                     <div className="p-5 sm:p-7 space-y-4">
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2.5 min-w-0">
@@ -1888,7 +1915,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             </span>
                             <span className="text-[11px] text-neutral-400 block">
                               {editIncludeSubtitles
-                                ? (isHe ? 'ייצוא כתוביות ברקע ללא השבתת המסך • שמירה קבועה בשיר' : 'Non-blocking subtitle studio · Saved with track')
+                                ? (isHe
+                                    ? 'העלה קובץ כתוביות (.srt, .vtt, .lrc, .txt) או הדבק כתוביות ומילים ישירות למטה'
+                                    : 'Upload a subtitle file (.srt, .vtt, .lrc, .txt) or paste lyrics & subtitles below')
                                 : (isHe ? 'מצב כבוי — הכתוביות יוסרו בעת השמירה' : 'Disabled — subtitles will be removed on save')}
                             </span>
                           </div>
@@ -1910,143 +1939,102 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                       {editIncludeSubtitles && (
                         <div className="space-y-3.5 pt-1">
-                          <div className="flex flex-wrap items-center justify-between gap-2.5">
-                            <div className="inline-flex items-center rounded-xl bg-black border border-white/15 p-0.5 text-[11px] font-medium">
-                              {([
-                                { id: 'auto', label: isHe ? 'אוטומטי' : 'Auto' },
-                                { id: 'he', label: 'עברית' },
-                                { id: 'en', label: 'English' },
-                              ] as const).map((opt) => (
-                                <button
-                                  key={opt.id}
-                                  type="button"
-                                  onClick={() => setEditSubtitleLangChoice(opt.id)}
-                                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                                    editSubtitleLangChoice === opt.id ? 'bg-white text-black font-semibold' : 'text-neutral-400 hover:text-white'
-                                  }`}
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
+                          <input
+                            ref={editSubFileInputRef}
+                            type="file"
+                            accept=".srt,.vtt,.lrc,.txt,text/plain,text/vtt"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              e.target.value = '';
+                              if (!file) return;
+                              try {
+                                const text = await file.text();
+                                const parsed = await parseSubtitleFileContent(text, editingTrack.duration || 180, isHe ? 'he' : 'en');
+                                if (parsed.success && parsed.segments.length > 0) {
+                                  setEditWhisperSegments(parsed.segments);
+                                  setEditWhisperSegmentsHe(parsed.segmentsHe);
+                                  setEditWhisperSegmentsEn(parsed.segmentsEn);
+                                  setEditLyricsHe(parsed.lyricsHe);
+                                  setEditLyricsEn(parsed.lyricsEn);
+                                  setEditLyrics(parsed.lyricsHe || parsed.lyricsEn);
+                                  editParsedSourceRef.current = (parsed.lyricsHe || parsed.lyricsEn).trim();
+                                  setEditWhisperNotice(
+                                    isHe
+                                      ? `נטענו ${parsed.segments.length} שורות כתוביות מהקובץ "${file.name}" — לחץ "שמור שינויים"`
+                                      : `Loaded ${parsed.segments.length} subtitle lines from "${file.name}"`
+                                  );
+                                } else {
+                                  setEditWhisperNotice(
+                                    isHe
+                                      ? 'הקובץ ריק או אינו בפורמט נתמך (.srt, .vtt, .lrc, .txt)'
+                                      : 'File is empty or not in a supported subtitle format'
+                                  );
+                                }
+                              } catch {
+                                setEditWhisperNotice(isHe ? 'שגיאה בקריאת קובץ הכתוביות' : 'Failed to read subtitle file');
+                              }
+                            }}
+                          />
 
+                          <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap items-center gap-2">
-                              {(editLyrics.trim() || editLyricsHe.trim() || editLyricsEn.trim()) && !isTranscribingEdit && (
+                              <button
+                                type="button"
+                                onClick={() => editSubFileInputRef.current?.click()}
+                                className="px-4 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>{isHe ? 'העלה קובץ כתוביות' : 'Upload Subtitle File'}</span>
+                              </button>
+
+                              {(editLyrics.trim() || editLyricsHe.trim() || editLyricsEn.trim()) && (
                                 <button
                                   type="button"
                                   onClick={async () => {
                                     const src = (editSubLangTab === 'en' && editLyricsEn ? editLyricsEn : editLyrics || editLyricsHe).trim();
-                                    const res = await buildInstantSubtitlesFromLyrics(src, editingTrack.duration || 180, isHe ? 'he' : 'en');
-                                    if (res.success) {
+                                    const res = await parseSubtitleFileContent(src, editingTrack.duration || 180, isHe ? 'he' : 'en');
+                                    if (res.success && res.segments.length > 0) {
                                       setEditWhisperSegments(res.segments);
                                       setEditWhisperSegmentsHe(res.segmentsHe);
                                       setEditWhisperSegmentsEn(res.segmentsEn);
                                       setEditLyricsHe(res.lyricsHe);
                                       setEditLyricsEn(res.lyricsEn);
-                                      setEditLyrics(res.lyricsHe);
+                                      setEditLyrics(res.lyricsHe || res.lyricsEn);
+                                      editParsedSourceRef.current = (res.lyricsHe || res.lyricsEn).trim();
                                       setEditWhisperNotice(
                                         isHe
-                                          ? `המילים סונכרנו מיידית ל-${res.segmentsHe.length} כתוביות! לחץ "שמור שינויים"`
-                                          : `Synced ${res.segmentsHe.length} subtitle lines cleanly!`
+                                          ? `סונכרנו ${res.segments.length} שורות כתוביות מהטקסט! לחץ "שמור שינויים"`
+                                          : `Synced ${res.segments.length} subtitle lines cleanly!`
                                       );
                                     }
                                   }}
-                                  className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
+                                  className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
                                 >
-                                  {isHe ? 'סנכרן מילים מיידית' : 'Sync Typed Lyrics'}
-                                </button>
-                              )}
-
-                              {isTranscribingEdit ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    editSubAbortRef.current?.abort();
-                                    setIsTranscribingEdit(false);
-                                    setEditWhisperProgressText('');
-                                    setEditWhisperProgressPercent(0);
-                                    setEditWhisperNotice(isHe ? 'יצירת הכתוביות בוטלה' : 'Subtitle generation cancelled');
-                                  }}
-                                  className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/25 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                  <span>{isHe ? 'ביטול יצירה' : 'Cancel'}</span>
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    editSubAbortRef.current?.abort();
-                                    const controller = new AbortController();
-                                    editSubAbortRef.current = controller;
-                                    setIsTranscribingEdit(true);
-                                    setEditWhisperProgressText(isHe ? 'מייצר כתוביות ברקע...' : 'Generating subtitles...');
-                                    setEditWhisperProgressPercent(8);
-                                    setEditWhisperNotice(null);
-                                    const wRes = await transcribeTrackWithWhisperAI({
-                                      track: editingTrack,
-                                      language: isHe ? 'he' : 'en',
-                                      subtitleLanguageHint: editSubtitleLangChoice,
-                                      signal: controller.signal,
-                                      onProgress: (txt, pct) => {
-                                        setEditWhisperProgressText(txt);
-                                        if (typeof pct === 'number') setEditWhisperProgressPercent(pct);
-                                      },
-                                      onPartialSegments: (partial) => {
-                                        if (partial.segments.length > 0) {
-                                          setEditWhisperSegments(partial.segments);
-                                          setEditWhisperSegmentsHe(partial.segmentsHe);
-                                          setEditLyricsHe(partial.lyricsHe);
-                                          setEditLyrics(partial.lyricsHe);
-                                        }
-                                      },
-                                    });
-                                    setIsTranscribingEdit(false);
-                                    setEditWhisperProgressText('');
-                                    setEditWhisperProgressPercent(0);
-                                    if (wRes.aborted) return;
-                                    if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
-                                      setEditWhisperSegments(wRes.segments || wRes.segmentsHe);
-                                      setEditWhisperSegmentsHe(wRes.segmentsHe);
-                                      setEditWhisperSegmentsEn(wRes.segmentsEn);
-                                      setEditLyricsHe(wRes.lyricsHe || wRes.lyrics || '');
-                                      setEditLyricsEn(wRes.lyricsEn || '');
-                                      setEditLyrics(wRes.lyricsHe || wRes.lyrics || '');
-                                      setEditWhisperNotice(
-                                        isHe
-                                          ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} באנגלית — לחץ שמור שינויים`
-                                          : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
-                                      );
-                                    } else {
-                                      setEditWhisperNotice(wRes.error || (isHe ? 'לא ניתן היה ליצור כתוביות כרגע' : 'Subtitle generation failed'));
-                                    }
-                                  }}
-                                  className="px-4 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                                >
-                                  <Sparkles className="w-3.5 h-3.5" />
-                                  <span>{isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles'}</span>
+                                  {isHe ? 'סנכרן כתוביות מהטקסט' : 'Sync Pasted Subtitles'}
                                 </button>
                               )}
                             </div>
+
+                            {(editLyrics.trim() || editLyricsHe.trim() || editLyricsEn.trim() || (editWhisperSegments && editWhisperSegments.length > 0)) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditLyrics('');
+                                  setEditLyricsHe('');
+                                  setEditLyricsEn('');
+                                  setEditWhisperSegments(undefined);
+                                  setEditWhisperSegmentsHe(undefined);
+                                  setEditWhisperSegmentsEn(undefined);
+                                  editParsedSourceRef.current = '';
+                                  setEditWhisperNotice(isHe ? 'הכתוביות נוקו — העלה קובץ או הדבק טקסט חדש' : 'Subtitles cleared');
+                                }}
+                                className="px-3 py-1.5 rounded-full bg-black hover:bg-white/10 border border-white/15 text-neutral-300 text-[11px] font-medium cursor-pointer transition-colors"
+                              >
+                                {isHe ? 'נקה' : 'Clear'}
+                              </button>
+                            )}
                           </div>
-
-                          {isTranscribingEdit && (
-                            <div className="space-y-1.5 py-1">
-                              <div className="flex items-center justify-between text-[11px] text-neutral-300">
-                                <span className="flex items-center gap-2">
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                                  <span>{editWhisperProgressText || (isHe ? 'מעבד ברקע...' : 'Processing...')}</span>
-                                </span>
-                                <span className="font-mono text-white">{editWhisperProgressPercent}%</span>
-                              </div>
-                              <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
-                                <div
-                                  className="h-full bg-white transition-all duration-200"
-                                  style={{ width: `${Math.max(5, editWhisperProgressPercent)}%` }}
-                                />
-                              </div>
-                            </div>
-                          )}
 
                           {editWhisperNotice && (
                             <p className="text-[11px] text-neutral-200 bg-white/[0.05] border border-white/15 px-3.5 py-2 rounded-xl">
@@ -2078,7 +2066,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           )}
 
                           <textarea
-                            rows={4}
+                            rows={5}
                             value={editSubLangTab === 'en' && editLyricsEn ? editLyricsEn : editLyrics}
                             onChange={(e) => {
                               if (editSubLangTab === 'en' && editLyricsEn) {
@@ -2088,8 +2076,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                 setEditLyricsHe(e.target.value);
                               }
                             }}
-                            placeholder={isHe ? 'מילות השיר (כל שורה תוצג בזמן הניגון)...' : 'Song lyrics (one line per subtitle)...'}
-                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-600 text-xs leading-relaxed focus:outline-none focus:border-white/50 transition-colors"
+                            placeholder={
+                              isHe
+                                ? 'הדבק כאן מילים או כתוביות (תומך בטקסט רגיל, SRT, VTT או LRC) — או העלה קובץ כתוביות למעלה...'
+                                : 'Paste lyrics or subtitles here (supports plain text, SRT, VTT, or LRC) — or upload a subtitle file above...'
+                            }
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-500 text-xs leading-relaxed focus:outline-none focus:border-white/50 transition-colors"
                           />
                         </div>
                       )}
@@ -2101,8 +2093,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        editSubAbortRef.current?.abort();
-                        setIsTranscribingEdit(false);
                         setEditingTrack(null);
                       }}
                       className="px-5 py-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white text-xs font-medium cursor-pointer transition-colors"
@@ -2533,10 +2523,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         <span className="text-[11px] text-neutral-400 block mt-0.5">
                           {includeSubtitles
                             ? (isHe
-                                ? 'יצירת כתוביות מהירה בשניות בעברית ובאנגלית • כבה כדי לפרסם בלי כתוביות'
-                                : 'Fast Hebrew & English subtitle generation • Toggle off to skip subtitles')
+                                ? 'העלה קובץ כתוביות (.srt, .vtt, .lrc, .txt) או הדבק מילים וכתוביות • כבה כדי לפרסם בלי כתוביות'
+                                : 'Upload a subtitle file (.srt, .vtt, .lrc, .txt) or paste lyrics & subtitles • Toggle off to skip')
                             : (isHe
-                                ? 'מצב כבוי — לא ייווצרו ולא יישמרו כתוביות לשיר זה'
+                                ? 'מצב כבוי — לא יישמרו כתוביות לשיר זה'
                                 : 'Subtitles disabled — this track will publish without subtitles')}
                         </span>
                       </div>
@@ -2566,153 +2556,102 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                   {includeSubtitles ? (
                     <div className="space-y-3 pt-3 border-t border-white/10">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="inline-flex items-center rounded-xl bg-black border border-white/20 p-0.5 text-[11px] font-bold">
-                          {([
-                            { id: 'auto', label: isHe ? 'זיהוי שפה אוטומטי' : 'Auto' },
-                            { id: 'he', label: 'עברית' },
-                            { id: 'en', label: 'English' },
-                          ] as const).map((opt) => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => setSubtitleLangChoice(opt.id)}
-                              className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                                subtitleLangChoice === opt.id ? 'bg-white text-black font-black' : 'text-neutral-400 hover:text-white'
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
+                      <input
+                        ref={uploadSubFileInputRef}
+                        type="file"
+                        accept=".srt,.vtt,.lrc,.txt,text/plain,text/vtt"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          try {
+                            const text = await file.text();
+                            const parsed = await parseSubtitleFileContent(text, 180, isHe ? 'he' : 'en');
+                            if (parsed.success && parsed.segments.length > 0) {
+                              setWhisperDraftSegments(parsed.segments);
+                              setWhisperDraftSegmentsHe(parsed.segmentsHe);
+                              setWhisperDraftSegmentsEn(parsed.segmentsEn);
+                              setWhisperDraftLyricsHe(parsed.lyricsHe);
+                              setWhisperDraftLyricsEn(parsed.lyricsEn);
+                              setLyricsInput(parsed.lyricsHe || parsed.lyricsEn);
+                              uploadParsedSourceRef.current = (parsed.lyricsHe || parsed.lyricsEn).trim();
+                              setWhisperUploadNotice(
+                                isHe
+                                  ? `נטענו ${parsed.segments.length} שורות כתוביות מהקובץ "${file.name}" — מוכן לפרסום`
+                                  : `Loaded ${parsed.segments.length} subtitle lines from "${file.name}"`
+                              );
+                            } else {
+                              setWhisperUploadNotice(
+                                isHe
+                                  ? 'הקובץ ריק או אינו בפורמט נתמך (.srt, .vtt, .lrc, .txt)'
+                                  : 'File is empty or not in a supported subtitle format'
+                              );
+                            }
+                          } catch {
+                            setWhisperUploadNotice(isHe ? 'שגיאה בקריאת קובץ הכתוביות' : 'Failed to read subtitle file');
+                          }
+                        }}
+                      />
 
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          {(lyricsInput.trim() || whisperDraftLyricsHe.trim() || whisperDraftLyricsEn.trim()) && !isTranscribingUpload && (
+                          <button
+                            type="button"
+                            onClick={() => uploadSubFileInputRef.current?.click()}
+                            className="px-4 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{isHe ? 'העלה קובץ כתוביות' : 'Upload Subtitle File'}</span>
+                          </button>
+
+                          {(lyricsInput.trim() || whisperDraftLyricsHe.trim() || whisperDraftLyricsEn.trim()) && (
                             <button
                               type="button"
                               onClick={async () => {
                                 const src = (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput).trim();
-                                const res = await buildInstantSubtitlesFromLyrics(src, 180, isHe ? 'he' : 'en');
-                                if (res.success) {
+                                const res = await parseSubtitleFileContent(src, 180, isHe ? 'he' : 'en');
+                                if (res.success && res.segments.length > 0) {
                                   setWhisperDraftSegments(res.segments);
                                   setWhisperDraftSegmentsHe(res.segmentsHe);
                                   setWhisperDraftSegmentsEn(res.segmentsEn);
                                   setWhisperDraftLyricsHe(res.lyricsHe);
                                   setWhisperDraftLyricsEn(res.lyricsEn);
-                                  setLyricsInput(res.lyricsHe);
+                                  setLyricsInput(res.lyricsHe || res.lyricsEn);
+                                  uploadParsedSourceRef.current = (res.lyricsHe || res.lyricsEn).trim();
                                   setWhisperUploadNotice(
                                     isHe
-                                      ? `סונכרנו ${res.segmentsHe.length} שורות מילים מיידית — מוכן לפרסום`
-                                      : `Synced ${res.segmentsHe.length} subtitle lines cleanly`
+                                      ? `סונכרנו ${res.segments.length} שורות כתוביות מהטקסט — מוכן לפרסום`
+                                      : `Synced ${res.segments.length} subtitle lines cleanly`
                                   );
                                 }
                               }}
-                              className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
+                              className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
                             >
-                              {isHe ? 'סנכרן מילים מיידית' : 'Sync Typed Lyrics'}
-                            </button>
-                          )}
-
-                          {isTranscribingUpload ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                uploadSubAbortRef.current?.abort();
-                                setIsTranscribingUpload(false);
-                                setWhisperProgressText('');
-                                setWhisperProgressPercent(0);
-                                setWhisperUploadNotice(isHe ? 'יצירת הכתוביות בוטלה' : 'Subtitle generation cancelled');
-                              }}
-                              className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/25 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                              <span>{isHe ? 'ביטול יצירה' : 'Cancel'}</span>
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={!rawAudioFile && !audioStreamUrl.trim()}
-                              onClick={async () => {
-                                uploadSubAbortRef.current?.abort();
-                                const controller = new AbortController();
-                                uploadSubAbortRef.current = controller;
-                                setIsTranscribingUpload(true);
-                                setWhisperProgressText(isHe ? 'מייצר כתוביות ברקע...' : 'Generating subtitles fast...');
-                                setWhisperProgressPercent(8);
-                                setWhisperUploadNotice(null);
-                                const wRes = await transcribeTrackWithWhisperAI({
-                                  audioFile: rawAudioFile || undefined,
-                                  track: !rawAudioFile && audioStreamUrl.trim() ? {
-                                    id: 'draft',
-                                    name: songTitle || 'שיר',
-                                    artistName: currentArtist.name || 'אמן',
-                                    albumName: albumTitle || 'Single',
-                                    duration: 180,
-                                    audioUrl: audioStreamUrl.trim(),
-                                    coverUrl: coverArtUrl.trim(),
-                                  } : undefined,
-                                  language: isHe ? 'he' : 'en',
-                                  subtitleLanguageHint: subtitleLangChoice,
-                                  signal: controller.signal,
-                                  onProgress: (txt, pct) => {
-                                    setWhisperProgressText(txt);
-                                    if (typeof pct === 'number') setWhisperProgressPercent(pct);
-                                  },
-                                  onPartialSegments: (partial) => {
-                                    if (partial.segments.length > 0) {
-                                      setWhisperDraftSegments(partial.segments);
-                                      setWhisperDraftSegmentsHe(partial.segmentsHe);
-                                      setWhisperDraftLyricsHe(partial.lyricsHe);
-                                      setLyricsInput(partial.lyricsHe);
-                                    }
-                                  },
-                                });
-                                setIsTranscribingUpload(false);
-                                setWhisperProgressText('');
-                                setWhisperProgressPercent(0);
-                                if (wRes.aborted) return;
-                                if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
-                                  setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
-                                  setWhisperDraftSegmentsHe(wRes.segmentsHe);
-                                  setWhisperDraftSegmentsEn(wRes.segmentsEn);
-                                  setWhisperDraftLyricsHe(wRes.lyricsHe || '');
-                                  setWhisperDraftLyricsEn(wRes.lyricsEn || '');
-                                  setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
-                                  setWhisperUploadNotice(
-                                    isHe
-                                      ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית — ניתן לערוך או לפרסם ישירות`
-                                      : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
-                                  );
-                                } else {
-                                  setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
-                                }
-                              }}
-                              className="px-3.5 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
-                            >
-                              <Sparkles className="w-3.5 h-3.5" />
-                              <span>{isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now'}</span>
+                              {isHe ? 'סנכרן כתוביות מהטקסט' : 'Sync Pasted Subtitles'}
                             </button>
                           )}
                         </div>
+
+                        {(lyricsInput.trim() || whisperDraftLyricsHe.trim() || whisperDraftLyricsEn.trim() || (whisperDraftSegments && whisperDraftSegments.length > 0)) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLyricsInput('');
+                              setWhisperDraftLyricsHe('');
+                              setWhisperDraftLyricsEn('');
+                              setWhisperDraftSegments(undefined);
+                              setWhisperDraftSegmentsHe(undefined);
+                              setWhisperDraftSegmentsEn(undefined);
+                              uploadParsedSourceRef.current = '';
+                              setWhisperUploadNotice(isHe ? 'הכתוביות נוקו — העלה קובץ או הדבק טקסט' : 'Subtitles cleared');
+                            }}
+                            className="px-3 py-1.5 rounded-full bg-black hover:bg-white/10 border border-white/15 text-neutral-300 text-[11px] font-medium cursor-pointer transition-colors"
+                          >
+                            {isHe ? 'נקה' : 'Clear'}
+                          </button>
+                        )}
                       </div>
-
-                      {isTranscribingUpload && (
-                        <div className="space-y-1.5 py-1">
-                          <div className="flex items-center justify-between text-[11px] text-neutral-300">
-                            <span className="flex items-center gap-2">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                              <span>{whisperProgressText || (isHe ? 'מעבד כתוביות ברקע...' : 'Processing...')}</span>
-                            </span>
-                            <span className="font-mono text-white">{whisperProgressPercent}%</span>
-                          </div>
-                          <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
-                            <div
-                              className="h-full bg-white transition-all duration-200"
-                              style={{ width: `${Math.max(5, whisperProgressPercent)}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
 
                       {whisperUploadNotice && (
                         <p className="text-[11px] text-white font-bold bg-black border border-white/25 px-3 py-2 rounded-xl">
@@ -2754,7 +2693,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       )}
 
                       <textarea
-                        rows={3}
+                        rows={4}
                         value={uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput}
                         onChange={(e) => {
                           if (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn) {
@@ -2764,8 +2703,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           }
                         }}
                         placeholder={isHe
-                          ? 'אופציונלי: הזן מילים או לחץ "צור כתוביות עכשיו" (השיר מפורסם מיידית תוך שניות)'
-                          : 'Optional: paste lyrics or click "Generate Subtitles Now" (publishing stays instant)'}
+                          ? 'הדבק כאן מילים או כתוביות (תומך בטקסט רגיל, SRT, VTT או LRC) — או העלה קובץ כתוביות למעלה...'
+                          : 'Paste lyrics or subtitles here (supports plain text, SRT, VTT, or LRC) — or upload a subtitle file above...'}
                         className="w-full px-4 py-3 rounded-xl bg-black border border-white/20 text-white placeholder-neutral-500 focus:outline-none focus:border-white text-xs leading-relaxed transition-colors"
                       />
                     </div>

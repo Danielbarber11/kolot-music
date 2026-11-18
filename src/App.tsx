@@ -9,8 +9,9 @@ import {
   fetchBootstrapData,
   getCachedArtistProfiles,
   getCachedAlbums,
+  incrementTrackViewInMemory,
 } from './services/multiMusicService';
-import { getStreamingMediaUrl } from './services/cloudStorageService';
+import { getStreamingMediaUrl, incrementTrackViewsInCloud } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
 import { AccessibilityPage } from './components/AccessibilityPage';
 import {
@@ -163,6 +164,26 @@ export default function App() {
     }
   };
 
+  const handleEnterTrack = (track: JamendoTrack) => {
+    const existingTrack = allTracks.find((t) => t.id === track.id);
+    const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
+    const nextViews = currentViews + 1;
+    const updatedTrack: JamendoTrack = {
+      ...(existingTrack || track),
+      ...track,
+      viewsCount: nextViews,
+    };
+
+    incrementTrackViewInMemory(track.id);
+    setAllTracks((prev) =>
+      prev.some((t) => t.id === track.id)
+        ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
+        : prev
+    );
+    incrementTrackViewsInCloud(track);
+    setActivePlayerTrack(updatedTrack);
+  };
+
   const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings);
 
   return (
@@ -183,7 +204,7 @@ export default function App() {
             onTracksSync={setAllTracks}
             onArtistsSync={setAllArtists}
             onNavigateHome={() => setActivePlayerTrack(null)}
-            onPlayTrack={(track) => setActivePlayerTrack(track)}
+            onPlayTrack={handleEnterTrack}
             onOpenAccessibility={() => setIsAccessibilityOpen(true)}
             activeAccessibilityCount={activeAccessibilityCount}
           />
@@ -204,7 +225,7 @@ export default function App() {
                 lang={lang}
                 allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
                 allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
-                onPlayTrack={(t) => setActivePlayerTrack(t)}
+                onPlayTrack={handleEnterTrack}
               />
             )}
           </AnimatePresence>

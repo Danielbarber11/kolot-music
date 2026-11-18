@@ -909,6 +909,18 @@ export async function incrementTrackPlaysInCloud(track: JamendoTrack): Promise<n
   return optimistic;
 }
 
+export function incrementTrackViewsInCloud(track: JamendoTrack): void {
+  if (!track?.id) return;
+  try {
+    fetch('/api/storage/track-view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackId: track.id }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {}
+}
+
 // Exports for use in components
 // Helper: urlToBlob
 export async function urlToBlob(url: string): Promise<Blob | null> {

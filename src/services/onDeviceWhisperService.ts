@@ -383,6 +383,138 @@ export async function buildInstantSubtitlesFromLyrics(
   };
 }
 
+function parseClockTimestampSeconds(raw: string): number {
+  const clean = raw.trim().replace(',', '.');
+  const parts = clean.split(':').map((p) => parseFloat(p));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+/**
+ * Parses uploaded .srt, .vtt, .lrc files or pasted timed/plain lyrics immediately (< 5ms).
+ */
+export async function parseSubtitleFileContent(
+  rawContent: string,
+  durationSeconds = 180,
+  preferredLanguage: 'he' | 'en' = 'he'
+): Promise<{
+  success: boolean;
+  segments: SubtitleSegment[];
+  segmentsHe: SubtitleSegment[];
+  segmentsEn: SubtitleSegment[];
+  lyricsHe: string;
+  lyricsEn: string;
+}> {
+  const text = (rawContent || '').replace(/^\uFEFF/, '').trim();
+  if (!text) {
+    return {
+      success: false,
+      segments: [],
+      segmentsHe: [],
+      segmentsEn: [],
+      lyricsHe: '',
+      lyricsEn: '',
+    };
+  }
+
+  let parsedTimed: SubtitleSegment[] = [];
+
+  // 1. Detect SRT / WebVTT cues (00:00:01,000 --> 00:00:04,500)
+  if (/-->/.test(text)) {
+    const blocks = text
+      .replace(/^WEBVTT[^\n]*\n?/i, '')
+      .split(/\r?\n\s*\r?\n/);
+
+    blocks.forEach((block, idx) => {
+      const lines = block
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const arrowIdx = lines.findIndex((l) => l.includes('-->'));
+      if (arrowIdx < 0) return;
+
+      const timeLine = lines[arrowIdx];
+      const [rawStart, rawEndPart] = timeLine.split('-->');
+      const rawEnd = (rawEndPart || '').trim().split(/\s+/)[0] || '';
+      const startTime = Math.max(0, parseClockTimestampSeconds(rawStart));
+      const endTime = Math.max(startTime + 0.8, parseClockTimestampSeconds(rawEnd) || startTime + 3.5);
+      const captionRaw = lines.slice(arrowIdx + 1).join(' ').replace(/<[^>]+>/g, ' ');
+      const cleanLine = sanitizeSubtitleLettersOnly(captionRaw);
+      if (cleanLine) {
+        parsedTimed.push({
+          id: `sub_cue_${idx}`,
+          startTime: Number(startTime.toFixed(2)),
+          endTime: Number(endTime.toFixed(2)),
+          text: cleanLine,
+        });
+      }
+    });
+  }
+
+  // 2. Detect LRC lines ([01:12.34] lyric text)
+  if (parsedTimed.length === 0) {
+    const lrcLines: SubtitleSegment[] = [];
+    const rawRows = text.split(/\r?\n/);
+    rawRows.forEach((row, idx) => {
+      const m = row.trim().match(/^\[(\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\]\s*(.+)$/);
+      if (!m) return;
+      const startTime = Math.max(0, parseClockTimestampSeconds(m[1]));
+      const cleanLine = sanitizeSubtitleLettersOnly(m[2]);
+      if (cleanLine) {
+        lrcLines.push({
+          id: `lrc_cue_${idx}`,
+          startTime: Number(startTime.toFixed(2)),
+          endTime: Number((startTime + 4).toFixed(2)),
+          text: cleanLine,
+        });
+      }
+    });
+    if (lrcLines.length > 0) {
+      parsedTimed = lrcLines.map((seg, i) => {
+        const next = lrcLines[i + 1];
+        const end = next && next.startTime > seg.startTime
+          ? next.startTime
+          : Math.min(Math.max(durationSeconds, seg.startTime + 5), seg.startTime + 5);
+        return { ...seg, endTime: Number(end.toFixed(2)) };
+      });
+    }
+  }
+
+  if (parsedTimed.length === 0) {
+    return buildInstantSubtitlesFromLyrics(text, durationSeconds, preferredLanguage);
+  }
+
+  const combinedText = parsedTimed.map((s) => s.text).join(' ');
+  const heCount = (combinedText.match(/[\u0590-\u05FF]/g) || []).length;
+  const enCount = (combinedText.match(/[a-zA-Z]/g) || []).length;
+  const primaryIsHe = heCount >= enCount;
+
+  const translated = await translateOnDeviceIfAvailable(
+    parsedTimed.map((s) => s.text),
+    primaryIsHe ? 'he' : 'en',
+    primaryIsHe ? 'en' : 'he'
+  ).catch(() => null);
+
+  const segmentsHe = primaryIsHe
+    ? parsedTimed.map((s, i) => ({ ...s, id: `sub_he_${i}` }))
+    : parsedTimed.map((s, i) => ({ ...s, id: `sub_he_${i}`, text: translated?.[i] || s.text }));
+
+  const segmentsEn = !primaryIsHe
+    ? parsedTimed.map((s, i) => ({ ...s, id: `sub_en_${i}` }))
+    : parsedTimed.map((s, i) => ({ ...s, id: `sub_en_${i}`, text: translated?.[i] || s.text }));
+
+  return {
+    success: true,
+    segments: preferredLanguage === 'en' ? segmentsEn : segmentsHe,
+    segmentsHe,
+    segmentsEn,
+    lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
+    lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
+  };
+}
+
 function encodePcm16kToWavBlob(pcm: Float32Array): Blob {
   const numSamples = pcm.length;
   const buffer = new ArrayBuffer(44 + numSamples * 2);

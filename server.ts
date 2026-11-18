@@ -2523,6 +2523,69 @@ app.post('/api/storage/track-play', async (req, res) => {
   }
 });
 
+// 4i-2. Persistent Track Views Counter (starts at 0, increments per entry)
+app.post('/api/storage/track-view', async (req, res) => {
+  try {
+    const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false });
+    const { client, bucket } = await getR2Context(req);
+    const key = `tracks/${cleanId}.json`;
+    try {
+      const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      if (obj.Body) {
+        const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
+        const viewsCount = (Number(trackData.viewsCount) || 0) + 1;
+        const updated = { ...trackData, viewsCount };
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+            ContentType: 'application/json',
+          })
+        );
+        return res.json({ success: true, viewsCount });
+      }
+    } catch {
+      // Fallback to tracks_index.json if standalone track json doesn't exist
+    }
+
+    try {
+      const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+      if (idxObj.Body) {
+        const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+        if (Array.isArray(idxData)) {
+          let nextViews = 1;
+          let found = false;
+          const nextArr = idxData.map((t: any) => {
+            if (t?.id === cleanId) {
+              found = true;
+              nextViews = (Number(t.viewsCount) || 0) + 1;
+              return { ...t, viewsCount: nextViews };
+            }
+            return t;
+          });
+          if (found) {
+            await client.send(
+              new PutObjectCommand({
+                Bucket: bucket,
+                Key: 'tracks_index.json',
+                Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                ContentType: 'application/json',
+              })
+            );
+            return res.json({ success: true, viewsCount: nextViews });
+          }
+        }
+      }
+    } catch {}
+
+    return res.json({ success: false, viewsCount: 1 });
+  } catch {
+    return res.json({ success: false, viewsCount: 1 });
+  }
+});
+
 // 4j. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
 app.get('/api/bootstrap', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

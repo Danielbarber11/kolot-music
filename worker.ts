@@ -1347,6 +1347,42 @@ export default {
       }
     }
 
+    // 13b. Persistent Track Views Counter (starts at 0, increments per entry)
+    if (pathname === '/api/storage/track-view' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false }, 400);
+        const key = `tracks/${cleanId}.json`;
+        const trackData = await r2ReadJson(key);
+        if (trackData) {
+          const viewsCount = (Number(trackData.viewsCount) || 0) + 1;
+          await r2WriteJson(key, { ...trackData, viewsCount });
+          return jsonResponse({ success: true, viewsCount });
+        }
+        const idxData = await r2ReadJson('tracks_index.json');
+        if (Array.isArray(idxData)) {
+          let nextViews = 1;
+          let found = false;
+          const nextArr = idxData.map((t: any) => {
+            if (t?.id === cleanId) {
+              found = true;
+              nextViews = (Number(t.viewsCount) || 0) + 1;
+              return { ...t, viewsCount: nextViews };
+            }
+            return t;
+          });
+          if (found) {
+            await r2WriteJson('tracks_index.json', nextArr);
+            return jsonResponse({ success: true, viewsCount: nextViews });
+          }
+        }
+        return jsonResponse({ success: false, viewsCount: 1 });
+      } catch {
+        return jsonResponse({ success: false, viewsCount: 1 });
+      }
+    }
+
     // 14. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
     if (pathname === '/api/bootstrap' && request.method === 'GET') {
       try {
