@@ -252,6 +252,17 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editGenre, setEditGenre] = useState('');
   const [editAlbum, setEditAlbum] = useState('');
   const [editLyrics, setEditLyrics] = useState('');
+  const [editIncludeSubtitles, setEditIncludeSubtitles] = useState<boolean>(true);
+  const [editSubtitleLangChoice, setEditSubtitleLangChoice] = useState<'auto' | 'he' | 'en'>('auto');
+  const [editWhisperSegments, setEditWhisperSegments] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [editWhisperSegmentsHe, setEditWhisperSegmentsHe] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [editWhisperSegmentsEn, setEditWhisperSegmentsEn] = useState<SubtitleSegment[] | undefined>(undefined);
+  const [editLyricsHe, setEditLyricsHe] = useState('');
+  const [editLyricsEn, setEditLyricsEn] = useState('');
+  const [editSubLangTab, setEditSubLangTab] = useState<'he' | 'en'>('he');
+  const [isTranscribingEdit, setIsTranscribingEdit] = useState(false);
+  const [editWhisperProgressText, setEditWhisperProgressText] = useState('');
+  const [editWhisperNotice, setEditWhisperNotice] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -282,7 +293,21 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setEditWriters(track.writers || '');
     setEditGenre(track.genre || 'Pop');
     setEditAlbum(track.albumName || '');
-    setEditLyrics(track.lyrics || '');
+    setEditLyrics(track.lyricsHe || track.lyrics || '');
+    setEditWhisperSegments(track.subtitleSegments);
+    setEditWhisperSegmentsHe(track.subtitleSegmentsHe);
+    setEditWhisperSegmentsEn(track.subtitleSegmentsEn);
+    setEditLyricsHe(track.lyricsHe || track.lyrics || '');
+    setEditLyricsEn(track.lyricsEn || '');
+    setEditSubLangTab('he');
+    setEditIncludeSubtitles(
+      track.hasWhisperSubtitles !== false ||
+        !!(track.subtitleSegments?.length || track.subtitleSegmentsHe?.length || track.subtitleSegmentsEn?.length || track.lyrics?.trim())
+    );
+    setEditSubtitleLangChoice('auto');
+    setIsTranscribingEdit(false);
+    setEditWhisperProgressText('');
+    setEditWhisperNotice(null);
     setEditIsAiGenerated(!!track.isAiGenerated);
   };
 
@@ -290,6 +315,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     e.preventDefault();
     if (!editingTrack || !canManageTrack(editingTrack)) return;
     setIsSavingEdit(true);
+
+    const sanitizedHe = editIncludeSubtitles
+      ? sanitizeSubtitleLettersOnly((editLyrics || editLyricsHe || '').trim())
+      : '';
+    const sanitizedEn = editIncludeSubtitles
+      ? sanitizeSubtitleLettersOnly((editLyricsEn || '').trim())
+      : '';
+    const hasSubSegments =
+      editIncludeSubtitles &&
+      (!!(editWhisperSegments && editWhisperSegments.length > 0) ||
+        !!(editWhisperSegmentsHe && editWhisperSegmentsHe.length > 0) ||
+        !!(editWhisperSegmentsEn && editWhisperSegmentsEn.length > 0));
 
     const updatedTrack: JamendoTrack = {
       ...editingTrack,
@@ -299,7 +336,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       writers: editWriters.trim() || undefined,
       genre: editGenre.trim() || editingTrack.genre,
       albumName: editAlbum.trim() || editingTrack.albumName,
-      lyrics: editLyrics.trim() || undefined,
+      lyrics: editIncludeSubtitles ? (sanitizedHe || sanitizedEn || undefined) : undefined,
+      lyricsHe: editIncludeSubtitles ? (sanitizedHe || undefined) : undefined,
+      lyricsEn: editIncludeSubtitles ? (sanitizedEn || undefined) : undefined,
+      subtitleSegments: hasSubSegments ? (editWhisperSegments && editWhisperSegments.length > 0 ? editWhisperSegments : editWhisperSegmentsHe) : undefined,
+      subtitleSegmentsHe: hasSubSegments && editWhisperSegmentsHe && editWhisperSegmentsHe.length > 0 ? editWhisperSegmentsHe : undefined,
+      subtitleSegmentsEn: hasSubSegments && editWhisperSegmentsEn && editWhisperSegmentsEn.length > 0 ? editWhisperSegmentsEn : undefined,
+      hasWhisperSubtitles: hasSubSegments,
       isAiGenerated: editIsAiGenerated,
     };
 
@@ -309,6 +352,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       console.warn('Cloud edit sync notice:', err);
     }
 
+    const updatedPool = getInstantSongPool().map((item) =>
+      item.id === updatedTrack.id ? { ...item, ...updatedTrack } : item
+    );
+    saveCachedCloudTracks(updatedPool);
     onTrackPublished(updatedTrack);
     setIsSavingEdit(false);
     setEditingTrack(null);
@@ -1663,7 +1710,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             {/* EDIT SONG MODAL FOR PROFILE OWNER */}
             {editingTrack && (
               <div className="fixed inset-0 z-[160] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg bg-neutral-900 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-fadeIn">
+                <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar bg-neutral-900 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-fadeIn">
                   <div className="flex items-center justify-between border-b border-white/10 pb-3">
                     <h3 className="text-base font-black text-white flex items-center gap-2">
                       <Pencil className="w-4 h-4 text-emerald-400" />
@@ -1742,14 +1789,150 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       />
                     </div>
 
-                    <div>
-                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'תיאור היצירה / הערות' : 'Description / Notes'}</label>
-                      <textarea
-                        rows={3}
-                        value={editLyrics}
-                        onChange={(e) => setEditLyrics(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white focus:outline-none focus:border-emerald-400"
-                      />
+                    {/* SUBTITLES & LYRICS SECTION IN EDIT MODAL */}
+                    <div className="p-4 rounded-2xl bg-neutral-950 border border-white/15 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Captions className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <div className="min-w-0">
+                            <span className="font-bold text-white block">
+                              {editIncludeSubtitles
+                                ? (isHe ? 'כתוביות ומילות השיר (פעיל)' : 'Song Subtitles (Enabled)')
+                                : (isHe ? 'כתוביות כבויות (יוסרו מהשיר)' : 'Subtitles Off')}
+                            </span>
+                            <span className="text-[10px] text-neutral-400 block">
+                              {isHe ? 'לחץ ליצירת כתוביות מהירה בשניות' : 'Fast subtitle generation in seconds'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={editIncludeSubtitles}
+                          onClick={() => setEditIncludeSubtitles((v) => !v)}
+                          dir="ltr"
+                          className={`w-12 h-6 rounded-full p-0.5 transition-colors flex items-center cursor-pointer shrink-0 border ${
+                            editIncludeSubtitles ? 'bg-white border-white justify-end' : 'bg-neutral-800 border-white/25 justify-start'
+                          }`}
+                        >
+                          <span className={`w-4.5 h-4.5 rounded-full transition-transform ${editIncludeSubtitles ? 'bg-black' : 'bg-white'}`} />
+                        </button>
+                      </div>
+
+                      {editIncludeSubtitles && (
+                        <div className="space-y-2.5 pt-2 border-t border-white/10">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="inline-flex items-center rounded-xl bg-black border border-white/20 p-0.5 text-[10px] font-bold">
+                              {([
+                                { id: 'auto', label: isHe ? 'אוטומטי' : 'Auto' },
+                                { id: 'he', label: 'עברית' },
+                                { id: 'en', label: 'English' },
+                              ] as const).map((opt) => (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={() => setEditSubtitleLangChoice(opt.id)}
+                                  className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
+                                    editSubtitleLangChoice === opt.id ? 'bg-white text-black font-black' : 'text-neutral-400 hover:text-white'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={isTranscribingEdit}
+                              onClick={async () => {
+                                setIsTranscribingEdit(true);
+                                setEditWhisperProgressText(isHe ? 'מייצר כתוביות במהירות...' : 'Generating subtitles fast...');
+                                setEditWhisperNotice(null);
+                                const wRes = await transcribeTrackWithWhisperAI({
+                                  track: editingTrack,
+                                  language: isHe ? 'he' : 'en',
+                                  subtitleLanguageHint: editSubtitleLangChoice,
+                                  onProgress: (txt) => setEditWhisperProgressText(txt),
+                                });
+                                setIsTranscribingEdit(false);
+                                setEditWhisperProgressText('');
+                                if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
+                                  setEditWhisperSegments(wRes.segments || wRes.segmentsHe);
+                                  setEditWhisperSegmentsHe(wRes.segmentsHe);
+                                  setEditWhisperSegmentsEn(wRes.segmentsEn);
+                                  setEditLyricsHe(wRes.lyricsHe || wRes.lyrics || '');
+                                  setEditLyricsEn(wRes.lyricsEn || '');
+                                  setEditLyrics(wRes.lyricsHe || wRes.lyrics || '');
+                                  setEditWhisperNotice(
+                                    isHe
+                                      ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} באנגלית — לחץ שמור שינויים`
+                                      : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
+                                  );
+                                } else {
+                                  setEditWhisperNotice(wRes.error || (isHe ? 'לא ניתן היה ליצור כתוביות כרגע' : 'Subtitle generation failed'));
+                                }
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-45"
+                            >
+                              {isTranscribingEdit ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Sparkles className="w-3.5 h-3.5" />
+                              )}
+                              <span>
+                                {isTranscribingEdit
+                                  ? (editWhisperProgressText || (isHe ? 'מייצר כתוביות...' : 'Generating...'))
+                                  : (isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now')}
+                              </span>
+                            </button>
+                          </div>
+
+                          {editWhisperNotice && (
+                            <p className="text-[11px] text-white font-bold bg-black border border-white/25 px-3 py-2 rounded-xl">
+                              {editWhisperNotice}
+                            </p>
+                          )}
+
+                          {(editLyricsHe || editLyricsEn) && (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditSubLangTab('he')}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${
+                                  editSubLangTab === 'he' ? 'bg-white text-black border-white font-black' : 'bg-black text-neutral-300 border-white/20'
+                                }`}
+                              >
+                                עברית ({editWhisperSegmentsHe?.length || 0})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditSubLangTab('en')}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${
+                                  editSubLangTab === 'en' ? 'bg-white text-black border-white font-black' : 'bg-black text-neutral-300 border-white/20'
+                                }`}
+                              >
+                                English ({editWhisperSegmentsEn?.length || 0})
+                              </button>
+                            </div>
+                          )}
+
+                          <textarea
+                            rows={3}
+                            value={editSubLangTab === 'en' && editLyricsEn ? editLyricsEn : editLyrics}
+                            onChange={(e) => {
+                              if (editSubLangTab === 'en' && editLyricsEn) {
+                                setEditLyricsEn(e.target.value);
+                              } else {
+                                setEditLyrics(e.target.value);
+                                setEditLyricsHe(e.target.value);
+                              }
+                            }}
+                            placeholder={isHe ? 'מילות השיר או הערות ליצירה...' : 'Lyrics or description...'}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white focus:outline-none focus:border-emerald-400"
+                          />
+                        </div>
+                      )}
                     </div>
 
                     {/* AI GENERATED TRACK TOGGLE IN EDIT MODAL */}
@@ -2199,8 +2382,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         <span className="text-[11px] text-neutral-400 block mt-0.5">
                           {includeSubtitles
                             ? (isHe
-                                ? 'תמלול מדויק על המכשיר בעברית ובאנגלית • כבה כדי לפרסם בלי כתוביות (לא יוסיף לשיר זה כתוביות)'
-                                : 'Accurate on-device Hebrew & English transcription • Toggle off to skip subtitles')
+                                ? 'יצירת כתוביות מהירה בשניות בעברית ובאנגלית • כבה כדי לפרסם בלי כתוביות'
+                                : 'Fast Hebrew & English subtitle generation • Toggle off to skip subtitles')
                             : (isHe
                                 ? 'מצב כבוי — לא ייווצרו ולא יישמרו כתוביות לשיר זה'
                                 : 'Subtitles disabled — this track will publish without subtitles')}
@@ -2257,7 +2440,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
                           onClick={async () => {
                             setIsTranscribingUpload(true);
-                            setWhisperProgressText(isHe ? 'מפעיל מנוע כתוביות מדויק במכשיר...' : 'Starting on-device subtitles engine...');
+                            setWhisperProgressText(isHe ? 'מייצר כתוביות במהירות...' : 'Generating subtitles fast...');
                             setWhisperUploadNotice(null);
                             const wRes = await transcribeTrackWithWhisperAI({
                               audioFile: rawAudioFile || undefined,

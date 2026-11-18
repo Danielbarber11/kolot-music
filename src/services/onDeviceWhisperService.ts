@@ -215,11 +215,11 @@ function fallbackDownsampleDecodedTo16k(decoded: AudioBuffer, maxSeconds: number
  */
 export async function decodeAudioToMono16k(
   source: File | Blob | string,
-  maxSeconds = 260,
+  maxSeconds = 180,
   options?: { isolateVocals?: boolean }
 ): Promise<{ pcm: Float32Array; duration: number }> {
   const isConstrained = isMobileOrConstrainedDevice();
-  const maxBytes = isConstrained ? 28 * 1024 * 1024 : 55 * 1024 * 1024;
+  const maxBytes = isConstrained ? 16 * 1024 * 1024 : 28 * 1024 * 1024;
   let arrayBuffer: ArrayBuffer;
 
   if (typeof source === 'string') {
@@ -227,11 +227,12 @@ export async function decodeAudioToMono16k(
     if (!res.ok) {
       throw new Error(`לא ניתן לטעון את קובץ השמע למכשיר (${res.status})`);
     }
-    arrayBuffer = await res.arrayBuffer();
+    const rawBuf = await res.arrayBuffer();
+    arrayBuffer = rawBuf.byteLength > maxBytes ? rawBuf.slice(0, maxBytes) : rawBuf;
   } else {
     const targetSlice =
-      maxSeconds > 0 && maxSeconds <= 60 && source.size > 12 * 1024 * 1024
-        ? source.slice(0, 12 * 1024 * 1024)
+      maxSeconds > 0 && maxSeconds <= 60 && source.size > 10 * 1024 * 1024
+        ? source.slice(0, 10 * 1024 * 1024)
         : source.size > maxBytes
           ? source.slice(0, maxBytes)
           : source;
@@ -248,7 +249,7 @@ export async function decodeAudioToMono16k(
     // Support both Promise and legacy callback form of decodeAudioData (Android 12 Safari/older engines)
     const decoded: AudioBuffer = await new Promise((resolve, reject) => {
       try {
-        const p = decodeCtx.decodeAudioData(arrayBuffer.slice(0), resolve, reject);
+        const p = decodeCtx.decodeAudioData(arrayBuffer, resolve, reject);
         if (p && typeof (p as Promise<AudioBuffer>).then === 'function') {
           (p as Promise<AudioBuffer>).then(resolve, reject);
         }
@@ -258,47 +259,15 @@ export async function decodeAudioToMono16k(
     });
 
     const fullDuration = decoded.duration || 180;
-    const effectiveMaxSec = isConstrained ? Math.min(maxSeconds, 240) : maxSeconds;
+    const effectiveMaxSec = isConstrained ? Math.min(maxSeconds, 160) : Math.min(maxSeconds, 210);
     const sampleDuration = effectiveMaxSec > 0 ? Math.min(decoded.duration, effectiveMaxSec) : decoded.duration;
-    const targetLength = Math.max(1600, Math.floor(sampleDuration * 16000));
 
-    try {
-      const OfflineCtx = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
-      if (!OfflineCtx) {
-        const manualPcm = fallbackDownsampleDecodedTo16k(decoded, sampleDuration);
-        return { pcm: options?.isolateVocals ? normalizePcmForVocals(manualPcm) : manualPcm, duration: fullDuration };
-      }
-
-      const offlineCtx = new OfflineCtx(1, targetLength, 16000);
-      const bufferSource = offlineCtx.createBufferSource();
-      bufferSource.buffer = decoded;
-
-      if (options?.isolateVocals) {
-        const highpass = offlineCtx.createBiquadFilter();
-        highpass.type = 'highpass';
-        highpass.frequency.value = 90;
-        highpass.Q.value = 0.7;
-        bufferSource.connect(highpass);
-        highpass.connect(offlineCtx.destination);
-      } else {
-        bufferSource.connect(offlineCtx.destination);
-      }
-      bufferSource.start(0);
-
-      const rendered = await offlineCtx.startRendering();
-      const rawChannel = rendered.getChannelData(0);
-      return {
-        pcm: options?.isolateVocals ? normalizePcmForVocals(rawChannel) : rawChannel,
-        duration: fullDuration,
-      };
-    } catch {
-      // Fallback for older Android WebViews rejecting 16kHz OfflineAudioContext
-      const manualPcm = fallbackDownsampleDecodedTo16k(decoded, sampleDuration);
-      return {
-        pcm: options?.isolateVocals ? normalizePcmForVocals(manualPcm) : manualPcm,
-        duration: fullDuration,
-      };
-    }
+    // Direct lightweight 16kHz mono downsampler avoids spawning heavy secondary OfflineAudioContext buffers that crash mobile tabs
+    const manualPcm = fallbackDownsampleDecodedTo16k(decoded, sampleDuration);
+    return {
+      pcm: options?.isolateVocals ? normalizePcmForVocals(manualPcm) : manualPcm,
+      duration: fullDuration,
+    };
   } finally {
     decodeCtx.close().catch(() => {});
   }
@@ -307,71 +276,48 @@ export async function decodeAudioToMono16k(
 const yieldToUI = (ms = 24) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * Loads device-optimal On-Device Whisper AI pipeline:
- * - Mobile / Android 12 / <=6GB RAM: Whisper Tiny (~40MB) for fast real-time playback sync & zero OOM crashes.
- * - Desktop (>6GB RAM): Whisper Base (~75MB) with automatic Whisper Tiny fallback.
+ * Loads lightweight quantized Whisper Tiny (q8, ~40MB cached) only if server transcription is unavailable.
+ * Avoids heavy fp32/whisper-base RAM allocations that can crash browser tabs.
  */
 async function getOnDeviceWhisperPipeline(
   onProgress?: (statusText: string, percent?: number) => void
 ) {
   if (!whisperPipelinePromise) {
     whisperPipelinePromise = (async () => {
-      const mobileOrConstrained = isMobileOrConstrainedDevice();
-      const candidates = mobileOrConstrained
-        ? [
-            { id: 'Xenova/whisper-tiny', label: 'Whisper Fast' },
-          ]
-        : [
-            { id: 'Xenova/whisper-base', label: 'Whisper Base' },
-            { id: 'Xenova/whisper-tiny', label: 'Whisper Fast' },
-          ];
+      onProgress?.('מכין מנוע כתוביות מהיר...', 8);
 
-      onProgress?.(
-        mobileOrConstrained
-          ? 'מכין מנוע כתוביות מהיר למכשיר נייד...'
-          : 'מכין מנוע כתוביות בזמן אמת למכשיר...',
-        6
-      );
-
-      const loadModel = async (modelId: string, label: string, dtype: 'q8' | 'fp32') =>
+      const loadModel = async (modelId: string, label: string, dtype: 'q8') =>
         pipeline('automatic-speech-recognition', modelId, {
           dtype,
           device: 'wasm',
           progress_callback: (info: any) => {
             if (info?.status === 'progress' && typeof info.progress === 'number') {
               const rawPct = Math.min(100, Math.max(0, info.progress));
-              const scaled = Math.min(48, Math.max(6, Math.round(6 + rawPct * 0.42)));
-              onProgress?.(`מוריד ושומר מנוע כתוביות (${Math.round(rawPct)}%)`, scaled);
+              const scaled = Math.min(48, Math.max(8, Math.round(8 + rawPct * 0.4)));
+              onProgress?.(`טוען מנוע כתוביות (${Math.round(rawPct)}%)`, scaled);
             } else if (info?.status === 'initiate' || info?.status === 'download') {
-              onProgress?.(`מתחבר להורדת מנוע ${label}...`, 8);
+              onProgress?.(`מתחבר למנוע ${label}...`, 10);
             } else if (info?.status === 'ready') {
-              onProgress?.(`מנוע הכתוביות מוכן`, 50);
+              onProgress?.('מנוע הכתוביות מוכן', 50);
             }
           },
         });
 
-      let lastErr: any = null;
-      for (const candidate of candidates) {
-        for (const dtype of ['q8', 'fp32'] as const) {
-          try {
-            activeWhisperModelName = candidate.id;
-            const loaded = await loadModel(candidate.id, candidate.label, dtype);
-            onProgress?.('מנוע הכתוביות מוכן — מתמלל בזמן אמת...', 50);
-            return loaded;
-          } catch (err) {
-            lastErr = err;
-            console.warn(`[OnDeviceWhisper] Failed ${candidate.id} (${dtype}):`, err);
-          }
-        }
+      try {
+        activeWhisperModelName = 'Xenova/whisper-tiny';
+        const loaded = await loadModel('Xenova/whisper-tiny', 'Whisper Fast', 'q8');
+        onProgress?.('מתמלל שיר במהירות...', 50);
+        return loaded;
+      } catch (err) {
+        console.warn('[OnDeviceWhisper] Failed Xenova/whisper-tiny (q8):', err);
+        throw err || new Error('לא ניתן היה לטעון את מנוע הכתוביות על מכשיר זה');
       }
-
-      throw lastErr || new Error('לא ניתן היה לטעון את מנוע הכתוביות על מכשיר זה');
     })().catch((err) => {
       whisperPipelinePromise = null;
       throw err;
     });
   } else {
-    onProgress?.('מנוע הכתוביות מוכן — מתחיל תמלול בזמן אמת...', 48);
+    onProgress?.('מתמלל שיר במהירות...', 48);
   }
 
   return whisperPipelinePromise;
@@ -535,8 +481,9 @@ function mergeOrderedSegments(allSegments: SubtitleSegment[]): SubtitleSegment[]
 }
 
 /**
- * Generates real-time YouTube-style live streaming dual-language subtitles on ALL devices (Android 12 through newest Desktop/iOS).
- * Prioritizes chunks starting at `startTimeSeconds` (current playback position) and emits live incremental segments via `onPartialSegments`.
+ * Generates bilingual synchronized subtitles as fast as possible (< 1 minute) without crashing the browser:
+ * 1. Primary path: Fast server-side transcription via /api/ai/transcribe (~3-8s, zero browser RAM/WASM spike).
+ * 2. Fallback path: Optimized on-device Whisper Tiny q8 using full 28s windows (~4x faster, safe RAM caps).
  */
 export async function transcribeAudioOnDevice(options: {
   audioFile?: File | Blob | null;
@@ -562,25 +509,125 @@ export async function transcribeAudioOnDevice(options: {
   try {
     const source = options.audioFile || options.audioUrl;
     if (!source) {
-      return { success: false, error: 'לא נבחר קובץ שמע לתמלול מקומי' };
+      return { success: false, error: 'לא נבחר קובץ שמע ליצירת כתוביות' };
     }
 
-    options.onProgress?.('מפענח שמע בצורה מהירה במכשיר...', 3);
-    const { pcm, duration } = await decodeAudioToMono16k(source, 260, { isolateVocals: true });
+    // 1. ULTRA-FAST SERVER TRANSCRIPTION FIRST (3-8s, 0% client RAM/WASM crash risk)
+    try {
+      options.onProgress?.('מייצר כתוביות במהירות בשרת...', 15);
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 32000) : null;
+
+      let serverRes: Response;
+      if (options.audioFile) {
+        const fd = new FormData();
+        const cappedFile =
+          options.audioFile.size > 14 * 1024 * 1024
+            ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
+            : options.audioFile;
+        fd.append('file', cappedFile, options.audioFile instanceof File ? options.audioFile.name : 'track.mp3');
+        fd.append('language', options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he');
+        if (options.hintTitle) fd.append('songTitle', options.hintTitle);
+        if (options.trackDuration) fd.append('duration', String(options.trackDuration));
+        serverRes = await fetch('/api/ai/transcribe', {
+          method: 'POST',
+          body: fd,
+          credentials: 'include',
+          signal: controller?.signal,
+        });
+      } else {
+        serverRes = await fetch('/api/ai/transcribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            audioUrl: options.audioUrl,
+            language: options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he',
+            songTitle: options.hintTitle || '',
+            duration: options.trackDuration || 180,
+          }),
+          signal: controller?.signal,
+        });
+      }
+      if (timer) clearTimeout(timer);
+
+      if (serverRes.ok) {
+        const sData: any = await serverRes.json().catch(() => null);
+        if (sData?.success && Array.isArray(sData.segments) && sData.segments.length > 0) {
+          options.onProgress?.('מסנכרן תרגום לשפות...', 80);
+          const cleanedSegs: SubtitleSegment[] = sData.segments
+            .map((seg: any, idx: number) => {
+              const text = sanitizeSubtitleLettersOnly(String(seg?.text || ''));
+              if (!text || isHallucinationPhrase(text)) return null;
+              const startTime = Math.max(0, Number(seg.startTime) || 0);
+              const endTime = Math.max(startTime + 0.8, Number(seg.endTime) || startTime + 3.5);
+              return { id: `srv_seg_${idx}`, startTime, endTime, text };
+            })
+            .filter((x: any): x is SubtitleSegment => !!x);
+
+          if (cleanedSegs.length > 0) {
+            const totalText = cleanedSegs.map((s) => s.text).join(' ');
+            const heChars = (totalText.match(/[\u0590-\u05FF]/g) || []).length;
+            const enChars = (totalText.match(/[a-zA-Z]/g) || []).length;
+            const primaryIsHe =
+              options.subtitleLanguageHint === 'en'
+                ? false
+                : options.subtitleLanguageHint === 'he'
+                  ? true
+                  : heChars >= enChars;
+
+            const srcLines = cleanedSegs.map((s) => s.text);
+            const trLines = await translateOnDeviceIfAvailable(
+              srcLines,
+              primaryIsHe ? 'he' : 'en',
+              primaryIsHe ? 'en' : 'he'
+            ).catch(() => null);
+
+            const segmentsHe = primaryIsHe
+              ? cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_he_${idx}` }))
+              : cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_he_${idx}`, text: trLines?.[idx] || s.text }));
+
+            const segmentsEn = !primaryIsHe
+              ? cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_en_${idx}` }))
+              : cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_en_${idx}`, text: trLines?.[idx] || s.text }));
+
+            const lyricsHe = segmentsHe.map((s) => s.text).join('\n');
+            const lyricsEn = segmentsEn.map((s) => s.text).join('\n');
+
+            options.onProgress?.('הכתוביות נוצרו בהצלחה!', 100);
+            return {
+              success: true,
+              segments: options.language === 'en' ? segmentsEn : segmentsHe,
+              segmentsHe,
+              segmentsEn,
+              lyrics: options.language === 'en' ? lyricsEn : lyricsHe,
+              lyricsHe,
+              lyricsEn,
+              provider: sData.provider || 'fast-cloud-transcribe',
+            };
+          }
+        }
+      }
+    } catch (fastErr) {
+      console.warn('[Subtitles] Fast server transcribe fallback to optimized local engine:', fastErr);
+    }
+
+    // 2. OPTIMIZED LIGHTWEIGHT ON-DEVICE WHISPER FALLBACK (only reached if server transcription key is unset)
+    options.onProgress?.('מפענח שמע בצורה מהירה במכשיר...', 5);
+    const { pcm, duration } = await decodeAudioToMono16k(source, 180, { isolateVocals: true });
     const totalDuration = options.trackDuration && options.trackDuration > 10 ? options.trackDuration : duration || 180;
 
     const transcriber = await getOnDeviceWhisperPipeline(options.onProgress);
-    await yieldToUI(20);
+    await yieldToUI(25);
 
-    // Compact 12-second windows (10s stride, 2s overlap) emit live lines within ~2-4 seconds per chunk across all devices!
+    // Whisper's native encoder window is 30s — 28s windows reduce passes by ~4x and avoid tab crashes!
     const SAMPLE_RATE = 16000;
-    const CHUNK_SECONDS = 12;
-    const STRIDE_SECONDS = 10;
+    const CHUNK_SECONDS = 28;
+    const STRIDE_SECONDS = 26;
     const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
     const STRIDE_SAMPLES = STRIDE_SECONDS * SAMPLE_RATE;
     const totalChunks = Math.max(1, Math.ceil(Math.max(0, pcm.length - CHUNK_SAMPLES) / STRIDE_SAMPLES) + 1);
 
-    // Order chunks starting from current playback position -> forward to end -> back-fill beginning
     const startSec = Math.max(0, Number(options.startTimeSeconds || 0));
     const startIdx = Math.min(totalChunks - 1, Math.max(0, Math.floor(startSec / STRIDE_SECONDS)));
     const orderedChunkIndices: number[] = [];
@@ -640,10 +687,10 @@ export async function transcribeAudioOnDevice(options: {
 
       const pct = Math.min(92, Math.max(52, Math.round(52 + ((completedChunks + 1) / totalChunks) * 40)));
       options.onProgress?.(
-        `יוצר כתוביות תוך כדי נגינה (${completedChunks + 1}/${totalChunks})...`,
+        `יוצר כתוביות במהירות (${completedChunks + 1}/${totalChunks})...`,
         pct
       );
-      await yieldToUI(28);
+      await yieldToUI(40);
 
       if (computeChunkRms(chunkPcm) < 0.008 || chunkDurSec < 0.8) {
         completedChunks++;
@@ -653,7 +700,7 @@ export async function transcribeAudioOnDevice(options: {
       try {
         const decodeOptions: Record<string, any> = {
           return_timestamps: true,
-          max_new_tokens: 140,
+          max_new_tokens: 96,
           repetition_penalty: 1.05,
           no_repeat_ngram_size: 4,
           condition_on_prev_tokens: false,

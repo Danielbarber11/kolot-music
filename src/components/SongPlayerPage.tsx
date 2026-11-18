@@ -14,10 +14,7 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
-  Mic,
   Captions,
-  Loader2,
-  RefreshCw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment } from '../types';
@@ -33,9 +30,9 @@ import {
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveTrackSubtitlesInCloud } from '../services/cloudStorageService';
-import { getCachedArtistProfiles, fetchAllArtistProfiles, saveCachedCloudTracks, getInstantSongPool, updateMemoryTrack, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar } from '../services/multiMusicService';
-import { generateSynchronizedLyrics, transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
+import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud } from '../services/cloudStorageService';
+import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar } from '../services/multiMusicService';
+import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -204,10 +201,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   );
   const [whisperLyricsHe, setWhisperLyricsHe] = useState<string | undefined>(track.lyricsHe || track.lyrics);
   const [whisperLyricsEn, setWhisperLyricsEn] = useState<string | undefined>(track.lyricsEn);
-  const [isTranscribingWhisper, setIsTranscribingWhisper] = useState(false);
-  const [whisperProgressText, setWhisperProgressText] = useState<string>('');
-  const [whisperError, setWhisperError] = useState<string | null>(null);
-  const [transcribeLangHint, setTranscribeLangHint] = useState<'auto' | 'he' | 'en'>('auto');
   const [showLiveCaptions, setShowLiveCaptions] = useState<boolean>(
     !!(
       (track.subtitleSegments && track.subtitleSegments.length > 0) ||
@@ -224,10 +217,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setWhisperLyricsHe(track.lyricsHe || track.lyrics);
     setWhisperLyricsEn(track.lyricsEn);
     setSubtitleLang(!hasHe && hasEn ? 'en' : 'he');
-    setWhisperError(null);
-    setWhisperProgressText('');
     setShowLiveCaptions(hasHe || hasEn);
-  }, [track.id]);
+  }, [track.id, track.subtitleSegments, track.subtitleSegmentsHe, track.subtitleSegmentsEn, track.lyrics, track.lyricsHe, track.lyricsEn]);
 
   const activeSegments =
     subtitleLang === 'en'
@@ -264,80 +255,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     (line) => currentTime >= line.startTime && currentTime <= line.endTime
   );
   const activeSubtitleLine = activeLineIndex >= 0 ? syncedLyrics.lines[activeLineIndex] : null;
-
-  const handleGenerateWhisperSubtitles = async (e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    if (isTranscribingWhisper) return;
-
-    setIsTranscribingWhisper(true);
-    setShowLiveCaptions(true);
-    setWhisperError(null);
-    setWhisperProgressText(isHe ? 'מפעיל כתוביות בזמן אמת...' : 'Starting live subtitles...');
-
-    const playbackStart = audioRef.current?.currentTime ?? currentTime ?? 0;
-
-    const res = await transcribeTrackWithWhisperAI({
-      track,
-      language: isHe ? 'he' : 'en',
-      subtitleLanguageHint: transcribeLangHint,
-      startTimeSeconds: playbackStart,
-      onProgress: (txt) => setWhisperProgressText(txt),
-      onPartialSegments: (partial) => {
-        const nextHe = partial.segmentsHe?.length ? partial.segmentsHe : partial.segments;
-        const nextEn = partial.segmentsEn?.length ? partial.segmentsEn : partial.segments;
-        if (nextHe && nextHe.length > 0) setWhisperSegmentsHe(nextHe);
-        if (nextEn && nextEn.length > 0) setWhisperSegmentsEn(nextEn);
-        if (partial.lyricsHe) setWhisperLyricsHe(partial.lyricsHe);
-        if (partial.lyricsEn) setWhisperLyricsEn(partial.lyricsEn);
-        setShowLiveCaptions(true);
-      },
-    });
-
-    setIsTranscribingWhisper(false);
-    setWhisperProgressText('');
-
-    const nextHe = res.segmentsHe && res.segmentsHe.length > 0 ? res.segmentsHe : res.segments;
-    const nextEn = res.segmentsEn && res.segmentsEn.length > 0 ? res.segmentsEn : res.segments;
-
-    if (!res.success || ((!nextHe || nextHe.length === 0) && (!nextEn || nextEn.length === 0))) {
-      setWhisperError(res.error || (isHe ? 'לא ניתן לתמלל שמע זה כרגע' : 'Could not transcribe this track'));
-      return;
-    }
-
-    setWhisperSegmentsHe(nextHe);
-    setWhisperSegmentsEn(nextEn);
-    if (res.lyricsHe) setWhisperLyricsHe(res.lyricsHe);
-    if (res.lyricsEn) setWhisperLyricsEn(res.lyricsEn);
-    setShowLiveCaptions(true);
-
-    const primarySegments = nextHe && nextHe.length > 0 ? nextHe : nextEn || [];
-    const primaryLyrics = res.lyricsHe || res.lyrics || res.lyricsEn;
-
-    const { uploadedByEmail: _omitEmail, ...cleanBaseTrack } = track;
-    const updatedTrackObj: JamendoTrack = {
-      ...cleanBaseTrack,
-      subtitleSegments: primarySegments,
-      subtitleSegmentsHe: nextHe,
-      subtitleSegmentsEn: nextEn,
-      hasWhisperSubtitles: true,
-      ...(primaryLyrics ? { lyrics: primaryLyrics } : {}),
-      ...(res.lyricsHe ? { lyricsHe: res.lyricsHe } : {}),
-      ...(res.lyricsEn ? { lyricsEn: res.lyricsEn } : {}),
-    };
-
-    updateMemoryTrack(updatedTrackObj);
-    const updatedPool = getInstantSongPool().map((item) =>
-      item.id === track.id ? { ...item, ...updatedTrackObj } : item
-    );
-    saveCachedCloudTracks(updatedPool);
-
-    saveTrackSubtitlesInCloud(updatedTrackObj, primarySegments, primaryLyrics, {
-      subtitleSegmentsHe: nextHe,
-      subtitleSegmentsEn: nextEn,
-      lyricsHe: res.lyricsHe,
-      lyricsEn: res.lyricsEn,
-    }).catch(() => {});
-  };
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
@@ -642,26 +559,39 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" so Skip Back sits Left and Skip Forward sits Right of Play) */}
+        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" — Profile Avatar on Left, Heart on Right) */}
         <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
-            onClick={() => {
-              if (!authUser) {
-                setFavoriteAuthNotice(true);
-                setTimeout(() => setFavoriteAuthNotice(false), 5000);
-                onRequireAuth?.();
-                return;
-              }
-              onToggleLike(track.id);
-            }}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
-            title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
+            onClick={handleOpenArtistProfile}
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center p-1 transition-colors shadow-lg cursor-pointer"
+            title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
           >
-            <Heart
-              className={`w-5 h-5 sm:w-5.5 sm:h-5.5 transition-colors ${
-                isLiked ? 'fill-white text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]' : 'text-white/80 fill-transparent'
-              }`}
-            />
+            {(() => {
+              const resolvedArtistPhoto =
+                getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
+                (authUser && track.uploadedByUid === authUser.uid
+                  ? getGoogleAccountPhotoUrl(authUser)
+                  : undefined);
+              if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {
+                return (
+                  <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center shadow-sm">
+                    <img
+                      src={getStreamingMediaUrl(resolvedArtistPhoto)}
+                      alt={track.artistName}
+                      referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
+                      className="w-full h-full rounded-full object-cover"
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
+                  <User className="w-4 h-4 text-white" />
+                </div>
+              );
+            })()}
           </button>
 
           <button
@@ -696,36 +626,23 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
 
           <button
-            onClick={handleOpenArtistProfile}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 text-white border border-white/20 flex items-center justify-center p-1 transition-colors shadow-lg cursor-pointer"
-            title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
-          >
-            {(() => {
-              const resolvedArtistPhoto =
-                getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
-                (authUser && track.uploadedByUid === authUser.uid
-                  ? getGoogleAccountPhotoUrl(authUser)
-                  : undefined);
-              if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {
-                return (
-                  <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center shadow-sm">
-                    <img
-                      src={getStreamingMediaUrl(resolvedArtistPhoto)}
-                      alt={track.artistName}
-                      referrerPolicy="no-referrer"
-                      loading="eager"
-                      decoding="async"
-                      className="w-full h-full rounded-full object-cover"
-                    />
-                  </div>
-                );
+            onClick={() => {
+              if (!authUser) {
+                setFavoriteAuthNotice(true);
+                setTimeout(() => setFavoriteAuthNotice(false), 5000);
+                onRequireAuth?.();
+                return;
               }
-              return (
-                <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
-                  <User className="w-4 h-4 text-white" />
-                </div>
-              );
-            })()}
+              onToggleLike(track.id);
+            }}
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
+            title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
+          >
+            <Heart
+              className={`w-5 h-5 sm:w-5.5 sm:h-5.5 transition-colors ${
+                isLiked ? 'fill-white text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]' : 'text-white/80 fill-transparent'
+              }`}
+            />
           </button>
         </div>
 
@@ -770,121 +687,67 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           )}
 
-          {/* LIVE YOUTUBE-STYLE WHISPER AI SUBTITLES BAR */}
-          <div className="w-full pt-2 flex flex-col items-center gap-2">
-            {showLiveCaptions && (syncedLyrics.isWhisperSynced || isTranscribingWhisper) ? (
-              <div
-                onClick={() => setIsLyricsExpanded(true)}
-                className="w-full max-w-sm px-4 py-2.5 rounded-2xl bg-black/55 backdrop-blur-xl border border-white/20 text-center shadow-lg cursor-pointer hover:bg-black/70 transition-colors"
-              >
-                {activeSubtitleLine ? (
+          {/* SAVED SUBTITLES OVERLAY (ONLY SHOWN WHEN TRACK HAS SUBTITLES SAVED AT CREATION/EDIT) */}
+          {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
+            <div className="w-full pt-2 flex flex-col items-center gap-2">
+              {showLiveCaptions && (
+                <div
+                  onClick={() => setIsLyricsExpanded(true)}
+                  className="w-full max-w-sm px-4 py-2.5 rounded-2xl bg-black/55 backdrop-blur-xl border border-white/20 text-center shadow-lg cursor-pointer hover:bg-black/70 transition-colors"
+                >
                   <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
-                    {activeSubtitleLine.text}
+                    {activeSubtitleLine ? activeSubtitleLine.text : (syncedLyrics.lines[0]?.text || '')}
                   </p>
-                ) : isTranscribingWhisper ? (
-                  <p className="text-xs font-bold text-emerald-200 leading-snug flex items-center justify-center gap-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                    <span>{whisperProgressText || (isHe ? 'מייצר כתוביות תוך כדי ניגון...' : 'Generating live subtitles...')}</span>
-                  </p>
-                ) : (
-                  <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
-                    {syncedLyrics.lines[0]?.text || ''}
-                  </p>
-                )}
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              {syncedLyrics.isWhisperSynced || isTranscribingWhisper ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setShowLiveCaptions((v) => !v)}
-                    className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                      showLiveCaptions
-                        ? 'bg-emerald-500/25 text-emerald-200 border-emerald-400/50'
-                        : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
-                    }`}
-                  >
-                    {isTranscribingWhisper ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Captions className="w-3.5 h-3.5" />
-                    )}
-                    <span>
-                      {isTranscribingWhisper
-                        ? isHe
-                          ? 'מתמלל בחי'
-                          : 'Live Syncing'
-                        : isHe
-                        ? showLiveCaptions
-                          ? 'כתוביות פעילות'
-                          : 'הצג כתוביות'
-                        : showLiveCaptions
-                        ? 'Captions On'
-                        : 'Show Captions'}
-                    </span>
-                  </button>
-
-                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
-                    <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
-                      <button
-                        type="button"
-                        onClick={() => setSubtitleLang('he')}
-                        className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
-                          subtitleLang === 'he' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                        }`}
-                      >
-                        עברית
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSubtitleLang('en')}
-                        className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
-                          subtitleLang === 'en' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                        }`}
-                      >
-                        English
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="flex flex-wrap items-center justify-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleGenerateWhisperSubtitles}
-                    disabled={isTranscribingWhisper}
-                    className="px-3.5 py-1.5 rounded-full text-[11px] font-extrabold bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-60"
-                  >
-                    <Captions className="w-3.5 h-3.5 text-white" />
-                    <span>
-                      {isHe ? 'הפעל כתוביות חיות (מיידי ויישמר באחסון)' : 'Enable Live Subtitles (Instant & Saved)'}
-                    </span>
-                  </button>
-                  <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
-                    {(['auto', 'he', 'en'] as const).map((opt) => (
-                      <button
-                        key={opt}
-                        type="button"
-                        onClick={() => setTranscribeLangHint(opt)}
-                        className={`px-2 py-0.5 rounded-full transition-colors cursor-pointer ${
-                          transcribeLangHint === opt ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                        }`}
-                      >
-                        {opt === 'auto' ? (isHe ? 'אוטו' : 'Auto') : opt === 'he' ? 'עברית' : 'EN'}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               )}
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLiveCaptions((v) => !v)}
+                  className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                    showLiveCaptions
+                      ? 'bg-emerald-500/25 text-emerald-200 border-emerald-400/50'
+                      : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
+                  }`}
+                >
+                  <Captions className="w-3.5 h-3.5" />
+                  <span>
+                    {isHe
+                      ? showLiveCaptions
+                        ? 'כתוביות פעילות'
+                        : 'הצג כתוביות'
+                      : showLiveCaptions
+                        ? 'Captions On'
+                        : 'Show Captions'}
+                  </span>
+                </button>
+
+                {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
+                  <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('he')}
+                      className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
+                        subtitleLang === 'he' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
+                      }`}
+                    >
+                      עברית
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('en')}
+                      className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
+                        subtitleLang === 'en' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
+                      }`}
+                    >
+                      English
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-            {whisperError && (
-              <p className="text-[11px] text-rose-200 bg-rose-950/60 border border-rose-400/40 px-3 py-1 rounded-xl">
-                {whisperError}
-              </p>
-            )}
-          </div>
+          )}
         </div>
       </div>
 
@@ -994,11 +857,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-sm font-extrabold text-white flex items-center gap-2 truncate">
-                    <span>{isHe ? 'כתוביות Whisper AI • מילות השיר' : 'Whisper AI Subtitles • Lyrics'}</span>
+                    <span>{isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}</span>
                   </h3>
                   {!isLyricsExpanded && (
                     <p className="text-xs text-white/70 truncate max-w-[220px] sm:max-w-[300px] pt-0.5">
-                      {syncedLyrics.previewText}
+                      {syncedLyrics.previewText || (isHe ? 'לחץ להצגה' : 'Click to view')}
                     </p>
                   )}
                 </div>
@@ -1017,85 +880,38 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleGenerateWhisperSubtitles}
-                disabled={isTranscribingWhisper}
-                className="px-3 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-              >
-                {isTranscribingWhisper ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : syncedLyrics.isWhisperSynced ? (
-                  <RefreshCw className="w-3.5 h-3.5" />
-                ) : (
-                  <Mic className="w-3.5 h-3.5" />
+          {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0) || syncedLyrics.isWhisperSynced) && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-2">
+                {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
+                  <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('he')}
+                      className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                        subtitleLang === 'he' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                      }`}
+                    >
+                      עברית
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('en')}
+                      className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                        subtitleLang === 'en' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                      }`}
+                    >
+                      English
+                    </button>
+                  </div>
                 )}
-                <span>
-                  {isTranscribingWhisper
-                    ? (whisperProgressText || (isHe ? 'יוצר כתוביות עברית ואנגלית...' : 'Creating Hebrew & English subtitles...'))
-                    : syncedLyrics.isWhisperSynced
-                      ? (isHe ? 'צור מחדש כתוביות עברית ואנגלית' : 'Re-generate Hebrew & English Subtitles')
-                      : (isHe ? 'צור כתוביות עברית ואנגלית (יישמרו באחסון)' : 'Create Hebrew & English Subtitles')}
-                </span>
-              </button>
-
-              <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[10px] font-bold">
-                {(['auto', 'he', 'en'] as const).map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => setTranscribeLangHint(opt)}
-                    className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                      transcribeLangHint === opt ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                    }`}
-                  >
-                    {opt === 'auto' ? (isHe ? 'אוטומטי' : 'Auto') : opt === 'he' ? 'עברית' : 'EN'}
-                  </button>
-                ))}
               </div>
-            </div>
 
-            <div className="flex items-center gap-2">
-              {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
-                <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setSubtitleLang('he')}
-                    className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                      subtitleLang === 'he' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
-                    }`}
-                  >
-                    עברית
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSubtitleLang('en')}
-                    className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                      subtitleLang === 'en' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
-                    }`}
-                  >
-                    English
-                  </button>
-                </div>
-              )}
-
-              {isTranscribingWhisper ? (
-                <span className="text-[10px] font-bold text-amber-200 bg-amber-500/15 border border-amber-400/35 px-2.5 py-1 rounded-lg">
-                  {isHe ? 'מתמלל בחי — יישמר באחסון בסיום' : 'Streaming live — saving on finish'}
-                </span>
-              ) : syncedLyrics.isWhisperSynced ? (
+              {syncedLyrics.isWhisperSynced && (
                 <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                  {isHe ? 'שמור באחסון ומסונכרן' : 'Saved & Synced'}
+                  {isHe ? 'כתוביות מסונכרנות' : 'Synced Subtitles'}
                 </span>
-              ) : null}
-            </div>
-          </div>
-
-          {whisperError && (
-            <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs font-medium">
-              {whisperError}
+              )}
             </div>
           )}
 
@@ -1112,8 +928,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 {syncedLyrics.lines.length === 0 ? (
                   <div className="py-6 text-center text-xs text-white/60">
                     {isHe
-                      ? 'עדיין אין כתוביות לשיר זה. לחץ למעלה ליצירת כתוביות על המכשיר.'
-                      : 'No subtitles yet for this track. Click above to transcribe on-device.'}
+                      ? 'לא הוגדרו כתוביות לשיר זה. ניתן להוסיף כתוביות בעריכת השיר בפרופיל האמן.'
+                      : 'No subtitles yet for this track. Subtitles can be added when creating or editing the song.'}
                   </div>
                 ) : (
                   <>
