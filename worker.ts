@@ -1224,23 +1224,57 @@ export default {
 
     // 15. Server-Side Google OAuth 2.0 + R2 Avatar Persistence
     const getGoogleCreds = () => {
+      const envObj = (env as Record<string, any>) || {};
+      const cleanVal = (raw: string) => raw.trim().replace(/^["']|["']$/g, '');
       const readEnvVar = (...names: string[]): string => {
         for (const name of names) {
-          const direct = (env as Record<string, any>)[name];
+          const direct = envObj[name];
           if (typeof direct === 'string' && direct.trim()) {
-            return direct.trim().replace(/^["']|["']$/g, '');
+            return cleanVal(direct);
           }
         }
         const wanted = new Set(names.map((n) => n.toLowerCase()));
-        for (const [k, v] of Object.entries(env as Record<string, any>)) {
+        for (const [k, v] of Object.entries(envObj)) {
           if (typeof v === 'string' && v.trim() && wanted.has(k.trim().toLowerCase())) {
-            return v.trim().replace(/^["']|["']$/g, '');
+            return cleanVal(v);
           }
         }
         return '';
       };
-      const clientId = readEnvVar('Client_ID', 'CLIENT_ID', 'GOOGLE_CLIENT_ID', 'VITE_GOOGLE_CLIENT_ID');
-      const clientSecret = readEnvVar('Client_secret', 'CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET');
+
+      let clientId = readEnvVar('Client_ID', 'CLIENT_ID', 'GOOGLE_CLIENT_ID', 'VITE_GOOGLE_CLIENT_ID');
+      let clientSecret = readEnvVar('Client_secret', 'CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET');
+
+      // Sanitize if a key prefix or multiline .env block was accidentally pasted inside a single value
+      if (clientId) {
+        const idMatch = clientId.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+        if (idMatch) clientId = idMatch[1];
+      }
+      if (clientSecret) {
+        const secMatch = clientSecret.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
+        if (secMatch) clientSecret = secMatch[1];
+      }
+
+      // Fallback recovery: inspect concatenated key names (e.g. Client_ID1029...apps.googleusercontent.com) & values
+      if (!clientId || !clientSecret) {
+        for (const [k, v] of Object.entries(envObj)) {
+          if (!clientId) {
+            const keyIdMatch = k.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+            if (keyIdMatch) clientId = keyIdMatch[1];
+          }
+          if (typeof v === 'string' && v.trim()) {
+            if (!clientId) {
+              const valIdMatch = v.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+              if (valIdMatch) clientId = valIdMatch[1];
+            }
+            if (!clientSecret) {
+              const valSecMatch = v.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
+              if (valSecMatch) clientSecret = valSecMatch[1];
+            }
+          }
+        }
+      }
+
       const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
       return { clientId, clientSecret, sessionSecret };
     };
