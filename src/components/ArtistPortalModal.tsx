@@ -1324,25 +1324,28 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
                   <div
-                    className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#08090d] bg-neutral-900 overflow-hidden ring-2 ring-white/25 flex items-center justify-center transition-shadow duration-500"
+                    className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 transition-shadow duration-500"
                     style={{
-                      boxShadow: `0 0 38px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.5)`,
+                      boxShadow: `0 10px 38px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.45)`,
                     }}
                   >
-                    {activeAvatar ? (
-                      <img
-                        src={activeAvatar}
-                        alt={currentArtist.name}
-                        referrerPolicy="no-referrer"
-                        loading="eager"
-                        decoding="async"
-                        className="w-full h-full rounded-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full rounded-full flex items-center justify-center bg-neutral-900 text-white font-bold text-2xl select-none">
-                        {currentArtist.name?.[0] || 'A'}
-                      </div>
-                    )}
+                    <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/40 border border-white/20 overflow-hidden flex items-center justify-center">
+                      {activeAvatar ? (
+                        <img
+                          src={activeAvatar}
+                          alt={currentArtist.name}
+                          referrerPolicy="no-referrer"
+                          loading="eager"
+                          decoding="async"
+                          className="w-full h-full rounded-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full rounded-full flex items-center justify-center bg-white/[0.06] text-white font-normal text-2xl select-none">
+                          {currentArtist.name?.[0] || 'A'}
+                        </div>
+                      )}
+                      <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-b from-white/20 via-transparent to-transparent" />
+                    </div>
                   </div>
                 </div>
 
@@ -2920,33 +2923,41 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row gap-5 items-center pb-4 border-b border-neutral-800/50">
                     <div className="relative group">
-                      <div className="w-24 h-24 rounded-full border-2 border-dashed border-neutral-700 hover:border-emerald-400 overflow-hidden flex items-center justify-center bg-neutral-900 transition-all cursor-pointer">
-                        {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
-                          <img
-                            src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
-                            referrerPolicy="no-referrer"
-                            loading="eager"
-                            decoding="async"
-                            className="w-full h-full object-cover"
-                            alt="Preview"
+                      <div
+                        className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 group-hover:border-white/55 transition-all cursor-pointer"
+                        style={{
+                          boxShadow: `0 8px 30px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.45)`,
+                        }}
+                      >
+                        <div className="relative w-24 h-24 rounded-full border border-white/20 overflow-hidden flex items-center justify-center bg-black/40">
+                          {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
+                            <img
+                              src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
+                              referrerPolicy="no-referrer"
+                              loading="eager"
+                              decoding="async"
+                              className="w-full h-full object-cover"
+                              alt="Preview"
+                            />
+                          ) : (
+                            <User className="w-8 h-8 text-white/60 group-hover:text-emerald-400 transition-colors" />
+                          )}
+                          <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-b from-white/20 via-transparent to-transparent" />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setArtistAvatarFile(file);
+                                const reader = new FileReader();
+                                reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }}
                           />
-                        ) : (
-                          <User className="w-8 h-8 text-neutral-600 group-hover:text-emerald-400 transition-colors" />
-                        )}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="absolute inset-0 opacity-0 cursor-pointer"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              setArtistAvatarFile(file);
-                              const reader = new FileReader();
-                              reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
-                              reader.readAsDataURL(file);
-                            }
-                          }}
-                        />
+                        </div>
                       </div>
                       <div className="absolute -bottom-1 -right-1 bg-emerald-500 p-1.5 rounded-full shadow-lg border-2 border-neutral-950 pointer-events-none">
                         <Pencil className="w-3 h-3 text-white" />

@@ -310,26 +310,29 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-14 sm:-mt-16 pb-6 flex flex-col sm:flex-row items-center sm:items-end gap-4 sm:gap-6">
             <div className="relative flex-shrink-0">
               <div
-                className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-[#070b14] bg-neutral-900 overflow-hidden ring-2 ring-white/25 flex items-center justify-center transition-shadow duration-500"
+                className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 transition-shadow duration-500"
                 style={{
-                  boxShadow: `0 0 38px rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.5)`,
+                  boxShadow: `0 10px 38px rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.45)`,
                 }}
               >
-                {avatarUrl && !avatarImgError ? (
-                  <img
-                    src={avatarUrl}
-                    alt={effectiveArtistName}
-                    loading="eager"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    onError={() => setAvatarImgError(true)}
-                    className="w-full h-full rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full rounded-full bg-neutral-900 flex items-center justify-center text-white font-bold text-3xl select-none">
-                    {effectiveArtistName?.[0] || <User className="w-10 h-10 text-white/90" />}
-                  </div>
-                )}
+                <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-black/40 border border-white/20 overflow-hidden flex items-center justify-center">
+                  {avatarUrl && !avatarImgError ? (
+                    <img
+                      src={avatarUrl}
+                      alt={effectiveArtistName}
+                      loading="eager"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      onError={() => setAvatarImgError(true)}
+                      className="w-full h-full rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full rounded-full bg-white/[0.06] flex items-center justify-center text-white font-normal text-3xl select-none">
+                      {effectiveArtistName?.[0] || <User className="w-10 h-10 text-white/90" />}
+                    </div>
+                  )}
+                  <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-b from-white/20 via-transparent to-transparent" />
+                </div>
               </div>
             </div>
 
