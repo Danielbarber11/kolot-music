@@ -678,7 +678,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             {(() => {
               const resolvedArtistPhoto =
                 getEffectiveArtistAvatarForTrack(track, effectiveArtists) ||
-                (authUser && (track.uploadedByUid === authUser.uid || track.artistName === authUser.displayName)
+                (authUser && track.uploadedByUid === authUser.uid
                   ? getGoogleAccountPhotoUrl(authUser)
                   : undefined);
               if (resolvedArtistPhoto && isAuthenticCover(resolvedArtistPhoto)) {

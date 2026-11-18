@@ -41,6 +41,7 @@ import {
   getArtistAccountByUid,
   saveArtistAccountToR2,
   upsertMemoryArtistProfile,
+  removeMemoryArtistProfile,
   updateMemoryTracksArtistAvatar,
   isValidTrackWithOwner,
 } from '../services/multiMusicService';
@@ -155,7 +156,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     if (clickCountRef.current >= 10) {
       clickCountRef.current = 0;
-      setIsAdminPanelOpen(true);
+      if (authUser?.isAdmin) {
+        setIsAdminPanelOpen(true);
+      } else {
+        setIsArtistPortalOpen(true);
+      }
       return;
     }
 
@@ -332,7 +337,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   useEffect(() => {
     if (initialArtists.length > 0 && allArtists.length === 0) {
-      setAllArtists(initialArtists.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0))));
+      setAllArtists(initialArtists);
     }
   }, [initialArtists]);
 
@@ -365,8 +370,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     fetchAllArtistProfiles()
       .then((profiles) => {
         if (!active || !Array.isArray(profiles)) return;
-        const filtered = profiles.filter((a) => !(a.isPrivate && (!a.tracksCount || a.tracksCount === 0)));
-        setAllArtists(filtered);
+        setAllArtists(profiles);
         onArtistsSync?.(profiles);
       })
       .catch(() => {});
@@ -449,23 +453,53 @@ export const SongsView: React.FC<SongsViewProps> = ({
     return list;
   }, [allTracks, activeTab, likedSongIds, artistFilter, selectedGenre, searchQuery]);
 
+  const validTracksList = React.useMemo(
+    () => allTracks.filter(isValidTrackWithOwner),
+    [allTracks]
+  );
+
+  // Strict discovery filter: users with 0 uploaded tracks NEVER appear publicly to other users
+  const publishedArtists = React.useMemo(() => {
+    const uidCount = new Map<string, number>();
+    const ownerlessNameCount = new Map<string, number>();
+
+    validTracksList.forEach((t) => {
+      const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+      const tName = (t.artistName || '').toLowerCase().trim();
+      if (tUid) {
+        uidCount.set(tUid, (uidCount.get(tUid) || 0) + 1);
+      } else if (tName) {
+        ownerlessNameCount.set(tName, (ownerlessNameCount.get(tName) || 0) + 1);
+      }
+    });
+
+    return allArtists.filter((a) => {
+      if (!a.name?.trim()) return false;
+      const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+      const aName = a.name.toLowerCase().trim();
+      if (aUid && (uidCount.get(aUid) || 0) > 0) return true;
+      if (!aUid && aName && (ownerlessNameCount.get(aName) || 0) > 0) return true;
+      return false;
+    });
+  }, [allArtists, validTracksList]);
+
   const searchArtistResults = searchQuery.trim()
-    ? allArtists.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    : allArtists;
+    ? publishedArtists.filter((a) => a.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : publishedArtists;
 
   // Extract unique popular artists keyed canonically by UID first, then normalized name
   const popularArtists = React.useMemo(() => {
     const map = new Map<string, { uid?: string; name: string; avatarUrl?: string; genre?: string; count: number }>();
 
-    allArtists.forEach((a) => {
+    publishedArtists.forEach((a) => {
       if (a.name) {
         const cleanUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
         const nameKey = a.name.toLowerCase().trim();
         const key = cleanUid || nameKey;
-        const trackWithAvatar = allTracks.find((t) => {
+        const trackWithAvatar = validTracksList.find((t) => {
           const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
           return (
-            ((cleanUid && tUid === cleanUid) || t.artistName?.toLowerCase().trim() === nameKey) &&
+            ((cleanUid && tUid === cleanUid) || (!tUid && t.artistName?.toLowerCase().trim() === nameKey)) &&
             !!t.artistAvatarUrl
           );
         });
@@ -476,21 +510,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
           name: a.name,
           avatarUrl: resolved || undefined,
           genre: a.genre || 'אמן',
-          count: a.tracksCount || 1,
+          count: 0,
         });
       }
     });
 
-    allTracks.filter(isValidTrackWithOwner).forEach((t) => {
+    validTracksList.forEach((t) => {
       if (!t.artistName) return;
       const cleanUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
       const nameKey = t.artistName.toLowerCase().trim();
-      const key = cleanUid && map.has(cleanUid) ? cleanUid : nameKey;
+      const key = cleanUid && map.has(cleanUid) ? cleanUid : cleanUid || nameKey;
       const trackAvatar = getStreamingMediaUrl(t.artistAvatarUrl);
 
       if (!map.has(key)) {
-        // Also check if an existing entry matches by artist name
-        const byNameEntry = Array.from(map.values()).find((v) => v.name.toLowerCase().trim() === nameKey);
+        const byNameEntry = !cleanUid
+          ? Array.from(map.values()).find((v) => v.name.toLowerCase().trim() === nameKey)
+          : undefined;
         if (byNameEntry) {
           byNameEntry.count += 1;
           if (!byNameEntry.avatarUrl && trackAvatar) byNameEntry.avatarUrl = trackAvatar;
@@ -513,8 +548,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
       }
     });
 
-    return Array.from(map.values()).slice(0, 15);
-  }, [allArtists, allTracks]);
+    return Array.from(map.values())
+      .filter((artist) => artist.count >= 1)
+      .slice(0, 15);
+  }, [publishedArtists, validTracksList]);
 
   // Popularity heuristic (plays count + favorite bonus + pseudo hash)
   const getTrackPopularity = React.useCallback(
@@ -2029,18 +2066,28 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
       {/* SECRET 10-CLICK ADMIN PANEL MODAL */}
       <AdminPanelModal
-        isOpen={isAdminPanelOpen}
+        isOpen={isAdminPanelOpen && !!authUser?.isAdmin}
         onClose={() => setIsAdminPanelOpen(false)}
         lang={lang}
         allTracks={allTracks}
         artistProfiles={allArtists}
-        onRemoveTrack={async (trackId) => {
-          markSongAsDeleted(trackId);
-          setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
-          await Promise.allSettled([
-            removeTrackFromStorage(trackId),
-            deleteTrackFromCloud(trackId),
-          ]);
+        onAccountDeleted={(deletedUid) => {
+          const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
+          removeMemoryArtistProfile(deletedUid);
+          setAllArtists((prev) => {
+            const next = prev.filter((a) => {
+              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+              return aUid !== cleanDeleted;
+            });
+            onArtistsSync?.(next);
+            return next;
+          });
+          if (activeArtistProfile) {
+            const activeUid = (activeArtistProfile.googleUid || activeArtistProfile.id || '').replace(/^artist_/, '').toLowerCase().trim();
+            if (activeUid === cleanDeleted) {
+              setActiveArtistProfile(null);
+            }
+          }
         }}
       />
 

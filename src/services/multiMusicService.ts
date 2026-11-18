@@ -111,6 +111,15 @@ export function upsertMemoryArtistProfile(artist: ArtistProfile): void {
   }
 }
 
+export function removeMemoryArtistProfile(uid: string): void {
+  const cleanKey = (uid || '').replace(/^artist_/, '').toLowerCase().trim();
+  if (!cleanKey) return;
+  memorySessionProfiles = memorySessionProfiles.filter((p) => {
+    const pKey = (p.googleUid || p.id || '').replace(/^artist_/, '').toLowerCase().trim();
+    return pKey !== cleanKey;
+  });
+}
+
 /**
  * Startup sanitation: Clears legacy localStorage / IndexedDB track caches so the app uses 100% live cloud data.
  */

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   ShieldAlert,
@@ -6,20 +6,23 @@ import {
   Music,
   CheckCircle2,
   Trash2,
-  RefreshCw,
   Eye,
   BarChart3,
   HardDrive,
+  User,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, ArtistProfile, Language } from '../types';
-import { getTrackReportsFromR2, dismissTrackReportInR2 } from '../services/authService';
+import {
+  getTrackReportsFromR2,
+  dismissTrackReportInR2,
+  deleteArtistAccountInAdmin,
+} from '../services/authService';
 import {
   getCloudStorageConfig,
   calculateRealStorageUsage,
+  getStreamingMediaUrl,
 } from '../services/cloudStorageService';
-
-import { TrackCoverArt } from './TrackCoverArt';
 
 interface AdminPanelModalProps {
   isOpen: boolean;
@@ -27,7 +30,7 @@ interface AdminPanelModalProps {
   lang: Language;
   allTracks: JamendoTrack[];
   artistProfiles: ArtistProfile[];
-  onRemoveTrack?: (trackId: string) => void;
+  onAccountDeleted?: (uid: string) => void;
 }
 
 export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
@@ -36,47 +39,33 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   lang,
   allTracks,
   artistProfiles,
-  onRemoveTrack,
+  onAccountDeleted,
 }) => {
-  if (!isOpen) return null;
   const isHe = lang === 'he';
 
-  const [activeTab, setActiveTab] = useState<'storage' | 'songs' | 'stats' | 'reports'>('storage');
+  const [activeTab, setActiveTab] = useState<'storage' | 'accounts' | 'stats' | 'reports'>('accounts');
+  const [accountFilter, setAccountFilter] = useState<'all' | 'empty'>('all');
   const [reports, setReports] = useState<TrackReport[]>([]);
-  const [displayedTracks, setDisplayedTracks] = useState<JamendoTrack[]>(allTracks);
-
-  useEffect(() => {
-    setDisplayedTracks(allTracks);
-  }, [allTracks]);
-
-  // Cloud Storage Config (Simplified for R2)
-  const [cloudConfig] = useState(getCloudStorageConfig);
-  
-  // REAL Live Storage calculation based on actual uploaded tracks
-  const realStorageStats = calculateRealStorageUsage(allTracks);
-  const realUsedMb = Math.round((cloudConfig.usedBytes + realStorageStats.usedBytes) / (1024 * 1024));
-  const usedPercent = Math.min(100, Math.round((realUsedMb / cloudConfig.capacityMb) * 100));
-
-  // REAL Active Published Profiles count
-  const publishedArtistsCount = artistProfiles.filter(
-    (p) => !(p.isPrivate && (!p.tracksCount || p.tracksCount === 0))
-  ).length;
-
-  // REAL User Uploaded Tracks count
-  const uploadedTracksCount = allTracks.filter((t) => t.id.startsWith('artist_track_') || t.uploadedByUid).length;
-
+  const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
+  const [deletingUid, setDeletingUid] = useState<string | null>(null);
+  const [accountActionError, setAccountActionError] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
+
+  const [cloudConfig] = useState(getCloudStorageConfig);
+
   useEffect(() => {
-    // Quick probe to check R2 config
+    if (!isOpen) return;
     fetch('/api/storage/list?prefix=test')
-      .then(r => r.json())
-      .then(data => {
-        if (data.error) setConfigError(data.error);
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.error) setConfigError(data.error);
+        else setConfigError(null);
       })
       .catch(() => setConfigError('שגיאת תקשורת עם שרת האחסון'));
-  }, []);
+  }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return;
     let active = true;
     const loadReports = async () => {
       const r2Reports = await getTrackReportsFromR2().catch(() => []);
@@ -86,7 +75,58 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     return () => {
       active = false;
     };
-  }, []);
+  }, [isOpen]);
+
+  const realStorageStats = useMemo(() => calculateRealStorageUsage(allTracks), [allTracks]);
+  const realUsedMb = Math.round((cloudConfig.usedBytes + realStorageStats.usedBytes) / (1024 * 1024));
+  const usedPercent = Math.min(100, Math.round((realUsedMb / cloudConfig.capacityMb) * 100));
+  const uploadedTracksCount = useMemo(
+    () => allTracks.filter((t) => t.id.startsWith('artist_track_') || t.uploadedByUid).length,
+    [allTracks]
+  );
+
+  // Compute real song count per account UID (strict UID match first, name fallback only when UID missing)
+  const accountsWithCounts = useMemo(() => {
+    const uidCounts = new Map<string, number>();
+    const nameCounts = new Map<string, number>();
+    allTracks.forEach((t) => {
+      const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+      const tName = (t.artistName || '').toLowerCase().trim();
+      if (tUid) uidCounts.set(tUid, (uidCounts.get(tUid) || 0) + 1);
+      if (tName) nameCounts.set(tName, (nameCounts.get(tName) || 0) + 1);
+    });
+
+    return artistProfiles.map((p) => {
+      const cleanUid = (p.googleUid || p.id || '').replace(/^artist_/, '').trim();
+      const lowerUid = cleanUid.toLowerCase();
+      const lowerName = (p.name || '').toLowerCase().trim();
+      const realCount = uidCounts.get(lowerUid) ?? (lowerName ? nameCounts.get(lowerName) || 0 : 0);
+      return {
+        profile: p,
+        cleanUid,
+        realCount,
+      };
+    });
+  }, [artistProfiles, allTracks]);
+
+  const publishedArtistsCount = useMemo(
+    () => accountsWithCounts.filter((entry) => entry.realCount > 0).length,
+    [accountsWithCounts]
+  );
+
+  const emptyAccountsCount = useMemo(
+    () => accountsWithCounts.filter((entry) => entry.realCount === 0).length,
+    [accountsWithCounts]
+  );
+
+  const visibleAccounts = useMemo(() => {
+    if (accountFilter === 'empty') {
+      return accountsWithCounts.filter((entry) => entry.realCount === 0);
+    }
+    return accountsWithCounts;
+  }, [accountsWithCounts, accountFilter]);
+
+  if (!isOpen) return null;
 
   const handleDismissReport = async (reportId: string) => {
     setReports((prev) => prev.filter((r) => r.id !== reportId));
@@ -94,39 +134,72 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       dismissTrackReportInR2(reportId),
       fetch(`/api/storage/delete?path=${encodeURIComponent(`reports/${reportId}.json`)}`, {
         method: 'DELETE',
+        credentials: 'include',
       }).catch(() => {}),
     ]);
   };
 
+  const handleDeleteAccount = async (uid: string) => {
+    if (!uid) return;
+    if (confirmDeleteUid !== uid) {
+      setConfirmDeleteUid(uid);
+      setAccountActionError(null);
+      setTimeout(() => {
+        setConfirmDeleteUid((cur) => (cur === uid ? null : cur));
+      }, 4000);
+      return;
+    }
+
+    setConfirmDeleteUid(null);
+    setDeletingUid(uid);
+    setAccountActionError(null);
+
+    const res = await deleteArtistAccountInAdmin(uid);
+    setDeletingUid(null);
+
+    if (!res.success) {
+      setAccountActionError(res.error || (isHe ? 'מחיקת החשבון נכשלה' : 'Account deletion failed'));
+      return;
+    }
+
+    onAccountDeleted?.(uid);
+  };
+
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-[140] flex items-center justify-center p-3 sm:p-6 bg-slate-950/90 backdrop-blur-3xl animate-fadeIn" dir={isHe ? 'rtl' : 'ltr'}>
+      <div
+        className="fixed inset-0 z-[140] flex items-center justify-center p-3 sm:p-6 bg-black/90 backdrop-blur-3xl animate-fadeIn"
+        dir={isHe ? 'rtl' : 'ltr'}
+      >
         <motion.div
           initial={{ opacity: 0, scale: 0.94, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 20 }}
-          className="relative w-full max-w-4xl bg-[#0b0f19] border border-emerald-500/30 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
+          className="relative w-full max-w-4xl bg-[#0b0f19] border border-white/20 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
         >
           {/* ADMIN HEADER */}
-          <div className="p-5 border-b border-white/10 flex items-center justify-between bg-slate-900/90">
+          <div className="p-5 border-b border-white/10 flex items-center justify-between bg-neutral-950/90">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                <ShieldAlert className="w-6 h-6 text-emerald-400 animate-pulse" />
+              <div className="p-2.5 rounded-2xl bg-white/10 text-white border border-white/20">
+                <ShieldAlert className="w-6 h-6 text-emerald-400" />
               </div>
               <div>
-                <h3 className="text-base font-extrabold text-emerald-200 flex items-center gap-2">
-                  <span>{isHe ? '⚡ פאנל מנהל מערכת • Kolot Music' : '⚡ System Admin Panel'}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black border border-emerald-500/30">
+                <h3 className="text-base font-normal text-white flex items-center gap-2">
+                  <span>{isHe ? 'פאנל מנהל מערכת • Kolot Music' : 'System Admin Panel'}</span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 text-xs border border-emerald-500/30">
                     {isHe ? 'אחסון ענן פעיל' : 'Cloud Storage Active'}
                   </span>
                 </h3>
-                <p className="text-[11px] text-white/60">
-                  {isHe ? 'ניהול אחסון ומדיה מאובטח ב-Cloudflare R2' : 'Secure R2 storage and media management'}
+                <p className="text-xs text-white/60">
+                  {isHe
+                    ? 'ניהול חשבונות, מצב אחסון ענן ודיווחים • עריכת ומחיקת שירים זמינה רק לבעל הפרופיל'
+                    : 'Account management, R2 storage & reports • Songs can only be edited or removed by their owner'}
                 </p>
               </div>
             </div>
 
             <button
+              type="button"
               onClick={onClose}
               className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all cursor-pointer"
             >
@@ -134,14 +207,28 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             </button>
           </div>
 
-          {/* SUB TABS */}
-          <div className="flex items-center gap-2 p-2 bg-slate-900 border-b border-white/10 text-xs font-bold overflow-x-auto custom-scrollbar">
+          {/* SUB TABS (NO SONG REMOVAL SCREEN) */}
+          <div className="flex items-center gap-2 p-2 bg-neutral-950 border-b border-white/10 text-xs overflow-x-auto custom-scrollbar">
             <button
+              type="button"
+              onClick={() => setActiveTab('accounts')}
+              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
+                activeTab === 'accounts'
+                  ? 'bg-white text-black shadow-md'
+                  : 'text-white/75 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>{isHe ? `ניהול חשבונות (${accountsWithCounts.length})` : `Accounts (${accountsWithCounts.length})`}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('storage')}
-              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                 activeTab === 'storage'
-                  ? 'bg-emerald-600 text-white shadow-md font-extrabold'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
+                  ? 'bg-white text-black shadow-md'
+                  : 'text-white/75 hover:text-white hover:bg-white/10'
               }`}
             >
               <HardDrive className="w-4 h-4" />
@@ -149,23 +236,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             </button>
 
             <button
-              onClick={() => setActiveTab('songs')}
-              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                activeTab === 'songs'
-                  ? 'bg-emerald-600 text-white shadow-md font-extrabold'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <Music className="w-4 h-4" />
-              <span>{isHe ? `ניהול שירים (${allTracks.length})` : `Songs (${allTracks.length})`}</span>
-            </button>
-
-            <button
+              type="button"
               onClick={() => setActiveTab('stats')}
-              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                 activeTab === 'stats'
-                  ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
+                  ? 'bg-white text-black shadow-md'
+                  : 'text-white/75 hover:text-white hover:bg-white/10'
               }`}
             >
               <BarChart3 className="w-4 h-4" />
@@ -173,11 +249,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => setActiveTab('reports')}
-              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
                 activeTab === 'reports'
-                  ? 'bg-rose-600 text-white shadow-md font-extrabold'
-                  : 'text-white/70 hover:text-white hover:bg-white/10'
+                  ? 'bg-white text-black shadow-md'
+                  : 'text-white/75 hover:text-white hover:bg-white/10'
               }`}
             >
               <ShieldAlert className="w-4 h-4" />
@@ -187,28 +264,167 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
           {/* MAIN CONTENT */}
           <div className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-6 custom-scrollbar">
-            {/* TAB 1: CLOUD STORAGE STATUS */}
+            {/* TAB 1: ACCOUNT MANAGEMENT & DELETION */}
+            {activeTab === 'accounts' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-3">
+                  <div>
+                    <h4 className="text-sm text-white flex items-center gap-2">
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      <span>{isHe ? 'ניהול ומחיקת חשבונות משתמשים' : 'User Account Management'}</span>
+                    </h4>
+                    <p className="text-xs text-white/55 mt-0.5">
+                      {isHe
+                        ? 'חשבונות ללא שירים מוסתרים אוטומטית מהקהל הרחב • ניתן למחוק חשבונות מכאן'
+                        : 'Accounts with 0 songs are automatically hidden from public view • Delete accounts here'}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAccountFilter('all')}
+                      className={`px-3 py-1.5 rounded-full text-xs border transition-colors cursor-pointer ${
+                        accountFilter === 'all'
+                          ? 'bg-white text-black border-white'
+                          : 'bg-white/5 text-white/75 border-white/15 hover:bg-white/10'
+                      }`}
+                    >
+                      {isHe ? `הכל (${accountsWithCounts.length})` : `All (${accountsWithCounts.length})`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAccountFilter('empty')}
+                      className={`px-3 py-1.5 rounded-full text-xs border transition-colors cursor-pointer ${
+                        accountFilter === 'empty'
+                          ? 'bg-amber-400 text-black border-amber-400'
+                          : 'bg-white/5 text-white/75 border-white/15 hover:bg-white/10'
+                      }`}
+                    >
+                      {isHe ? `חשבונות ריקים (${emptyAccountsCount})` : `Empty (${emptyAccountsCount})`}
+                    </button>
+                  </div>
+                </div>
+
+                {accountActionError && (
+                  <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs">
+                    {accountActionError}
+                  </div>
+                )}
+
+                {visibleAccounts.length === 0 ? (
+                  <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/10 text-xs text-white/60 space-y-2">
+                    <Users className="w-10 h-10 text-white/30 mx-auto" />
+                    <p className="text-white">
+                      {accountFilter === 'empty'
+                        ? isHe
+                          ? 'אין חשבונות ריקים (ללא שירים) במערכת.'
+                          : 'No empty accounts found.'
+                        : isHe
+                        ? 'אין חשבונות רשומים כרגע.'
+                        : 'No registered accounts found.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-[55vh] overflow-y-auto custom-scrollbar p-1">
+                    {visibleAccounts.map(({ profile, cleanUid, realCount }) => {
+                      const avatar = profile.avatarUrl ? getStreamingMediaUrl(profile.avatarUrl) : '';
+                      const isConfirming = confirmDeleteUid === cleanUid;
+                      const isDeleting = deletingUid === cleanUid;
+
+                      return (
+                        <div
+                          key={cleanUid || profile.name}
+                          className="p-3.5 rounded-2xl bg-neutral-900/90 border border-white/10 hover:border-white/25 flex items-center justify-between gap-3 text-xs transition-all"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-11 h-11 rounded-full bg-neutral-800 overflow-hidden flex-shrink-0 border border-white/20 flex items-center justify-center">
+                              {avatar ? (
+                                <img
+                                  src={avatar}
+                                  alt={profile.name}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <User className="w-5 h-5 text-white/50" />
+                              )}
+                            </div>
+
+                            <div className="min-w-0 space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm text-white truncate">
+                                  {profile.name || (isHe ? 'ללא שם' : 'Unnamed')}
+                                </span>
+                                {realCount === 0 ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px]">
+                                    {isHe ? '0 שירים • מוסתר מהקהל' : '0 songs • Hidden publicly'}
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px]">
+                                    {realCount} {isHe ? 'שירים' : 'songs'}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-white/50 truncate" dir="ltr">
+                                ID: {cleanUid}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <button
+                              type="button"
+                              disabled={isDeleting}
+                              onClick={() => handleDeleteAccount(cleanUid)}
+                              className={`px-3.5 py-2 rounded-xl text-xs transition-all cursor-pointer flex items-center gap-1.5 border disabled:opacity-50 ${
+                                isConfirming
+                                  ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 animate-pulse'
+                                  : 'bg-rose-500/15 hover:bg-rose-600 text-rose-200 hover:text-white border-rose-500/30'
+                              }`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>
+                                {isDeleting
+                                  ? isHe
+                                    ? 'מוחק...'
+                                    : 'Deleting...'
+                                  : isConfirming
+                                  ? isHe
+                                    ? 'לחץ שוב לאישור מחיקה'
+                                    : 'Confirm Delete'
+                                  : isHe
+                                  ? 'מחק חשבון'
+                                  : 'Delete Account'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 2: CLOUD STORAGE STATUS */}
             {activeTab === 'storage' && (
               <div className="space-y-6">
                 {configError && (
-                  <div className="p-4 rounded-2xl bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-bold text-center animate-pulse">
+                  <div className="p-4 rounded-2xl bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs text-center">
                     ⚠️ שגיאת הגדרת אחסון: {configError}
-                    <br />
-                    <span className="text-[10px] opacity-80 mt-1 block">
-                      יש לוודא שהגדרת את כל 5 המשתנים: ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT, BUCKET_NAME, PUBLIC_URL
-                    </span>
                   </div>
                 )}
-                <div className="p-5 rounded-3xl bg-gradient-to-r from-emerald-950/80 via-slate-900 to-slate-900 border border-emerald-500/40 space-y-4 shadow-2xl">
+                <div className="p-5 rounded-3xl bg-neutral-900/90 border border-emerald-500/30 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                         <HardDrive className="w-6 h-6 text-emerald-400" />
                       </div>
                       <div>
-                        <h4 className="font-extrabold text-base text-white flex items-center gap-2">
+                        <h4 className="text-base text-white flex items-center gap-2">
                           <span>{isHe ? 'שרת אחסון ענן (Cloudflare R2)' : 'Cloud Storage (R2)'}</span>
-                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black flex items-center gap-1">
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                             <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
                           </span>
@@ -220,20 +436,20 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     </div>
 
                     <div className="text-right">
-                      <span className="text-xs text-emerald-300 font-bold block">{isHe ? 'קיבולת אחסון:' : 'Storage Capacity:'}</span>
-                      <span className="text-lg font-black text-white font-mono">10 GB</span>
+                      <span className="text-xs text-emerald-300 block">{isHe ? 'קיבולת אחסון:' : 'Storage Capacity:'}</span>
+                      <span className="text-lg text-white">10 GB</span>
                     </div>
                   </div>
 
                   {/* STORAGE PROGRESS BAR */}
                   <div className="space-y-1.5 pt-2">
-                    <div className="flex items-center justify-between text-xs font-mono font-bold">
+                    <div className="flex items-center justify-between text-xs">
                       <span className="text-white/90">
                         {isHe
                           ? `אחסון בשימוש: ${realUsedMb} MB מתוך 10,240 MB (${uploadedTracksCount} שירים)`
                           : `Used: ${realUsedMb} MB / 10,240 MB (${uploadedTracksCount} tracks)`}
                       </span>
-                      <span className="text-emerald-300 font-extrabold">{usedPercent}%</span>
+                      <span className="text-emerald-300">{usedPercent}%</span>
                     </div>
                     <div className="w-full h-3.5 rounded-full bg-black/60 p-0.5 border border-white/10 relative overflow-hidden">
                       <div
@@ -245,79 +461,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 </div>
 
                 <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs space-y-2">
-                  <h4 className="font-extrabold text-amber-300">{isHe ? 'מידע על האחסון:' : 'Storage Information:'}</h4>
+                  <h4 className="text-amber-300">{isHe ? 'מידע על האחסון והבעלות:' : 'Storage & Ownership Info:'}</h4>
                   <ul className="list-disc list-inside text-white/70 space-y-1 text-[11px]">
-                    <li>{isHe ? 'האחסון מבוסס על שירות Cloudflare R2 לאבטחה ומהירות מקסימלית.' : 'Storage powered by Cloudflare R2 for maximum speed and security.'}</li>
-                    <li>{isHe ? 'החיבור מנוהל בצד השרת ושומר על מפתחות הגישה פרטיים.' : 'Connections are handled server-side to keep access keys private.'}</li>
-                    <li>{isHe ? 'אין צורך בהגדרות ידניות של אחסון חיצוני.' : 'No manual external storage settings required.'}</li>
+                    <li>{isHe ? 'האחסון מבוסס על שירות Cloudflare R2 לאבטחה ומהירות מקסימלית.' : 'Storage powered by Cloudflare R2.'}</li>
+                    <li>{isHe ? 'רק בעל הפרופיל המחובר יכול להוסיף, לערוך ולמחוק שירים בפרופיל שלו.' : 'Only the profile owner can add, edit, or delete songs on their profile.'}</li>
+                    <li>{isHe ? 'פרופילים שלא העלו אפילו שיר אחד מוסתרים משאר המשתמשים.' : 'Profiles with 0 songs are hidden from other users.'}</li>
                   </ul>
                 </div>
-              </div>
-            )}
-
-            {/* TAB 2: SONG MANAGEMENT */}
-            {activeTab === 'songs' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                  <h4 className="text-sm font-black text-emerald-300 flex items-center gap-2">
-                    <Music className="w-5 h-5 text-emerald-400" />
-                    <span>{isHe ? 'ניהול ומחיקת שירים בפלטפורמה (פנאל מנהל)' : 'Platform Song Management'}</span>
-                  </h4>
-                  <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/30">
-                    {displayedTracks.length} {isHe ? 'שירים' : 'tracks'}
-                  </span>
-                </div>
-
-                {displayedTracks.length === 0 ? (
-                  <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/10 text-xs text-white/60 space-y-2">
-                    <Music className="w-10 h-10 text-white/30 mx-auto" />
-                    <p className="font-bold text-white">{isHe ? 'אין שירים מפורסמים במערכת כרגע.' : 'No uploaded songs found.'}</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2.5 max-h-[55vh] overflow-y-auto custom-scrollbar p-1">
-                    {displayedTracks.map((track) => (
-                      <div
-                        key={track.id}
-                        className="p-3.5 rounded-2xl bg-slate-900 border border-white/10 hover:border-emerald-500/30 flex items-center justify-between gap-3 text-xs transition-all shadow-md"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-12 h-12 rounded-xl bg-slate-800 overflow-hidden flex-shrink-0 border border-white/15">
-                            <TrackCoverArt
-                              coverUrl={track.coverUrl}
-                              artistName={track.artistName}
-                              trackName={track.name}
-                              genre={track.genre}
-                              showHoverPlay={false}
-                            />
-                          </div>
-                          <div className="min-w-0 space-y-0.5">
-                            <h5 className="font-extrabold text-white text-sm truncate">{track.name}</h5>
-                            <p className="text-white/60 text-[11px] truncate">
-                              מאת: <span className="font-bold text-emerald-300">{track.artistName}</span> • ז׳אנר: <span className="text-white/90">{track.genre || 'פופ'}</span>
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          {onRemoveTrack && (
-                            <button
-                              onClick={() => {
-                                if (window.confirm(isHe ? `האם אתה בטוח שברצונך למחוק את השיר "${track.name}" לצמיתות מכל השרתים?` : `Delete track "${track.name}" permanently?`)) {
-                                  setDisplayedTracks((prev) => prev.filter((t) => t.id !== track.id));
-                                  onRemoveTrack(track.id);
-                                }
-                              }}
-                              className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md"
-                            >
-                              <Trash2 className="w-4 h-4 text-white" />
-                              <span>{isHe ? 'מחק שיר' : 'Delete Song'}</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 
@@ -325,101 +475,80 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
             {activeTab === 'stats' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="p-5 rounded-2xl bg-gradient-to-br from-indigo-950/80 to-slate-900 border border-indigo-500/30 space-y-2 shadow-xl">
+                  <div className="p-5 rounded-2xl bg-neutral-900/90 border border-white/15 space-y-2 shadow-xl">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-indigo-300">{isHe ? 'סך הכל שירים בפלטפורמה' : 'Total Platform Songs'}</span>
-                      <Music className="w-5 h-5 text-indigo-400" />
+                      <span className="text-xs text-white/75">{isHe ? 'סך הכל שירים בפלטפורמה' : 'Total Platform Songs'}</span>
+                      <Music className="w-5 h-5 text-white/70" />
                     </div>
-                    <div className="text-3xl font-black text-white font-mono">{allTracks.length.toLocaleString()}</div>
-                    <p className="text-[10px] text-white/50">{isHe ? 'זמינים להאזנה מיידית' : 'Available for streaming'}</p>
+                    <div className="text-3xl text-white">{allTracks.length.toLocaleString()}</div>
+                    <p className="text-[11px] text-white/50">{isHe ? 'זמינים להאזנה מיידית' : 'Available for streaming'}</p>
                   </div>
 
-                  <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/80 to-slate-900 border border-emerald-500/30 space-y-2 shadow-xl">
+                  <div className="p-5 rounded-2xl bg-neutral-900/90 border border-white/15 space-y-2 shadow-xl">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-emerald-300">{isHe ? 'פרופילי אמנים פעילים באתר' : 'Active Published Artists'}</span>
+                      <span className="text-xs text-emerald-300">{isHe ? 'פרופילי אמנים פעילים באתר' : 'Active Published Artists'}</span>
                       <Users className="w-5 h-5 text-emerald-400" />
                     </div>
-                    <div className="text-3xl font-black text-white font-mono">{publishedArtistsCount}</div>
-                    <p className="text-[10px] text-white/50">{isHe ? 'אמנים שפירסמו לפחות שיר אחד' : 'Artists with published tracks'}</p>
+                    <div className="text-3xl text-white">{publishedArtistsCount}</div>
+                    <p className="text-[11px] text-white/50">{isHe ? 'אמנים שהעלו לפחות שיר אחד' : 'Artists with at least 1 published track'}</p>
                   </div>
 
-                  <div className="p-5 rounded-2xl bg-gradient-to-br from-purple-950/80 to-slate-900 border border-purple-500/30 space-y-2 shadow-xl">
+                  <div className="p-5 rounded-2xl bg-neutral-900/90 border border-white/15 space-y-2 shadow-xl">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-purple-300">{isHe ? 'שירים שהועלו על ידי גולשים' : 'Uploaded Tracks'}</span>
-                      <Eye className="w-5 h-5 text-purple-400" />
+                      <span className="text-xs text-amber-300">{isHe ? 'חשבונות ריקים (ללא שירים)' : 'Empty Accounts'}</span>
+                      <Eye className="w-5 h-5 text-amber-400" />
                     </div>
-                    <div className="text-3xl font-black text-white font-mono">{uploadedTracksCount}</div>
-                    <p className="text-[10px] text-white/50">{isHe ? 'מאוחסנים בשרת האחסון הציבורי' : 'Stored in cloud storage'}</p>
+                    <div className="text-3xl text-white">{emptyAccountsCount}</div>
+                    <p className="text-[11px] text-white/50">{isHe ? 'מוסתרים מהקהל הרחב' : 'Hidden from public browsing'}</p>
                   </div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs space-y-2">
-                  <h4 className="font-extrabold text-amber-300">{isHe ? 'אבטחה ואחסון:' : 'Security & Database:'}</h4>
-                  <p className="text-white/80 leading-relaxed text-[11px]">
-                    {isHe
-                      ? 'נתוני הפרופילים, הדיווחים, השירים והמדיה מאוחסנים בשרת מאובטח ב-Cloudflare R2.'
-                      : 'Profiles, reports, songs, and media are hosted securely on Cloudflare R2.'}
-                  </p>
                 </div>
               </div>
             )}
 
-            {/* TAB 4: REPORTS */}
+            {/* TAB 4: REPORTS (DISMISS ONLY - NO ADMIN SONG DELETION) */}
             {activeTab === 'reports' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                  <h4 className="text-xs font-black text-rose-300 flex items-center gap-2">
+                  <h4 className="text-xs text-rose-300 flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4 text-rose-400" />
-                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים על שירים (ב-Cloudflare R2)' : 'User Track Reports'}</span>
+                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים (ב-Cloudflare R2)' : 'User Track Reports'}</span>
                   </h4>
-                  <span className="text-xs font-mono font-bold text-rose-400">{reports.length} דיווחים</span>
+                  <span className="text-xs text-rose-400">{reports.length} דיווחים</span>
                 </div>
 
                 {reports.length === 0 ? (
                   <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/10 text-xs text-white/60 space-y-2">
                     <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
-                    <p className="font-bold text-white">{isHe ? 'אין דיווחים חדשים! כל השירים בפלטפורמה תקינים.' : 'No reported songs at this time!'}</p>
+                    <p className="text-white">{isHe ? 'אין דיווחים חדשים!' : 'No reported songs at this time!'}</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     {reports.map((report) => (
                       <div
                         key={report.id}
-                        className="p-4 rounded-2xl bg-slate-900 border border-rose-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs"
+                        className="p-4 rounded-2xl bg-neutral-900 border border-rose-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs"
                       >
                         <div className="space-y-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-extrabold text-white text-sm">{report.trackName}</span>
+                            <span className="text-white text-sm">{report.trackName}</span>
                             <span className="text-white/60">מאת</span>
-                            <span className="font-bold text-amber-300">{report.artistName}</span>
+                            <span className="text-amber-300">{report.artistName}</span>
                           </div>
-                          <p className="text-rose-300 font-bold">
+                          <p className="text-rose-300">
                             {isHe ? 'סיבת הדיווח:' : 'Reason:'} {report.reason}
                           </p>
-                          {report.details && <p className="text-white/70 italic text-[11px]">{report.details}</p>}
+                          {report.details && <p className="text-white/70 text-[11px]">{report.details}</p>}
                           <span className="text-[10px] text-white/40 block">{report.reportedAt}</span>
                         </div>
 
                         <div className="flex items-center gap-2 flex-shrink-0">
                           <button
+                            type="button"
                             onClick={() => handleDismissReport(report.id)}
-                            className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/30 font-bold transition-all cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/30 transition-all cursor-pointer"
                           >
                             {isHe ? 'אישור וביטול דיווח' : 'Dismiss'}
                           </button>
-
-                          {onRemoveTrack && (
-                            <button
-                              onClick={() => {
-                                onRemoveTrack(report.trackId);
-                                handleDismissReport(report.id);
-                              }}
-                              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold transition-all cursor-pointer flex items-center gap-1"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              <span>{isHe ? 'הסר שיר' : 'Remove Song'}</span>
-                            </button>
-                          )}
                         </div>
                       </div>
                     ))}
@@ -433,4 +562,3 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     </AnimatePresence>
   );
 };
-

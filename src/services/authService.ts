@@ -11,6 +11,7 @@ export interface AuthUser {
   displayName?: string | null;
   photoURL?: string | null;
   googlePhotoUrl?: string | null;
+  isAdmin?: boolean;
 }
 
 const SESSION_TOKEN_KEY = 'kolot_session_token';
@@ -59,6 +60,7 @@ function setCurrentUserInternal(user: AuthUser | null): AuthUser | null {
         displayName: user.displayName || undefined,
         photoURL: user.photoURL || undefined,
         googlePhotoUrl: user.googlePhotoUrl || undefined,
+        isAdmin: !!user.isAdmin,
       }
     : null;
   notifyAuthListeners();
@@ -411,5 +413,26 @@ export async function dismissTrackReportInR2(reportId: string): Promise<boolean>
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+export async function deleteArtistAccountInAdmin(uid: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/admin/delete-account', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      credentials: 'include',
+      body: JSON.stringify({ uid }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      return { success: false, error: data?.error || `HTTP ${res.status}` };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'שגיאת רשת במחיקת החשבון' };
   }
 }

@@ -714,6 +714,62 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     try {
       const { client, bucket, publicUrl } = await getR2Context(req);
       bucketName = bucket;
+
+      const readJsonR2 = async (key: string) => {
+        try {
+          const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+          return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const getReqSession = () => {
+        const { sessionSecret } = getGoogleOAuthCreds();
+        return extractSessionFromRequest(req, sessionSecret)?.session || null;
+      };
+
+      if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
+        const sess = getReqSession();
+        const targetUid = rawPath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid || cleanSessUid !== targetUid) {
+          return res.status(403).json({ success: false, error: 'רק בעל הפרופיל רשאי לערוך פרופיל זה.' });
+        }
+      } else if (rawPath.startsWith('tracks/') && rawPath.endsWith('.json')) {
+        let incoming: any = null;
+        try {
+          incoming = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf-8') : String(body));
+        } catch {}
+        const existing = await readJsonR2(rawPath);
+        const sess = getReqSession();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        const incomingUid = String(incoming?.uploadedByUid || '').replace(/^artist_/, '').trim();
+        if (!existing) {
+          if (!sess || !cleanSessUid || (incomingUid && incomingUid !== cleanSessUid)) {
+            return res.status(403).json({ success: false, error: 'רק בעל הפרופיל המחובר יכול להוסיף שירים.' });
+          }
+        } else {
+          const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
+          const isCoreEdit =
+            (incoming?.name !== undefined && incoming.name !== existing.name) ||
+            (incoming?.artistName !== undefined && incoming.artistName !== existing.artistName) ||
+            (incoming?.audioUrl !== undefined && incoming.audioUrl !== existing.audioUrl) ||
+            (incomingUid && existingUid && incomingUid !== existingUid);
+          if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
+            return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' });
+          }
+        }
+      } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
+        const existing = await readJsonR2(rawPath);
+        const sess = getReqSession();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+          return res.status(403).json({ success: false, error: 'רק בעל הפרופיל רשאי ליצור או לערוך אלבום זה.' });
+        }
+      }
+
       const command = new PutObjectCommand({
         Bucket: bucket,
         Key: rawPath,
@@ -999,6 +1055,38 @@ app.delete('/api/storage/delete', async (req, res) => {
     }
 
     const { client, bucket } = await getR2Context(req);
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const sess = extractSessionFromRequest(req, sessionSecret)?.session || null;
+    const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+
+    const readJsonR2 = async (key: string) => {
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
+      const existing = await readJsonR2(filePath);
+      const ownerUid = String(existing?.uploadedByUid || '').replace(/^artist_/, '').trim();
+      if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+        return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי למחוק שיר זה.' });
+      }
+    } else if (filePath.startsWith('albums/') && filePath.endsWith('.json')) {
+      const existing = await readJsonR2(filePath);
+      const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
+      if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+        return res.status(403).json({ success: false, error: 'רק בעל האלבום רשאי למחוק אלבום זה.' });
+      }
+    } else if (filePath.startsWith('profiles/') && filePath.endsWith('.json')) {
+      const targetUid = filePath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+      if (!sess || (!sess.isAdmin && cleanSessUid !== targetUid)) {
+        return res.status(403).json({ success: false, error: 'אין הרשאה למחוק פרופיל זה.' });
+      }
+    }
+
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: filePath }));
 
     return res.json({ success: true });
@@ -2968,11 +3056,13 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
       console.warn('[OAuth Callback R2 Avatar Sync] non-fatal notice:', r2SyncErr?.message);
     }
 
+    const isAdmin = verifiedEmail === 'danielbarber1246@gmail.com';
     const sessionPayload = {
       uid,
       displayName,
       photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
       googlePhotoUrl: googlePhotoUrl || undefined,
+      isAdmin,
       exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
     };
     const sessionToken = signHmacToken(sessionPayload, sessionSecret);
@@ -2993,6 +3083,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
         displayName,
         photoURL: sessionPayload.photoURL,
         googlePhotoUrl: sessionPayload.googlePhotoUrl,
+        isAdmin,
       },
     });
   } catch (err: any) {
@@ -3030,6 +3121,7 @@ app.get('/api/auth/me', async (req, res) => {
       displayName: liveName || session.displayName,
       photoURL: liveAvatar || session.googlePhotoUrl || undefined,
       googlePhotoUrl: session.googlePhotoUrl || undefined,
+      isAdmin: !!session.isAdmin,
     },
   });
 });
@@ -3104,6 +3196,33 @@ app.post('/api/auth/restore-google-avatar', async (req, res) => {
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' });
+  }
+});
+
+app.post('/api/admin/delete-account', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    if (!parsed?.session?.isAdmin) {
+      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
+    }
+    const cleanUid = String(req.body?.uid || '')
+      .replace(/^artist_/, '')
+      .replace(/[^a-zA-Z0-9_\-]/g, '')
+      .trim();
+    if (!cleanUid) {
+      return res.status(400).json({ success: false, error: 'חסר מזהה חשבון למחיקה.' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    await Promise.allSettled([
+      client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/${cleanUid}.json` })),
+      client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/artist_${cleanUid}.json` })),
+      purgeOldAvatarsInR2(client, bucket, cleanUid),
+    ]);
+    return res.json({ success: true, uid: cleanUid });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' });
   }
 });
 

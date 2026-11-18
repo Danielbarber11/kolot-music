@@ -332,6 +332,70 @@ export default {
 
     const creds = getR2Creds(env);
 
+    const resolveSessionSecretTop = () => {
+      const envObj = (env as Record<string, any>) || {};
+      const rawSec =
+        envObj.Client_secret ||
+        envObj.CLIENT_SECRET ||
+        envObj.GOOGLE_CLIENT_SECRET ||
+        creds.secretAccessKey ||
+        'kolot-music-session-hmac-key';
+      const cleaned = typeof rawSec === 'string' ? rawSec.trim().replace(/^["']|["']$/g, '') : '';
+      const secMatch = cleaned.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
+      return (secMatch ? secMatch[1] : cleaned) || 'kolot-music-session-hmac-key';
+    };
+
+    const readR2JsonTop = async (key: string) => {
+      try {
+        if (env.R2_BUCKET) {
+          const obj = await env.R2_BUCKET.get(key);
+          return obj ? JSON.parse(await obj.text()) : null;
+        }
+        const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+        return r.ok ? await r.json() : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const extractSessionTop = async (): Promise<{ uid: string; isAdmin?: boolean } | null> => {
+      try {
+        const authHdr = (request.headers.get('authorization') || '').trim();
+        let token = authHdr.toLowerCase().startsWith('bearer ') ? authHdr.slice(7).trim() : '';
+        if (!token) {
+          const cookieHdr = request.headers.get('cookie') || '';
+          for (const pair of cookieHdr.split(';')) {
+            const idx = pair.indexOf('=');
+            if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
+              try {
+                token = decodeURIComponent(pair.slice(idx + 1).trim());
+              } catch {
+                token = pair.slice(idx + 1).trim();
+              }
+            }
+          }
+        }
+        if (!token) return null;
+        const parts = token.split('.');
+        if (parts.length !== 2) return null;
+        const [encoded, sig] = parts;
+        const b64Sig = uint8ToBase64(await hmacSha256(resolveSessionSecretTop(), encoded))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/g, '');
+        if (sig !== b64Sig) return null;
+        const b64Payload = encoded.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((encoded.length + 3) % 4);
+        const bin = atob(b64Payload);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        if (parsed?.exp && Date.now() > Number(parsed.exp)) return null;
+        return parsed?.uid ? parsed : null;
+      } catch {
+        return null;
+      }
+    };
+
     // 1. Storage status
     if (pathname === '/api/storage/status' && request.method === 'GET') {
       if (env.R2_BUCKET) {
@@ -419,6 +483,48 @@ export default {
 
         if (!rawPath || !bodyBytes) {
           return jsonResponse({ success: false, error: 'Missing path or file content' }, 400);
+        }
+
+        // Strict Ownership Enforcement on Profile, Track, and Album writes
+        if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
+          const sess = await extractSessionTop();
+          const targetUid = rawPath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+          const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid || cleanSessUid !== targetUid) {
+            return jsonResponse({ success: false, error: 'רק בעל הפרופיל רשאי לערוך פרופיל זה.' }, 403);
+          }
+        } else if (rawPath.startsWith('tracks/') && rawPath.endsWith('.json')) {
+          let incoming: any = null;
+          try {
+            incoming = JSON.parse(new TextDecoder().decode(bodyBytes));
+          } catch {}
+          const existing = await readR2JsonTop(rawPath);
+          const sess = await extractSessionTop();
+          const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+          const incomingUid = String(incoming?.uploadedByUid || '').replace(/^artist_/, '').trim();
+          if (!existing) {
+            if (!sess || !cleanSessUid || (incomingUid && incomingUid !== cleanSessUid)) {
+              return jsonResponse({ success: false, error: 'רק בעל הפרופיל המחובר יכול להוסיף שירים.' }, 403);
+            }
+          } else {
+            const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
+            const isCoreEdit =
+              (incoming?.name !== undefined && incoming.name !== existing.name) ||
+              (incoming?.artistName !== undefined && incoming.artistName !== existing.artistName) ||
+              (incoming?.audioUrl !== undefined && incoming.audioUrl !== existing.audioUrl) ||
+              (incomingUid && existingUid && incomingUid !== existingUid);
+            if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
+              return jsonResponse({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' }, 403);
+            }
+          }
+        } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
+          const existing = await readR2JsonTop(rawPath);
+          const sess = await extractSessionTop();
+          const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+          const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+            return jsonResponse({ success: false, error: 'רק בעל הפרופיל רשאי ליצור או לערוך אלבום זה.' }, 403);
+          }
         }
 
         if (env.R2_BUCKET) {
@@ -648,11 +754,34 @@ export default {
       }
     }
 
-    // 4. Delete file
+    // 4. Delete file (strictly owner-verified; admin has NO song deletion permission)
     if (pathname === '/api/storage/delete' && request.method === 'DELETE') {
       try {
         const filePath = (url.searchParams.get('path') || '').trim().replace(/^\/+/, '');
         if (!filePath) return jsonResponse({ success: false, error: 'Missing path' }, 400);
+
+        const sess = await extractSessionTop();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+
+        if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
+          const existing = await readR2JsonTop(filePath);
+          const ownerUid = String(existing?.uploadedByUid || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+            return jsonResponse({ success: false, error: 'רק בעל השיר רשאי למחוק שיר זה.' }, 403);
+          }
+        } else if (filePath.startsWith('albums/') && filePath.endsWith('.json')) {
+          const existing = await readR2JsonTop(filePath);
+          const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+            return jsonResponse({ success: false, error: 'רק בעל האלבום רשאי למחוק אלבום זה.' }, 403);
+          }
+        } else if (filePath.startsWith('profiles/') && filePath.endsWith('.json')) {
+          const targetUid = filePath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+          if (!sess || (!sess.isAdmin && cleanSessUid !== targetUid)) {
+            return jsonResponse({ success: false, error: 'אין הרשאה למחוק פרופיל זה.' }, 403);
+          }
+        }
+
         if (env.R2_BUCKET) {
           await env.R2_BUCKET.delete(filePath);
         } else {
@@ -1678,11 +1807,13 @@ export default {
           }
         } catch {}
 
+        const isAdmin = verifiedEmail === 'danielbarber1246@gmail.com';
         const sessionPayload = {
           uid,
           displayName,
           photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
           googlePhotoUrl: googlePhotoUrl || undefined,
+          isAdmin,
           exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
         };
         const sessionToken = await signWorkerHmac(sessionPayload, sessionSecret);
@@ -1697,6 +1828,7 @@ export default {
               displayName,
               photoURL: sessionPayload.photoURL,
               googlePhotoUrl: sessionPayload.googlePhotoUrl,
+              isAdmin,
             },
           },
           undefined,
@@ -1732,6 +1864,7 @@ export default {
           displayName: liveName || session.displayName,
           photoURL: liveAvatar || session.googlePhotoUrl || undefined,
           googlePhotoUrl: session.googlePhotoUrl || undefined,
+          isAdmin: !!session.isAdmin,
         },
       });
     }
@@ -1782,6 +1915,30 @@ export default {
         return jsonResponse({ success: true, avatarUrl: r2AvatarUrl, profile: updatedProfile });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' }, 500);
+      }
+    }
+
+    // 16. Admin-Only Account Deletion (strictly removes account profile & avatars; does NOT delete songs)
+    if (pathname === '/api/admin/delete-account' && request.method === 'POST') {
+      try {
+        const { sessionSecret } = getGoogleCreds();
+        const parsed = await extractWorkerSession(sessionSecret);
+        if (!parsed?.session?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const body: any = await request.json().catch(() => ({}));
+        const cleanUid = String(body?.uid || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+        if (!cleanUid) {
+          return jsonResponse({ success: false, error: 'חסר מזהה חשבון למחיקה.' }, 400);
+        }
+        await Promise.allSettled([
+          r2DeleteKey(`profiles/${cleanUid}.json`),
+          r2DeleteKey(`profiles/artist_${cleanUid}.json`),
+          purgeOldAvatarsWorker(cleanUid),
+        ]);
+        return jsonResponse({ success: true, uid: cleanUid });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' }, 500);
       }
     }
 

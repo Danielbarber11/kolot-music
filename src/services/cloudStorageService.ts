@@ -77,8 +77,12 @@ export function calculateRealStorageUsage(tracks: JamendoTrack[]): { usedBytes: 
 }
 
 export function getR2AuthHeaders(): Record<string, string> {
-  // Credentials are processed 100% server-side in server.ts to prevent leaks in DevTools
-  return {};
+  try {
+    const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('kolot_session_token') || '' : '';
+    return token.trim() ? { Authorization: `Bearer ${token.trim()}` } : {};
+  } catch {
+    return {};
+  }
 }
 
 export async function checkR2StorageStatus(): Promise<{ configured: boolean; bucket?: string; error?: string }> {
@@ -121,7 +125,9 @@ function xhrSend(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url, true);
-    for (const [k, v] of Object.entries(headers)) {
+    xhr.withCredentials = true;
+    const allHeaders = { ...getR2AuthHeaders(), ...headers };
+    for (const [k, v] of Object.entries(allHeaders)) {
       xhr.setRequestHeader(k, v);
     }
     if (xhr.upload && onProgress) {
@@ -226,7 +232,8 @@ async function syncTracksIndexInBackground(trackToSave: JamendoTrack): Promise<v
     map.set(trackToSave.id, trackToSave);
     await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: 'tracks_index.json',
         content: JSON.stringify(Array.from(map.values())),
@@ -339,7 +346,8 @@ export async function uploadTrackToCloudStorage(
   try {
     const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: `tracks/${trackId}.json`,
         content: JSON.stringify(trackToSave),
@@ -463,6 +471,7 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
     await fetch(`/api/storage/delete?path=${encodeURIComponent(`tracks/${trackId}.json`)}`, {
       method: 'DELETE',
       headers: getR2AuthHeaders(),
+      credentials: 'include',
     });
 
     // Clean up associated audio & cover objects in R2
@@ -475,13 +484,13 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
       if (audioListRes.ok) {
         const aData = await audioListRes.json();
         (aData.files || []).forEach((f: any) => {
-          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }));
+          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE', headers: getR2AuthHeaders(), credentials: 'include' }));
         });
       }
       if (coverListRes.ok) {
         const cData = await coverListRes.json();
         (cData.files || []).forEach((f: any) => {
-          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }));
+          deletions.push(fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE', headers: getR2AuthHeaders(), credentials: 'include' }));
         });
       }
       await Promise.allSettled(deletions);
@@ -493,7 +502,8 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
 
     await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: 'tracks_index.json',
         content: JSON.stringify(updatedIndex, null, 2),
@@ -525,7 +535,11 @@ export async function deleteOldArtistAvatarsFromCloud(
           files
             .filter((f) => f?.key && f.key !== keepKey)
             .map((f) =>
-              fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, { method: 'DELETE' }).catch(() => {})
+              fetch(`/api/storage/delete?path=${encodeURIComponent(f.key)}`, {
+                method: 'DELETE',
+                headers: getR2AuthHeaders(),
+                credentials: 'include',
+              }).catch(() => {})
             )
         );
       } catch {}
@@ -552,7 +566,12 @@ export async function uploadArtistProfileToCloud(
       const formData = new FormData();
       formData.append('file', avatarFile);
       formData.append('path', uploadedKey);
-      const res = await fetch('/api/storage/upload', { method: 'POST', body: formData });
+      const res = await fetch('/api/storage/upload', {
+        method: 'POST',
+        headers: getR2AuthHeaders(),
+        credentials: 'include',
+        body: formData,
+      });
       const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
       if (!data.success || !data.url) {
         return { success: false, error: data.error || 'העלאת התמונה ל-Cloudflare R2 נכשלה' };
@@ -575,7 +594,8 @@ export async function uploadArtistProfileToCloud(
 
     const metaRes = await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: `profiles/${cleanId}.json`,
         content: JSON.stringify(profileToSave, null, 2),
@@ -589,6 +609,8 @@ export async function uploadArtistProfileToCloud(
     // Remove legacy profiles/artist_${cleanId}.json so old cached avatars/terms never overwrite the canonical profile
     void fetch(`/api/storage/delete?path=${encodeURIComponent(`profiles/artist_${cleanId}.json`)}`, {
       method: 'DELETE',
+      headers: getR2AuthHeaders(),
+      credentials: 'include',
     }).catch(() => {});
 
     return { success: true, avatarUrl: avatarUrl || undefined, profile: profileToSave };
@@ -944,6 +966,7 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
       const res = await fetch('/api/storage/upload', {
         method: 'POST',
         headers: getR2AuthHeaders(),
+        credentials: 'include',
         body: formData
       });
       const data = await safeJson(res, 'העלאת תמונת אלבום נכשלה');
@@ -956,6 +979,7 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
         'Content-Type': 'application/json',
         ...getR2AuthHeaders(),
       },
+      credentials: 'include',
       body: JSON.stringify({
         path: `albums/${album.id}.json`,
         content: JSON.stringify(albumToSave, null, 2)
@@ -972,6 +996,7 @@ export async function deleteAlbumFromCloud(albumId: string) {
   await fetch(`/api/storage/delete?path=${encodeURIComponent(`albums/${albumId}.json`)}`, {
     method: 'DELETE',
     headers: getR2AuthHeaders(),
+    credentials: 'include',
   });
   return true;
 }

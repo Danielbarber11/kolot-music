@@ -105,6 +105,8 @@ export interface Album {
   id: string;
   title: string;
   artistName: string;
+  artistId?: string;
+  uploadedByUid?: string;
   coverUrl?: string;
   description?: string;
   trackIds: string[];

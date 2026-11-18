@@ -224,18 +224,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
     if (!onRemoveTrack || !currentUid) return false;
     const cleanCurrent = currentUid.replace(/^artist_/, '').toLowerCase().trim();
     const trackUid = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-
-    if (trackUid && trackUid === cleanCurrent) return true;
-
-    const ownsProfile = mergedArtists.some((a) => {
-      const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
-      return (
-        aUid === cleanCurrent &&
-        (a.name?.toLowerCase().trim() === cleanQuery ||
-          a.name?.toLowerCase().trim() === (track.artistName || '').toLowerCase().trim())
-      );
-    });
-    return ownsProfile;
+    return !!(trackUid && cleanCurrent && trackUid === cleanCurrent);
   };
 
   const handleDeleteTrack = async (track: JamendoTrack, e: React.MouseEvent) => {

@@ -287,7 +287,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const handleSaveEditTrack = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingTrack) return;
+    if (!editingTrack || !canManageTrack(editingTrack)) return;
     setIsSavingEdit(true);
 
     const updatedTrack: JamendoTrack = {
@@ -347,13 +347,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [newAlbumCover, setNewAlbumCover] = useState('');
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [selectedTrackIdsForAlbum, setSelectedTrackIdsForAlbum] = useState<string[]>([]);
-  const [myAlbums, setMyAlbums] = useState<Album[]>(() => {
+  const [allAlbums, setAllAlbums] = useState<Album[]>(() => {
     const stored: Album[] = getCachedAlbums();
 
     const albumMap = new Map<string, Album>();
     stored.forEach((a) => {
       if (a.title && a.id) {
-        albumMap.set(a.title.toLowerCase().trim(), a);
+        const ownerKey = (a.uploadedByUid || a.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+        albumMap.set(`${ownerKey}::${a.title.toLowerCase().trim()}`, a);
       }
     });
 
@@ -363,12 +364,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       const cleanAlbum = (t.albumName || '').trim();
       const lower = cleanAlbum.toLowerCase();
       if (cleanAlbum && !invalidNames.has(lower) && !lower.startsWith('סינגל') && !lower.startsWith('single')) {
-        const key = cleanAlbum.toLowerCase().trim();
+        const ownerKey = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const key = `${ownerKey}::${lower}`;
         if (!albumMap.has(key)) {
           albumMap.set(key, {
             id: `album-${t.id}`,
             title: cleanAlbum,
             artistName: t.artistName,
+            artistId: t.uploadedByUid,
+            uploadedByUid: t.uploadedByUid,
             coverUrl: t.coverUrl,
             trackIds: [t.id],
             createdDate: t.publishedDate || new Date().toISOString().split('T')[0],
@@ -387,6 +391,22 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     return Array.from(albumMap.values());
   });
+
+  const canManageAlbum = (album: Album): boolean => {
+    if (!currentUser?.uid) return false;
+    const cleanUserUid = currentUser.uid.replace(/^artist_/, '').toLowerCase().trim();
+    const albumOwnerUid = (album.uploadedByUid || album.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+    if (albumOwnerUid) return albumOwnerUid === cleanUserUid;
+    const myTrackIds = new Set(
+      allTracks
+        .filter((t) => (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim() === cleanUserUid)
+        .map((t) => t.id)
+    );
+    const ids = (album.trackIds || []).filter(Boolean);
+    return ids.length > 0 && ids.every((id) => myTrackIds.has(id));
+  };
+
+  const myAlbums = allAlbums.filter(canManageAlbum);
   const [selectedAlbumForView, setSelectedAlbumForView] = useState<Album | null>(null);
   const [editingAlbum, setEditingAlbum] = useState<Album | null>(null);
 
@@ -578,6 +598,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   };
 
   const handleStartEditAlbum = (album: Album) => {
+    if (!canManageAlbum(album)) return;
     setEditingAlbum(album);
     setNewAlbumTitle(album.title);
     setNewAlbumCover(album.coverUrl || '');
@@ -595,8 +616,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   };
 
   const handleDeleteAlbum = async (albumId: string) => {
-    const updated = myAlbums.filter((a) => a.id !== albumId);
-    setMyAlbums(updated);
+    const target = allAlbums.find((a) => a.id === albumId);
+    if (!target || !canManageAlbum(target)) return;
+    const updated = allAlbums.filter((a) => a.id !== albumId);
+    setAllAlbums(updated);
     saveCachedAlbums(updated);
     if (editingAlbum?.id === albumId) {
       handleCancelEditAlbum();
@@ -608,6 +631,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const handleCreateAlbum = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser?.uid) return;
+    if (editingAlbum && !canManageAlbum(editingAlbum)) return;
     if (!newAlbumTitle.trim()) return;
 
     setIsSavingAlbum(true);
@@ -618,6 +643,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       if (editingAlbum) {
         album = {
           ...editingAlbum,
+          artistId: editingAlbum.artistId || currentUser.uid,
+          uploadedByUid: editingAlbum.uploadedByUid || currentUser.uid,
           title: newAlbumTitle.trim(),
           coverUrl: newAlbumCover.trim() || undefined,
           description: newAlbumDescription.trim() || undefined,
@@ -628,6 +655,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           id: `album_${Date.now()}`,
           title: newAlbumTitle.trim(),
           artistName: currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist'),
+          artistId: currentUser.uid,
+          uploadedByUid: currentUser.uid,
           coverUrl: newAlbumCover.trim() || coverArtUrl || undefined,
           description: newAlbumDescription.trim() || undefined,
           trackIds: selectedTrackIdsForAlbum,
@@ -647,10 +676,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       }
 
       const updatedAlbums = editingAlbum
-        ? myAlbums.map((a) => (a.id === editingAlbum.id ? album : a))
-        : [album, ...myAlbums];
+        ? allAlbums.map((a) => (a.id === editingAlbum.id ? album : a))
+        : [album, ...allAlbums];
 
-      setMyAlbums(updatedAlbums);
+      setAllAlbums(updatedAlbums);
       saveCachedAlbums(updatedAlbums);
       setEditingAlbum(null);
       setNewAlbumTitle('');
