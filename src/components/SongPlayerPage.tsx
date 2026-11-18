@@ -28,6 +28,7 @@ import { ReportSongModal } from './ReportSongModal';
 import {
   AuthUser,
   onAuthUserChanged,
+  loginWithGoogle,
   getEffectiveArtistAvatarForTrack,
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
@@ -137,6 +138,7 @@ interface SongPlayerPageProps {
   onFilterByArtist: (artistName: string) => void;
   isLiked: boolean;
   onToggleLike: (id: string) => void;
+  onRequireAuth?: () => void;
   lang: Language;
   allTracks?: JamendoTrack[];
   allArtists?: ArtistProfile[];
@@ -150,6 +152,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   onFilterByArtist,
   isLiked,
   onToggleLike,
+  onRequireAuth,
   lang,
   allTracks = [],
   allArtists = [],
@@ -165,6 +168,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [duration, setDuration] = useState(track.duration || 180);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [favoriteAuthNotice, setFavoriteAuthNotice] = useState(false);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
@@ -266,14 +270,27 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (isTranscribingWhisper) return;
 
     setIsTranscribingWhisper(true);
+    setShowLiveCaptions(true);
     setWhisperError(null);
-    setWhisperProgressText(isHe ? 'מכין תמלול מקומי במכשיר...' : 'Preparing on-device transcription...');
+    setWhisperProgressText(isHe ? 'מפעיל כתוביות בזמן אמת...' : 'Starting live subtitles...');
+
+    const playbackStart = audioRef.current?.currentTime ?? currentTime ?? 0;
 
     const res = await transcribeTrackWithWhisperAI({
       track,
       language: isHe ? 'he' : 'en',
       subtitleLanguageHint: transcribeLangHint,
+      startTimeSeconds: playbackStart,
       onProgress: (txt) => setWhisperProgressText(txt),
+      onPartialSegments: (partial) => {
+        const nextHe = partial.segmentsHe?.length ? partial.segmentsHe : partial.segments;
+        const nextEn = partial.segmentsEn?.length ? partial.segmentsEn : partial.segments;
+        if (nextHe && nextHe.length > 0) setWhisperSegmentsHe(nextHe);
+        if (nextEn && nextEn.length > 0) setWhisperSegmentsEn(nextEn);
+        if (partial.lyricsHe) setWhisperLyricsHe(partial.lyricsHe);
+        if (partial.lyricsEn) setWhisperLyricsEn(partial.lyricsEn);
+        setShowLiveCaptions(true);
+      },
     });
 
     setIsTranscribingWhisper(false);
@@ -292,7 +309,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (res.lyricsHe) setWhisperLyricsHe(res.lyricsHe);
     if (res.lyricsEn) setWhisperLyricsEn(res.lyricsEn);
     setShowLiveCaptions(true);
-    setIsLyricsExpanded(true);
 
     const primarySegments = nextHe && nextHe.length > 0 ? nextHe : nextEn || [];
     const primaryLyrics = res.lyricsHe || res.lyrics || res.lyricsEn;
@@ -326,6 +342,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
       setAuthUser(user);
+      if (user) setFavoriteAuthNotice(false);
     });
     return () => unsub();
   }, []);
@@ -339,8 +356,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const effectiveAudioUrl = getStreamingMediaUrl(track.audioUrl);
   const effectiveCoverUrl = getStreamingMediaUrl(track.coverUrl);
 
-  // Dynamic matching color extracted from track cover or genre
-  const extractedColor = useExtractedColor(effectiveCoverUrl, track.genre || 'Pop');
+  // Dynamic matching color extracted from track cover, saved bgColor hint, or genre (zero snap on mount)
+  const extractedColor = useExtractedColor(effectiveCoverUrl, track.genre || 'Pop', track.bgColor);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -628,7 +645,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" so Skip Back sits Left and Skip Forward sits Right of Play) */}
         <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
-            onClick={() => onToggleLike(track.id)}
+            onClick={() => {
+              if (!authUser) {
+                setFavoriteAuthNotice(true);
+                setTimeout(() => setFavoriteAuthNotice(false), 5000);
+                onRequireAuth?.();
+                return;
+              }
+              onToggleLike(track.id);
+            }}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/20 flex items-center justify-center bg-white/10 hover:bg-white/20 text-white transition-colors shadow-lg cursor-pointer active:scale-95"
             title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
           >
@@ -721,21 +746,56 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </button>
           </div>
 
-          {/* LIVE WHISPER AI SUBTITLES BAR */}
+          {favoriteAuthNotice && (
+            <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/65 border border-white/25 backdrop-blur-xl text-center space-y-1.5 shadow-xl">
+              <p className="text-[11px] font-bold text-white">
+                {isHe ? 'הוספה למועדפים זמינה למשתמשים מחוברים בלבד' : 'Favorites require a signed-in account'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  loginWithGoogle()
+                    .then((u) => {
+                      if (u) {
+                        setAuthUser(u);
+                        setFavoriteAuthNotice(false);
+                      }
+                    })
+                    .catch(() => {});
+                }}
+                className="px-3 py-1 rounded-full bg-white text-black font-bold text-[11px] hover:bg-neutral-200 transition-colors cursor-pointer"
+              >
+                {isHe ? 'התחבר עם Google' : 'Sign in with Google'}
+              </button>
+            </div>
+          )}
+
+          {/* LIVE YOUTUBE-STYLE WHISPER AI SUBTITLES BAR */}
           <div className="w-full pt-2 flex flex-col items-center gap-2">
-            {showLiveCaptions && syncedLyrics.isWhisperSynced ? (
+            {showLiveCaptions && (syncedLyrics.isWhisperSynced || isTranscribingWhisper) ? (
               <div
                 onClick={() => setIsLyricsExpanded(true)}
-                className="w-full max-w-sm px-4 py-2 rounded-2xl bg-black/45 backdrop-blur-xl border border-white/20 text-center shadow-lg cursor-pointer hover:bg-black/60 transition-colors"
+                className="w-full max-w-sm px-4 py-2.5 rounded-2xl bg-black/55 backdrop-blur-xl border border-white/20 text-center shadow-lg cursor-pointer hover:bg-black/70 transition-colors"
               >
-                <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
-                  {activeSubtitleLine ? activeSubtitleLine.text : (syncedLyrics.lines[0]?.text || '')}
-                </p>
+                {activeSubtitleLine ? (
+                  <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
+                    {activeSubtitleLine.text}
+                  </p>
+                ) : isTranscribingWhisper ? (
+                  <p className="text-xs font-bold text-emerald-200 leading-snug flex items-center justify-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span>{whisperProgressText || (isHe ? 'מייצר כתוביות תוך כדי ניגון...' : 'Generating live subtitles...')}</span>
+                  </p>
+                ) : (
+                  <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
+                    {syncedLyrics.lines[0]?.text || ''}
+                  </p>
+                )}
               </div>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-center gap-2">
-              {syncedLyrics.isWhisperSynced ? (
+              {syncedLyrics.isWhisperSynced || isTranscribingWhisper ? (
                 <>
                   <button
                     type="button"
@@ -746,8 +806,24 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                         : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
                     }`}
                   >
-                    <Captions className="w-3.5 h-3.5" />
-                    <span>{isHe ? (showLiveCaptions ? 'כתוביות פעילות' : 'הצג כתוביות') : (showLiveCaptions ? 'Captions On' : 'Show Captions')}</span>
+                    {isTranscribingWhisper ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Captions className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {isTranscribingWhisper
+                        ? isHe
+                          ? 'מתמלל בחי'
+                          : 'Live Syncing'
+                        : isHe
+                        ? showLiveCaptions
+                          ? 'כתוביות פעילות'
+                          : 'הצג כתוביות'
+                        : showLiveCaptions
+                        ? 'Captions On'
+                        : 'Show Captions'}
+                    </span>
                   </button>
 
                   {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
@@ -781,15 +857,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                     disabled={isTranscribingWhisper}
                     className="px-3.5 py-1.5 rounded-full text-[11px] font-extrabold bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md disabled:opacity-60"
                   >
-                    {isTranscribingWhisper ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                    ) : (
-                      <Captions className="w-3.5 h-3.5 text-white" />
-                    )}
+                    <Captions className="w-3.5 h-3.5 text-white" />
                     <span>
-                      {isTranscribingWhisper
-                        ? (whisperProgressText || (isHe ? 'מתמלל במכשיר...' : 'Transcribing on-device...'))
-                        : (isHe ? 'צור כתוביות עברית ואנגלית (חינם במכשיר)' : 'Generate Hebrew & English Subtitles (Free)')}
+                      {isHe ? 'הפעל כתוביות חיות (מיידי ויישמר באחסון)' : 'Enable Live Subtitles (Instant & Saved)'}
                     </span>
                   </button>
                   <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
@@ -1011,11 +1081,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 </div>
               )}
 
-              {syncedLyrics.isWhisperSynced && (
+              {isTranscribingWhisper ? (
+                <span className="text-[10px] font-bold text-amber-200 bg-amber-500/15 border border-amber-400/35 px-2.5 py-1 rounded-lg">
+                  {isHe ? 'מתמלל בחי — יישמר באחסון בסיום' : 'Streaming live — saving on finish'}
+                </span>
+              ) : syncedLyrics.isWhisperSynced ? (
                 <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
                   {isHe ? 'שמור באחסון ומסונכרן' : 'Saved & Synced'}
                 </span>
-              )}
+              ) : null}
             </div>
           </div>
 

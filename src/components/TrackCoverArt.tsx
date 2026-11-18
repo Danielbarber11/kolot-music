@@ -29,22 +29,19 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
   priority = false,
 }) => {
   const imgRef = React.useRef<HTMLImageElement>(null);
-  const [hasError, setHasError] = useState(false);
 
   const effectiveUrl = getStreamingMediaUrl(coverUrl);
   const isValidUrl = isAuthenticCover(coverUrl);
-  const [currentSrc, setCurrentSrc] = useState(effectiveUrl);
-
-  React.useEffect(() => {
-    setHasError(false);
-    setCurrentSrc(getStreamingMediaUrl(coverUrl));
-  }, [coverUrl]);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const hasError = !!effectiveUrl && failedUrl === effectiveUrl;
 
   const handleImgError = () => {
-    setHasError(true);
+    if (effectiveUrl) {
+      setFailedUrl(effectiveUrl);
+    }
   };
 
-  if (!isValidUrl || hasError || !currentSrc) {
+  if (!isValidUrl || hasError || !effectiveUrl) {
     return (
       <div
         className={`relative aspect-square rounded-xl overflow-hidden bg-neutral-900 border border-white/5 flex flex-col items-center justify-center p-4 text-white select-none ${className}`}
@@ -74,14 +71,14 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
     <div className={`relative aspect-square rounded-xl overflow-hidden bg-neutral-950 ${className}`}>
       <img
         ref={imgRef}
-        src={currentSrc}
+        src={effectiveUrl}
         alt={`${trackName} by ${artistName}`}
         onError={handleImgError}
         className="w-full h-full object-cover opacity-100"
         loading="eager"
         // @ts-expect-error React 18 / 19 fetchPriority attribute support
         fetchpriority={priority ? 'high' : 'auto'}
-        decoding="async"
+        decoding={priority ? 'sync' : 'async'}
       />
 
       {showHoverPlay && (

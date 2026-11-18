@@ -66,7 +66,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [avatarImgError, setAvatarImgError] = useState(false);
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [currentUid, setCurrentUid] = useState<string | null>(() => getCurrentAuthUser()?.uid || null);
 
@@ -78,7 +78,6 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   }, []);
 
   useEffect(() => {
-    setAvatarImgError(false);
     if (isOpen) {
       fetchAllArtistProfiles()
         .then((profiles) => {
@@ -189,7 +188,8 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   }
 
   const avatarUrl = rawAvatarUrl ? upgradeGooglePhotoQuality(getStreamingMediaUrl(rawAvatarUrl)) || getStreamingMediaUrl(rawAvatarUrl) : undefined;
-  const themeColor = useExtractedColor(avatarUrl, artistInfo?.genre || sampleTrack?.genre || 'Pop');
+  const avatarImgError = !!avatarUrl && failedAvatarUrl === avatarUrl;
+  const themeColor = useExtractedColor(avatarUrl, artistInfo?.genre || sampleTrack?.genre || 'Pop', sampleTrack?.bgColor);
 
   // Profile modal opens even if track count is currently 0 (reliable loading)
   if (!isOpen || !effectiveArtistName) return null;
@@ -310,9 +310,9 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
                       src={avatarUrl}
                       alt={effectiveArtistName}
                       loading="eager"
-                      decoding="async"
+                      decoding="sync"
                       referrerPolicy="no-referrer"
-                      onError={() => setAvatarImgError(true)}
+                      onError={() => setFailedAvatarUrl(avatarUrl)}
                       className="w-full h-full rounded-full object-cover"
                     />
                   ) : (
@@ -390,7 +390,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
-            {artistTracks.map((track) => {
+            {artistTracks.map((track, idx) => {
               const trackColor = getTrackInstantColor(track);
               const hoverShadow = `0 0 25px rgba(${trackColor.r}, ${trackColor.g}, ${trackColor.b}, 0.35)`;
               return (
@@ -418,6 +418,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
                         artistName={track.artistName}
                         trackName={track.name}
                         genre={track.genre}
+                        priority={idx < 8}
                       />
 
                       {/* Top Corner Delete Button for authorized owner only */}

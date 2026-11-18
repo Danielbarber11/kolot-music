@@ -201,7 +201,17 @@ export async function transcribeTrackWithWhisperAI(
     audioFile?: File | Blob;
     language?: 'he' | 'en';
     subtitleLanguageHint?: 'auto' | 'he' | 'en';
+    startTimeSeconds?: number;
     onProgress?: (statusText: string, percent?: number) => void;
+    onPartialSegments?: (partial: {
+      segments: SubtitleSegment[];
+      segmentsHe: SubtitleSegment[];
+      segmentsEn: SubtitleSegment[];
+      lyricsHe: string;
+      lyricsEn: string;
+      completedChunks: number;
+      totalChunks: number;
+    }) => void;
   }
 ): Promise<{
   success: boolean;
@@ -221,6 +231,8 @@ export async function transcribeTrackWithWhisperAI(
     subtitleLanguageHint: options.subtitleLanguageHint,
     trackDuration: options.track?.duration || 180,
     hintTitle: options.track?.name,
+    startTimeSeconds: options.startTimeSeconds,
     onProgress: options.onProgress,
+    onPartialSegments: options.onPartialSegments,
   });
 }

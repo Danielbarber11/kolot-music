@@ -145,6 +145,19 @@ function loadImageForColorSampling(url: string): Promise<HTMLImageElement | null
 /**
  * Dynamically samples an image URL via HTML Canvas using quantized dominant-color clustering.
  */
+const inFlightColorExtractions = new Map<string, Promise<{ r: number; g: number; b: number }>>();
+
+export function parseRgbFromBgColor(bgColor?: string): { r: number; g: number; b: number } | null {
+  if (!bgColor || typeof bgColor !== 'string') return null;
+  const match = bgColor.match(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i);
+  if (!match) return null;
+  const r = Number(match[1]);
+  const g = Number(match[2]);
+  const b = Number(match[3]);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return null;
+  return { r, g, b };
+}
+
 export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: number; b: number }> {
   if (!imageUrl || !imageUrl.trim()) {
     return Promise.resolve({ r: 59, g: 130, b: 246 });
@@ -153,125 +166,138 @@ export function extractImageColor(imageUrl?: string): Promise<{ r: number; g: nu
   if (globalTrackColorCache.has(key)) {
     return Promise.resolve(globalTrackColorCache.get(key)!);
   }
+  if (inFlightColorExtractions.has(key)) {
+    return inFlightColorExtractions.get(key)!;
+  }
 
   const fallbackColor = stringToVibrantRGB(key);
 
-  return loadImageForColorSampling(key).then((img) => {
-    if (!img) {
-      return fallbackColor;
-    }
-
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = 32;
-      canvas.height = 32;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return fallbackColor;
-
-      ctx.drawImage(img, 0, 0, 32, 32);
-      const data = ctx.getImageData(0, 0, 32, 32).data;
-
-      // Quantize pixels into color buckets (step 24) and score by area coverage + vibrancy
-      const buckets = new Map<string, { rSum: number; gSum: number; bSum: number; count: number; satSum: number }>();
-      let totalR = 0, totalG = 0, totalB = 0, totalCount = 0;
-
-      for (let i = 0; i < data.length; i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        const a = data[i + 3];
-        if (a < 180) continue;
-
-        const sum = r + g + b;
-        // Skip near-pure black and near-pure white backgrounds so real subject/theme tones win
-        if (sum <= 45 || sum >= 725) continue;
-
-        totalR += r;
-        totalG += g;
-        totalB += b;
-        totalCount++;
-
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const sat = max === 0 ? 0 : (max - min) / max;
-
-        const qr = Math.floor(r / 24);
-        const qg = Math.floor(g / 24);
-        const qb = Math.floor(b / 24);
-        const bKey = `${qr}_${qg}_${qb}`;
-        const existing = buckets.get(bKey) || { rSum: 0, gSum: 0, bSum: 0, count: 0, satSum: 0 };
-        existing.rSum += r;
-        existing.gSum += g;
-        existing.bSum += b;
-        existing.count += 1;
-        existing.satSum += sat;
-        buckets.set(bKey, existing);
+  const pending = loadImageForColorSampling(key)
+    .then((img) => {
+      if (!img) {
+        return fallbackColor;
       }
 
-      if (totalCount === 0) {
-        // Image is purely black/white — extract gentle slate/average from all opaque pixels
-        let allR = 0, allG = 0, allB = 0, allCount = 0;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return fallbackColor;
+
+        ctx.drawImage(img, 0, 0, 32, 32);
+        const data = ctx.getImageData(0, 0, 32, 32).data;
+
+        const buckets = new Map<string, { rSum: number; gSum: number; bSum: number; count: number; satSum: number }>();
+        let totalR = 0, totalG = 0, totalB = 0, totalCount = 0;
+
         for (let i = 0; i < data.length; i += 4) {
-          if (data[i + 3] >= 180) {
-            allR += data[i];
-            allG += data[i + 1];
-            allB += data[i + 2];
-            allCount++;
-          }
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const a = data[i + 3];
+          if (a < 180) continue;
+
+          const sum = r + g + b;
+          if (sum <= 45 || sum >= 725) continue;
+
+          totalR += r;
+          totalG += g;
+          totalB += b;
+          totalCount++;
+
+          const max = Math.max(r, g, b);
+          const min = Math.min(r, g, b);
+          const sat = max === 0 ? 0 : (max - min) / max;
+
+          const qr = Math.floor(r / 24);
+          const qg = Math.floor(g / 24);
+          const qb = Math.floor(b / 24);
+          const bKey = `${qr}_${qg}_${qb}`;
+          const existing = buckets.get(bKey) || { rSum: 0, gSum: 0, bSum: 0, count: 0, satSum: 0 };
+          existing.rSum += r;
+          existing.gSum += g;
+          existing.bSum += b;
+          existing.count += 1;
+          existing.satSum += sat;
+          buckets.set(bKey, existing);
         }
-        const neutral = allCount > 0
-          ? {
-              r: Math.max(35, Math.min(210, Math.round(allR / allCount))),
-              g: Math.max(35, Math.min(210, Math.round(allG / allCount))),
-              b: Math.max(40, Math.min(220, Math.round(allB / allCount))),
+
+        if (totalCount === 0) {
+          let allR = 0, allG = 0, allB = 0, allCount = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            if (data[i + 3] >= 180) {
+              allR += data[i];
+              allG += data[i + 1];
+              allB += data[i + 2];
+              allCount++;
             }
-          : fallbackColor;
-        globalTrackColorCache.set(key, neutral);
-        return neutral;
-      }
-
-      let bestBucket: { rSum: number; gSum: number; bSum: number; count: number; satSum: number } | null = null;
-      let bestScore = -1;
-
-      for (const bucket of buckets.values()) {
-        const avgSat = bucket.satSum / bucket.count;
-        // Favor dominant clusters with noticeable saturation without letting a 1px outlier win
-        const score = bucket.count * (0.4 + avgSat * 2.2);
-        if (score > bestScore) {
-          bestScore = score;
-          bestBucket = bucket;
-        }
-      }
-
-      const finalColor = bestBucket && bestBucket.count >= 2
-        ? {
-            r: Math.round(bestBucket.rSum / bestBucket.count),
-            g: Math.round(bestBucket.gSum / bestBucket.count),
-            b: Math.round(bestBucket.bSum / bestBucket.count),
           }
-        : {
-            r: Math.round(totalR / totalCount),
-            g: Math.round(totalG / totalCount),
-            b: Math.round(totalB / totalCount),
-          };
+          const neutral = allCount > 0
+            ? {
+                r: Math.max(35, Math.min(210, Math.round(allR / allCount))),
+                g: Math.max(35, Math.min(210, Math.round(allG / allCount))),
+                b: Math.max(40, Math.min(220, Math.round(allB / allCount))),
+              }
+            : fallbackColor;
+          globalTrackColorCache.set(key, neutral);
+          return neutral;
+        }
 
-      globalTrackColorCache.set(key, finalColor);
-      return finalColor;
-    } catch {
-      return fallbackColor;
-    }
-  });
+        let bestBucket: { rSum: number; gSum: number; bSum: number; count: number; satSum: number } | null = null;
+        let bestScore = -1;
+
+        for (const bucket of buckets.values()) {
+          const avgSat = bucket.satSum / bucket.count;
+          const score = bucket.count * (0.4 + avgSat * 2.2);
+          if (score > bestScore) {
+            bestScore = score;
+            bestBucket = bucket;
+          }
+        }
+
+        const finalColor = bestBucket && bestBucket.count >= 2
+          ? {
+              r: Math.round(bestBucket.rSum / bestBucket.count),
+              g: Math.round(bestBucket.gSum / bestBucket.count),
+              b: Math.round(bestBucket.bSum / bestBucket.count),
+            }
+          : {
+              r: Math.round(totalR / totalCount),
+              g: Math.round(totalG / totalCount),
+              b: Math.round(totalB / totalCount),
+            };
+
+        globalTrackColorCache.set(key, finalColor);
+        return finalColor;
+      } catch {
+        return fallbackColor;
+      }
+    })
+    .finally(() => {
+      inFlightColorExtractions.delete(key);
+    });
+
+  inFlightColorExtractions.set(key, pending);
+  return pending;
 }
 
 /**
- * React Hook that dynamically calculates the matching vibrant color from an image.
+ * React Hook that dynamically calculates the matching vibrant color from an image without initial color snaps.
  */
-export function useExtractedColor(imageUrl?: string, fallbackGenre: string = 'Acoustic') {
+export function useExtractedColor(imageUrl?: string, fallbackGenre: string = 'Acoustic', bgColorHint?: string) {
   const normalizedKey = imageUrl ? getStreamingMediaUrl(imageUrl).trim() : '';
+  const hintedRgb = parseRgbFromBgColor(bgColorHint);
+  if (normalizedKey && hintedRgb && !globalTrackColorCache.has(normalizedKey)) {
+    globalTrackColorCache.set(normalizedKey, hintedRgb);
+  }
 
   const [color, setColor] = useState<{ r: number; g: number; b: number }>(() => {
     if (normalizedKey && globalTrackColorCache.has(normalizedKey)) {
       return globalTrackColorCache.get(normalizedKey)!;
+    }
+    if (hintedRgb) {
+      return hintedRgb;
     }
     if (normalizedKey) {
       return stringToVibrantRGB(normalizedKey);
@@ -282,7 +308,7 @@ export function useExtractedColor(imageUrl?: string, fallbackGenre: string = 'Ac
   useEffect(() => {
     let cancelled = false;
     if (!normalizedKey) {
-      setColor(GENRE_RGB_MAP[fallbackGenre] || stringToVibrantRGB(fallbackGenre));
+      setColor(hintedRgb || GENRE_RGB_MAP[fallbackGenre] || stringToVibrantRGB(fallbackGenre));
       return;
     }
 
@@ -307,7 +333,13 @@ export function useExtractedColor(imageUrl?: string, fallbackGenre: string = 'Ac
 
 export function prewarmTrackColor(track: JamendoTrack) {
   if (track.coverUrl) {
-    extractImageColor(track.coverUrl);
+    const hinted = parseRgbFromBgColor(track.bgColor);
+    const key = getStreamingMediaUrl(track.coverUrl).trim();
+    if (hinted && key && !globalTrackColorCache.has(key)) {
+      globalTrackColorCache.set(key, hinted);
+    } else {
+      extractImageColor(track.coverUrl);
+    }
   }
   if (track.artistAvatarUrl) {
     extractImageColor(track.artistAvatarUrl);

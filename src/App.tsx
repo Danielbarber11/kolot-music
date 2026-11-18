@@ -20,6 +20,13 @@ import {
   applyAccessibilitySettingsToDom,
   countActiveAccessibilityFeatures,
 } from './services/accessibilityService';
+import { AuthUser, onAuthUserChanged, loginWithGoogle } from './services/authService';
+import {
+  getUserFavorites,
+  toggleUserFavorite,
+  FAVORITES_CHANGED_EVENT,
+} from './services/favoritesService';
+import { prewarmTrackColor } from './services/colorService';
 
 function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = Array.from(
@@ -28,7 +35,7 @@ function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> 
         .map((u) => (u ? getStreamingMediaUrl(u) : ''))
         .filter((u) => !!u && (u.startsWith('http') || u.startsWith('/') || u.startsWith('data:')))
     )
-  ).slice(0, 20);
+  ).slice(0, 32);
 
   if (uniqueUrls.length === 0) return Promise.resolve();
 
@@ -87,17 +94,29 @@ export default function App() {
     return () => window.removeEventListener('mousemove', handleMove);
   }, [a11ySettings.readingGuide]);
 
-  const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('wikiarchive_liked_songs');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [likedSongIds, setLikedSongIds] = useState<string[]>([]);
 
-  // Coordinate single-roundtrip /api/bootstrap + top cover & avatar image decode BEFORE dismissing SplashScreen
-  // so initial tracks, cards, and covers appear together immediately without an empty flash.
+  useEffect(() => {
+    const unsub = onAuthUserChanged((user) => {
+      setAuthUser(user);
+      setLikedSongIds(user?.uid ? getUserFavorites(user.uid) : []);
+    });
+    const handleFavoritesSync = () => {
+      setLikedSongIds((prev) => {
+        if (!authUser?.uid) return [];
+        return getUserFavorites(authUser.uid);
+      });
+    };
+    window.addEventListener(FAVORITES_CHANGED_EVENT, handleFavoritesSync);
+    return () => {
+      unsub();
+      window.removeEventListener(FAVORITES_CHANGED_EVENT, handleFavoritesSync);
+    };
+  }, [authUser?.uid]);
+
+  // Coordinate single-roundtrip /api/bootstrap + color prewarming + top cover & avatar image decode BEFORE dismissing SplashScreen
+  // so initial tracks, cards, avatars, and covers appear together immediately without an empty flash or snap.
   useEffect(() => {
     let active = true;
 
@@ -109,10 +128,12 @@ export default function App() {
         setAllArtists(boot.profiles);
         setAllAlbums(boot.albums);
 
+        boot.tracks.slice(0, 12).forEach((t) => prewarmTrackColor(t));
+
         const topImageUrls = [
-          ...boot.tracks.slice(0, 12).map((t) => t.coverUrl),
-          ...boot.profiles.slice(0, 8).map((a) => a.avatarUrl),
-          ...boot.albums.slice(0, 6).map((al) => al.coverUrl),
+          ...boot.tracks.slice(0, 16).map((t) => t.coverUrl),
+          ...boot.profiles.slice(0, 12).map((a) => a.avatarUrl),
+          ...boot.albums.slice(0, 8).map((al) => al.coverUrl),
         ];
         await preloadAndDecodeImages(topImageUrls);
       } catch {
@@ -120,7 +141,7 @@ export default function App() {
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 2400));
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 2800));
 
     Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
       if (active) setIsInitializing(false);
@@ -132,9 +153,14 @@ export default function App() {
   }, []);
 
   const handleToggleLikeSong = (id: string) => {
-    setLikedSongIds((prev) =>
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
-    );
+    if (!authUser?.uid) {
+      loginWithGoogle().catch(() => {});
+      return;
+    }
+    const res = toggleUserFavorite(authUser.uid, id);
+    if (res.allowed) {
+      setLikedSongIds(res.likedIds);
+    }
   };
 
   const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings);
@@ -172,6 +198,9 @@ export default function App() {
                 onFilterByArtist={() => setActivePlayerTrack(null)}
                 isLiked={likedSongIds.includes(activePlayerTrack.id)}
                 onToggleLike={handleToggleLikeSong}
+                onRequireAuth={() => {
+                  loginWithGoogle().catch(() => {});
+                }}
                 lang={lang}
                 allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
                 allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}

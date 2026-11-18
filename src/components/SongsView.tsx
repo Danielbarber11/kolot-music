@@ -22,6 +22,8 @@ import {
   UserPlus,
   Wand2,
   Loader2,
+  WifiOff,
+  AlertTriangle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album, CURRENT_TERMS_VERSION } from '../types';
@@ -79,6 +81,42 @@ import {
 } from '../services/audioClassificationService';
 import { saveCachedCloudTracks } from '../services/multiMusicService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
+import { useNetworkHealth, RECOMMENDED_MIN_MBPS } from '../services/networkHealthService';
+import {
+  getUserFavorites,
+  toggleUserFavorite,
+  FAVORITES_CHANGED_EVENT,
+} from '../services/favoritesService';
+
+const ArtistCircleImage: React.FC<{
+  src?: string;
+  alt: string;
+  className?: string;
+  fallbackIconClassName?: string;
+}> = ({ src, alt, className = 'w-full h-full object-cover', fallbackIconClassName = 'w-12 h-12 text-white/40' }) => {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const showFallback = !src || failedSrc === src;
+
+  if (showFallback) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-white/40 bg-neutral-900">
+        <User className={fallbackIconClassName} />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      loading="eager"
+      decoding="sync"
+      onError={() => setFailedSrc(src)}
+      className={className}
+    />
+  );
+};
 
 interface SongsViewProps {
   lang: Language;
@@ -121,6 +159,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
   const [authModalError, setAuthModalError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const networkHealth = useNetworkHealth();
+  const [dismissedWeakNetBanner, setDismissedWeakNetBanner] = useState(false);
+
+  useEffect(() => {
+    if (networkHealth.status === 'good') {
+      setDismissedWeakNetBanner(false);
+    }
+  }, [networkHealth.status]);
 
   const openLoginModal = () => {
     setAuthModalMode('login');
@@ -308,42 +354,44 @@ export const SongsView: React.FC<SongsViewProps> = ({
   );
   const [visibleSearchCount] = useState(150);
 
-  // Favorites
-  const [likedSongIds, setLikedSongIds] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('wikiarchive_liked_songs');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // Account-Only Favorites
+  const [likedSongIds, setLikedSongIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setLikedSongIds(authUser?.uid ? getUserFavorites(authUser.uid) : []);
+    const handleSync = () => {
+      setLikedSongIds(authUser?.uid ? getUserFavorites(authUser.uid) : []);
+    };
+    window.addEventListener(FAVORITES_CHANGED_EVENT, handleSync);
+    return () => window.removeEventListener(FAVORITES_CHANGED_EVENT, handleSync);
+  }, [authUser?.uid]);
 
   // Randomized Spotlight Track Index on every site entry
   const [featuredTrackIndex] = useState<number>(() => Math.floor(Math.random() * 12));
 
-  useEffect(() => {
-    localStorage.setItem('wikiarchive_liked_songs', JSON.stringify(likedSongIds));
-  }, [likedSongIds]);
-
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
 
-  // Sync preloaded App.tsx data cleanly without redundant re-renders
+  // Sync preloaded App.tsx data cleanly without a 1-second empty flash
   useEffect(() => {
-    if (initialTracks.length > 0 && allTracks.length === 0) {
-      setAllTracks(initialTracks.filter(isValidTrackWithOwner));
+    if (initialTracks.length > 0) {
+      const valid = initialTracks.filter(isValidTrackWithOwner);
+      if (valid.length > 0) {
+        setAllTracks((prev) => (prev.length === 0 ? valid : deduplicateTracks([...prev, ...valid])));
+        valid.slice(0, 10).forEach((t) => prewarmTrackColor(t));
+      }
     }
   }, [initialTracks]);
 
   useEffect(() => {
-    if (initialArtists.length > 0 && allArtists.length === 0) {
-      setAllArtists(initialArtists);
+    if (initialArtists.length > 0) {
+      setAllArtists((prev) => (prev.length === 0 || initialArtists.length >= prev.length ? initialArtists : prev));
     }
   }, [initialArtists]);
 
   useEffect(() => {
-    if (initialAlbums.length > 0 && remoteAlbums.length === 0) {
-      setRemoteAlbums(initialAlbums);
+    if (initialAlbums.length > 0) {
+      setRemoteAlbums((prev) => (prev.length === 0 || initialAlbums.length >= prev.length ? initialAlbums : prev));
     }
   }, [initialAlbums]);
 
@@ -401,9 +449,20 @@ export const SongsView: React.FC<SongsViewProps> = ({
   };
 
   const toggleFavorite = (id: string) => {
-    setLikedSongIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
+    if (!authUser?.uid) {
+      setAuthModalError(
+        isHe
+          ? 'שמירת שירים במועדפים זמינה למשתמשים מחוברים בלבד. התחבר עם Google כדי לשמור שירים.'
+          : 'Saving songs to Favorites is available to signed-in users only. Sign in with Google to continue.'
+      );
+      setAuthModalMode('login');
+      setIsAuthModalOpen(true);
+      return;
+    }
+    const res = toggleUserFavorite(authUser.uid, id);
+    if (res.allowed) {
+      setLikedSongIds(res.likedIds);
+    }
   };
 
   // Modern live search debounce
@@ -960,6 +1019,52 @@ export const SongsView: React.FC<SongsViewProps> = ({
       <div className="flex-1 flex overflow-hidden px-3 sm:px-6 pb-2 gap-2">
         {/* FLUID MAIN CONTENT AREA — Pristine 100% pitch black surface without gray cards */}
         <main className="flex-1 bg-black border-none overflow-y-auto custom-scrollbar flex flex-col pb-24 sm:pb-0">
+          {/* WEAK / OFFLINE INTERNET HEALTH NOTICE */}
+          {(networkHealth.status === 'offline' || (networkHealth.status === 'weak' && !dismissedWeakNetBanner)) && (
+            <div className="px-4 sm:px-6 pt-3">
+              <div
+                className={`rounded-2xl px-4 py-3 border backdrop-blur-xl flex items-center justify-between gap-3 shadow-lg ${
+                  networkHealth.status === 'offline'
+                    ? 'bg-rose-950/75 border-rose-500/45 text-rose-100'
+                    : 'bg-amber-950/75 border-amber-500/45 text-amber-100'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {networkHealth.status === 'offline' ? (
+                    <WifiOff className="w-5 h-5 text-rose-300 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-amber-300 shrink-0" />
+                  )}
+                  <div className="text-xs sm:text-sm leading-snug min-w-0">
+                    {networkHealth.status === 'offline' ? (
+                      <p className="font-bold">
+                        {isHe
+                          ? `אין חיבור לאינטרנט — האתר דורש חיבור יציב (מומלץ לפחות ${RECOMMENDED_MIN_MBPS}–1.5 Mbps) לטעינת שירים ותמונות.`
+                          : `You are offline — at least ${RECOMMENDED_MIN_MBPS}–1.5 Mbps is required to stream audio and load artwork.`}
+                      </p>
+                    ) : (
+                      <p className="font-bold">
+                        {isHe
+                          ? `עוצמת האינטרנט חלשה כרגע${networkHealth.speedMbps ? ` (כ-${networkHealth.speedMbps} Mbps)` : ''}. לניגון שירים חלק ולטעינת תמונות מהירה נדרשת מהירות של לפחות ${RECOMMENDED_MIN_MBPS}–1.5 Mbps.`
+                          : `Weak internet connection detected${networkHealth.speedMbps ? ` (~${networkHealth.speedMbps} Mbps)` : ''}. At least ${RECOMMENDED_MIN_MBPS}–1.5 Mbps is recommended for smooth streaming.`}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {networkHealth.status === 'weak' && (
+                  <button
+                    type="button"
+                    onClick={() => setDismissedWeakNetBanner(true)}
+                    className="p-1.5 rounded-full hover:bg-white/10 text-white/75 hover:text-white transition-colors cursor-pointer shrink-0"
+                    title={isHe ? 'סגור התראה' : 'Dismiss'}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Active Filter or Search Banner if filtering */}
           {isFilteredOrSearching && (
             <div className="p-4 sm:p-6 pb-3 border-b border-white/10 bg-black flex items-center justify-between">
@@ -1029,23 +1134,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       className="group p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                     >
                       <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
-                        {effectiveArtistImg ? (
-                          <img
-                            src={effectiveArtistImg}
-                            alt={artist.name}
-                            referrerPolicy="no-referrer"
-                            loading="eager"
-                            decoding="async"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLElement).style.display = 'none';
-                            }}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-white/50 bg-neutral-900">
-                            <User className="w-10 h-10 text-white/40" />
-                          </div>
-                        )}
+                        <ArtistCircleImage
+                          src={effectiveArtistImg}
+                          alt={artist.name}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          fallbackIconClassName="w-10 h-10 text-white/40"
+                        />
                       </div>
                       <h3 className="font-semibold text-sm text-white truncate text-center">
                         {artist.name}
@@ -1064,25 +1158,57 @@ export const SongsView: React.FC<SongsViewProps> = ({
           {isFilteredOrSearching ? (
             /* Flat Grid for Filter/Search Results */
             <div className="p-4 sm:p-6 flex-1">
-              {displayedTracks.length === 0 ? (
-                <div className="text-center py-24 space-y-4 max-w-md mx-auto">
-                  <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mx-auto text-white/40 border border-white/10 backdrop-blur-md">
-                    <Search className="w-8 h-8" />
+              {activeTab === 'favorites' && !authUser ? (
+                <div className="text-center py-20 space-y-4 max-w-md mx-auto bg-white/[0.03] border border-white/10 rounded-3xl p-8">
+                  <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto text-white border border-white/15">
+                    <Heart className="w-8 h-8 text-white/80" />
                   </div>
                   <h3 className="text-xl font-bold text-white">
-                    {isHe ? 'לא נמצאו שירים תואמים' : 'No matching songs found'}
+                    {isHe ? 'מועדפים למשתמשים מחוברים בלבד' : 'Favorites require an account'}
+                  </h3>
+                  <p className="text-xs sm:text-sm text-white/70 leading-relaxed">
+                    {isHe
+                      ? 'התחבר עם חשבון Google שלך כדי לשמור שירים שאהבת ולגשת לרשימת המועדפים האישית שלך.'
+                      : 'Sign in with your Google account to save favorite tracks to your personal list.'}
+                  </p>
+                  <button
+                    onClick={handleGoogleSignInClick}
+                    className="mt-2 px-6 py-2.5 rounded-full bg-white text-black font-bold text-xs sm:text-sm hover:bg-neutral-200 transition-colors cursor-pointer shadow-lg inline-flex items-center gap-2"
+                  >
+                    <span>{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
+                  </button>
+                </div>
+              ) : displayedTracks.length === 0 ? (
+                <div className="text-center py-24 space-y-4 max-w-md mx-auto">
+                  <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mx-auto text-white/40 border border-white/10 backdrop-blur-md">
+                    {activeTab === 'favorites' ? <Heart className="w-8 h-8" /> : <Search className="w-8 h-8" />}
+                  </div>
+                  <h3 className="text-xl font-bold text-white">
+                    {activeTab === 'favorites'
+                      ? isHe
+                        ? 'רשימת המועדפים שלך ריקה'
+                        : 'Your Favorites list is empty'
+                      : isHe
+                      ? 'לא נמצאו שירים תואמים'
+                      : 'No matching songs found'}
                   </h3>
                   <p className="text-xs text-white/60">
-                    {isHe
+                    {activeTab === 'favorites'
+                      ? isHe
+                        ? 'לחץ על סמל הלב בכל שיר כדי לשמור אותו כאן'
+                        : 'Tap the heart icon on any track to save it here.'
+                      : isHe
                       ? 'נסה לבדוק שגיאות איות או חפש מונח אחר'
                       : 'Please check your spelling or try searching for another term.'}
                   </p>
-                  <button
-                    onClick={() => setIsArtistPortalOpen(true)}
-                    className="mt-2 px-5 py-2.5 rounded-[9999px] bg-white text-black font-medium text-xs hover:bg-white/90 transition-colors cursor-pointer shadow-sm"
-                  >
-                    {isHe ? 'העלה שיר ראשון לקטגוריה זו' : 'Upload first song'}
-                  </button>
+                  {activeTab !== 'favorites' && (
+                    <button
+                      onClick={() => setIsArtistPortalOpen(true)}
+                      className="mt-2 px-5 py-2.5 rounded-[9999px] bg-white text-black font-medium text-xs hover:bg-white/90 transition-colors cursor-pointer shadow-sm"
+                    >
+                      {isHe ? 'העלה שיר ראשון לקטגוריה זו' : 'Upload first song'}
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
@@ -1627,23 +1753,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         >
                           {/* Circular Avatar */}
                           <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
-                            {effectiveImg ? (
-                              <img
-                                src={effectiveImg}
-                                alt={artist.name}
-                                referrerPolicy="no-referrer"
-                                loading="eager"
-                                decoding="async"
-                                onError={(e) => {
-                                  (e.currentTarget as HTMLElement).style.display = 'none';
-                                }}
-                                className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-white/40 bg-neutral-900">
-                                <User className="w-12 h-12 text-white/40" />
-                              </div>
-                            )}
+                            <ArtistCircleImage
+                              src={effectiveImg}
+                              alt={artist.name}
+                              className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
+                              fallbackIconClassName="w-12 h-12 text-white/40"
+                            />
                           </div>
 
                           <h3 className="font-semibold text-sm text-white truncate text-center w-full">
@@ -1932,6 +2047,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             }}
             isLiked={likedSongIds.includes(playerTrack.id)}
             onToggleLike={toggleFavorite}
+            onRequireAuth={() => openLoginModal()}
             lang={lang}
             allTracks={allTracks}
             allArtists={allArtists}
