@@ -19,7 +19,7 @@ async function safeJson(res: Response, context: string): Promise<any> {
     if (res.status === 404 || res.status === 405) {
       throw new Error(`${context}: נתיב השרת (/api/storage) לא נמצא (${res.status}). יש לחבר Worker/שרת פעיל ולפרוס מחדש.`);
     }
-    throw new Error(`${context}: השרת החזיר תגובה ריקה (HTTP ${res.status}). ודא ששרת Cloudflare R2 / Express זמין.`);
+    throw new Error(`${context}: השרת החזיר תגובה ריקה (HTTP ${res.status}). ודא ששרת האחסון זמין.`);
   }
 
   if (trimmed.startsWith('<')) {
@@ -88,7 +88,7 @@ export function getR2AuthHeaders(): Record<string, string> {
 export async function checkR2StorageStatus(): Promise<{ configured: boolean; bucket?: string; error?: string }> {
   try {
     const res = await fetch('/api/storage/status', { cache: 'no-store' });
-    const data = await safeJson(res, 'בדיקת חיבור Cloudflare R2 נכשלה');
+    const data = await safeJson(res, 'בדיקת חיבור האחסון נכשלה');
     return {
       configured: !!data.configured,
       bucket: data.bucket,
@@ -204,7 +204,7 @@ async function uploadBinaryFastToR2(
   if (!trimmed || trimmed.startsWith('<')) {
     return {
       success: false,
-      error: `העלאה ל-Cloudflare R2 נכשלה (HTTP ${fallbackRes.status}).`,
+      error: `ההעלאה לאחסון הענן נכשלה (HTTP ${fallbackRes.status}).`,
     };
   }
   try {
@@ -274,7 +274,7 @@ export async function uploadTrackToCloudStorage(
     coverBlobToUpload = coverFile;
   }
 
-  onProgress?.(5, 'מעלה את השיר ישירות ל-Cloudflare R2...');
+  onProgress?.(5, 'מעלה את השיר לאחסון האתר...');
 
   // 1 & 2. Upload Audio & Cover IN PARALLEL!
   const audioPromise: Promise<{ success: boolean; url?: string; error?: string }> = audioFile
@@ -308,7 +308,7 @@ export async function uploadTrackToCloudStorage(
     if (!audioResult.success || !audioResult.url) {
       return {
         success: false,
-        error: audioResult.error || 'שגיאה בהעלאת קובץ השמע ל-Cloudflare R2.',
+        error: audioResult.error || 'שגיאה בהעלאת קובץ השמע לאחסון הענן.',
       };
     }
     audioUrl = audioResult.url;
@@ -316,21 +316,21 @@ export async function uploadTrackToCloudStorage(
     if (!coverResult.success || !coverResult.url) {
       return {
         success: false,
-        error: coverResult.error || 'שגיאה בהעלאת תמונת העטיפה ל-Cloudflare R2.',
+        error: coverResult.error || 'שגיאה בהעלאת תמונת העטיפה לאחסון הענן.',
       };
     }
     coverUrl = coverResult.url;
   } catch (err: any) {
     return {
       success: false,
-      error: err?.message || 'תקלת רשת בחיבור ל-Cloudflare R2. אנא נסה שוב.',
+      error: err?.message || 'תקלת רשת בחיבור לאחסון הענן. אנא נסה שוב.',
     };
   }
 
   if (!audioUrl || audioUrl.startsWith('blob:')) {
     return {
       success: false,
-      error: 'קובץ השמע לא הועלה לענן (Cloudflare R2). אנא בחר קובץ שמע תקין ונסה שוב.',
+      error: 'קובץ השמע לא הועלה לענן. אנא בחר קובץ שמע תקין ונסה שוב.',
     };
   }
   if (coverUrl.startsWith('blob:')) {
@@ -342,13 +342,13 @@ export async function uploadTrackToCloudStorage(
 
   onProgress?.(95, 'שומר פרטי שיר בענן...');
 
-  // 3. Save tracks/${trackId}.json strictly in R2 (strip PII email fields before storing in public JSON)
+  // Save tracks/${trackId}.json (strip PII email fields before storing in public JSON)
   const { uploadedByEmail: _omitEmail, ...cleanTrack } = track as any;
   const trackToSave: JamendoTrack = {
     ...cleanTrack,
     audioUrl,
     coverUrl,
-    source: 'Kolot R2 Storage',
+    source: 'Kolot Cloud Storage',
   };
 
   try {
@@ -361,17 +361,17 @@ export async function uploadTrackToCloudStorage(
         content: JSON.stringify(trackToSave),
       }),
     });
-    const metaData = await safeJson(metaRes, 'שמירת נתוני השיר ב-Cloudflare R2 נכשלה');
+    const metaData = await safeJson(metaRes, 'שמירת נתוני השיר בענן נכשלה');
     if (!metaData.success) {
       return {
         success: false,
-        error: metaData.error || 'שגיאה בשמירת נתוני השיר ב-Cloudflare R2.',
+        error: metaData.error || 'שגיאה בשמירת נתוני השיר באחסון הענן.',
       };
     }
   } catch (err: any) {
     return {
       success: false,
-      error: err?.message || 'שגיאה בשמירת נתוני השיר ב-R2.',
+      error: err?.message || 'שגיאה בשמירת נתוני השיר באחסון הענן.',
     };
   }
 
@@ -402,7 +402,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
       cache: 'no-store',
     });
     if (feedRes.ok) {
-      const feedData = await safeJson(feedRes, 'טעינה מהירה מ-R2');
+      const feedData = await safeJson(feedRes, 'טעינה מהירה מהענן');
       if (feedData.success && Array.isArray(feedData.tracks)) {
         return feedData.tracks.filter(isCloudPlayableTrack);
       }
@@ -413,14 +413,14 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
 
   const trackMap = new Map<string, JamendoTrack>();
 
-  // 2. Fallback: Fetch tracks directory strictly from Cloudflare R2 (no cache)
+  // 2. Fallback: Fetch tracks directory strictly from cloud storage (no cache)
   try {
     const res = await fetch('/api/storage/list?prefix=tracks/', {
       headers: getR2AuthHeaders(),
       cache: 'no-store',
     });
     if (res.ok) {
-      const data = await safeJson(res, 'טעינת שירים מ-R2');
+      const data = await safeJson(res, 'טעינת שירים מהענן');
       if (data.success && Array.isArray(data.files) && data.files.length > 0) {
         const jsonFiles = data.files.filter((f: any) => f.key.endsWith('.json'));
         const loaded = await Promise.all(
@@ -428,7 +428,7 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
             try {
               const itemRes = await fetch(f.url, { cache: 'no-store' });
               if (itemRes.ok) {
-                return await safeJson(itemRes, 'קריאת שיר מ-R2');
+                return await safeJson(itemRes, 'קריאת שיר מהענן');
               }
             } catch {}
             return null;
@@ -440,22 +440,22 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
       }
     }
   } catch (err) {
-    console.warn('Failed to list tracks/ from R2:', err);
+    console.warn('Failed to list tracks/ from storage:', err);
   }
 
-  // 3. Fetch tracks_index.json from R2 as supplementary catalog
+  // 3. Fetch tracks_index.json from cloud storage as supplementary catalog
   try {
     const res = await fetch('/api/storage/list?prefix=tracks_index.json', {
       headers: getR2AuthHeaders(),
       cache: 'no-store',
     });
     if (res.ok) {
-      const data = await safeJson(res, 'טעינת אינדקס שירים מ-R2');
+      const data = await safeJson(res, 'טעינת אינדקס שירים מהענן');
       if (data.success && data.files?.length > 0) {
         const indexUrl = data.files[0].url;
         const indexRes = await fetch(indexUrl, { cache: 'no-store' });
         if (indexRes.ok) {
-          const indexTracks = await safeJson(indexRes, 'קריאת אינדקס שירים מ-R2');
+          const indexTracks = await safeJson(indexRes, 'קריאת אינדקס שירים מהענן');
           if (Array.isArray(indexTracks)) {
             indexTracks.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
               if (!trackMap.has(t.id)) {
@@ -582,7 +582,7 @@ export async function uploadArtistProfileToCloud(
       });
       const data = await safeJson(res, 'העלאת תמונת פרופיל נכשלה');
       if (!data.success || !data.url) {
-        return { success: false, error: data.error || 'העלאת התמונה ל-Cloudflare R2 נכשלה' };
+        return { success: false, error: data.error || 'העלאת התמונה לענן נכשלה' };
       }
       avatarUrl = data.url;
       await deleteOldArtistAvatarsFromCloud(cleanId, uploadedKey);
@@ -609,9 +609,9 @@ export async function uploadArtistProfileToCloud(
         content: JSON.stringify(profileToSave, null, 2),
       }),
     });
-    const metaData = await safeJson(metaRes, 'שמירת הפרופיל ב-Cloudflare R2 נכשלה');
+    const metaData = await safeJson(metaRes, 'שמירת הפרופיל בענן נכשלה');
     if (!metaData.success) {
-      return { success: false, error: metaData.error || 'שמירת הפרופיל ב-R2 נכשלה' };
+      return { success: false, error: metaData.error || 'שמירת הפרופיל בענן נכשלה' };
     }
 
     // Remove legacy profiles/artist_${cleanId}.json so old cached avatars/terms never overwrite the canonical profile
@@ -623,7 +623,7 @@ export async function uploadArtistProfileToCloud(
 
     return { success: true, avatarUrl: avatarUrl || undefined, profile: profileToSave };
   } catch (err: any) {
-    return { success: false, error: err?.message || 'שגיאה בשמירת הפרופיל ל-Cloudflare R2' };
+    return { success: false, error: err?.message || 'שגיאה בשמירת הפרופיל בענן' };
   }
 }
 
@@ -646,7 +646,7 @@ export async function fetchArtistProfileByUidFromCloud(uid: string): Promise<any
       cache: 'no-store',
     });
     if (fallbackRes.ok) {
-      const parsed = await safeJson(fallbackRes, 'קריאת פרופיל מ-R2');
+      const parsed = await safeJson(fallbackRes, 'קריאת פרופיל מהענן');
       if (parsed && typeof parsed === 'object') {
         return { ...parsed, id: cleanUid, googleUid: cleanUid };
       }
@@ -747,7 +747,8 @@ export async function syncArtistAvatarToTracksInR2(
       .map((updated) =>
         fetch('/api/storage/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+          credentials: 'include',
           body: JSON.stringify({
             path: `tracks/${updated.id}.json`,
             content: JSON.stringify(updated, null, 2),
@@ -756,7 +757,7 @@ export async function syncArtistAvatarToTracksInR2(
       )
   );
 
-  // Refresh tracks_index.json in R2 so initial feed reflects new avatar immediately
+  // Refresh tracks_index.json so initial feed reflects new avatar immediately
   try {
     const idxRes = await fetch('/api/storage/raw/tracks_index.json', { cache: 'no-store' });
     if (idxRes.ok) {
@@ -775,7 +776,8 @@ export async function syncArtistAvatarToTracksInR2(
         });
         await fetch('/api/storage/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+          credentials: 'include',
           body: JSON.stringify({
             path: 'tracks_index.json',
             content: JSON.stringify(nextIdx),
@@ -792,7 +794,8 @@ export async function updateTrackColorInCloud(trackId: string, bgColor: string, 
   const updatedTrack = { ...fullTrack, bgColor };
   await fetch('/api/storage/upload', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+    credentials: 'include',
     body: JSON.stringify({
       path: `tracks/${trackId}.json`,
       content: JSON.stringify(updatedTrack, null, 2)
@@ -825,7 +828,8 @@ export async function saveTrackSubtitlesInCloud(
     };
     const res = await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: `tracks/${track.id}.json`,
         content: JSON.stringify(updatedTrack, null, 2),
@@ -851,7 +855,8 @@ export async function saveTrackGenreInCloud(
     };
     const res = await fetch('/api/storage/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
       body: JSON.stringify({
         path: `tracks/${track.id}.json`,
         content: JSON.stringify(updatedTrack, null, 2),
@@ -874,7 +879,7 @@ export async function fetchBootstrapFromCloud(): Promise<{
       cache: 'no-store',
     });
     if (!res.ok) return null;
-    const data = await safeJson(res, 'טעינת נתונים מ-R2');
+    const data = await safeJson(res, 'טעינת נתונים מהענן');
     if (data?.success) {
       return {
         tracks: Array.isArray(data.tracks) ? data.tracks.filter(isCloudPlayableTrack) : [],

@@ -53,7 +53,7 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
             <span>פניות בנושאי תוכן וזכויות: <b>contact@wikiarchive-open.org</b></span>
           </div>
 
-          <span className="text-[11px] font-mono text-slate-400">Cloud-Native Architecture (R2 Ready)</span>
+          <span className="text-[11px] font-mono text-slate-400">Cloud-Native Architecture</span>
         </div>
       </div>
     </div>

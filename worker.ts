@@ -332,18 +332,61 @@ export default {
 
     const creds = getR2Creds(env);
 
-    const resolveSessionSecretTop = () => {
+    const resolveGoogleCredsTop = () => {
       const envObj = (env as Record<string, any>) || {};
-      const rawSec =
-        envObj.Client_secret ||
-        envObj.CLIENT_SECRET ||
-        envObj.GOOGLE_CLIENT_SECRET ||
-        creds.secretAccessKey ||
-        'kolot-music-session-hmac-key';
-      const cleaned = typeof rawSec === 'string' ? rawSec.trim().replace(/^["']|["']$/g, '') : '';
-      const secMatch = cleaned.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
-      return (secMatch ? secMatch[1] : cleaned) || 'kolot-music-session-hmac-key';
+      const cleanVal = (raw: string) => raw.trim().replace(/^["']|["']$/g, '');
+      const readEnvVar = (...names: string[]): string => {
+        for (const name of names) {
+          const direct = envObj[name];
+          if (typeof direct === 'string' && direct.trim()) {
+            return cleanVal(direct);
+          }
+        }
+        const wanted = new Set(names.map((n) => n.toLowerCase()));
+        for (const [k, v] of Object.entries(envObj)) {
+          if (typeof v === 'string' && v.trim() && wanted.has(k.trim().toLowerCase())) {
+            return cleanVal(v);
+          }
+        }
+        return '';
+      };
+
+      let clientId = readEnvVar('Client_ID', 'CLIENT_ID', 'GOOGLE_CLIENT_ID', 'VITE_GOOGLE_CLIENT_ID');
+      let clientSecret = readEnvVar('Client_secret', 'CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET');
+
+      if (clientId) {
+        const idMatch = clientId.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+        if (idMatch) clientId = idMatch[1];
+      }
+      if (clientSecret) {
+        const secMatch = clientSecret.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
+        if (secMatch) clientSecret = secMatch[1];
+      }
+
+      if (!clientId || !clientSecret) {
+        for (const [k, v] of Object.entries(envObj)) {
+          if (!clientId) {
+            const keyIdMatch = k.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+            if (keyIdMatch) clientId = keyIdMatch[1];
+          }
+          if (typeof v === 'string' && v.trim()) {
+            if (!clientId) {
+              const valIdMatch = v.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
+              if (valIdMatch) clientId = valIdMatch[1];
+            }
+            if (!clientSecret) {
+              const valSecMatch = v.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
+              if (valSecMatch) clientSecret = valSecMatch[1];
+            }
+          }
+        }
+      }
+
+      const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
+      return { clientId, clientSecret, sessionSecret };
     };
+
+    const resolveSessionSecretTop = () => resolveGoogleCredsTop().sessionSecret;
 
     const readR2JsonTop = async (key: string) => {
       try {
@@ -358,28 +401,13 @@ export default {
       }
     };
 
-    const extractSessionTop = async (): Promise<{ uid: string; isAdmin?: boolean } | null> => {
+    const verifyRawSessionTokenTop = async (token: string, secret: string): Promise<{ uid: string; isAdmin?: boolean } | null> => {
       try {
-        const authHdr = (request.headers.get('authorization') || '').trim();
-        let token = authHdr.toLowerCase().startsWith('bearer ') ? authHdr.slice(7).trim() : '';
-        if (!token) {
-          const cookieHdr = request.headers.get('cookie') || '';
-          for (const pair of cookieHdr.split(';')) {
-            const idx = pair.indexOf('=');
-            if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
-              try {
-                token = decodeURIComponent(pair.slice(idx + 1).trim());
-              } catch {
-                token = pair.slice(idx + 1).trim();
-              }
-            }
-          }
-        }
         if (!token) return null;
         const parts = token.split('.');
         if (parts.length !== 2) return null;
         const [encoded, sig] = parts;
-        const b64Sig = uint8ToBase64(await hmacSha256(resolveSessionSecretTop(), encoded))
+        const b64Sig = uint8ToBase64(await hmacSha256(secret, encoded))
           .replace(/\+/g, '-')
           .replace(/\//g, '_')
           .replace(/=+$/g, '');
@@ -396,6 +424,33 @@ export default {
       }
     };
 
+    const extractSessionTop = async (): Promise<{ uid: string; isAdmin?: boolean } | null> => {
+      try {
+        const secret = resolveSessionSecretTop();
+        const authHdr = (request.headers.get('authorization') || '').trim();
+        const bearerToken = authHdr.toLowerCase().startsWith('bearer ') ? authHdr.slice(7).trim() : '';
+        if (bearerToken) {
+          const bearerSession = await verifyRawSessionTokenTop(bearerToken, secret);
+          if (bearerSession) return bearerSession;
+        }
+        const cookieHdr = request.headers.get('cookie') || '';
+        for (const pair of cookieHdr.split(';')) {
+          const idx = pair.indexOf('=');
+          if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
+            let cookieToken = pair.slice(idx + 1).trim();
+            try {
+              cookieToken = decodeURIComponent(cookieToken);
+            } catch {}
+            const cookieSession = await verifyRawSessionTokenTop(cookieToken, secret);
+            if (cookieSession) return cookieSession;
+          }
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+
     // 1. Storage status
     if (pathname === '/api/storage/status' && request.method === 'GET') {
       if (env.R2_BUCKET) {
@@ -406,9 +461,9 @@ export default {
         if (res.ok) {
           return jsonResponse({ success: true, configured: true, bucket: creds.bucket, endpoint: 'configured' });
         }
-        return jsonResponse({ success: false, configured: false, error: `R2 HTTP ${res.status}` });
+        return jsonResponse({ success: false, configured: false, error: `Storage HTTP ${res.status}` });
       } catch (err: any) {
-        return jsonResponse({ success: false, configured: false, error: err?.message || 'R2 connection failed' });
+        return jsonResponse({ success: false, configured: false, error: err?.message || 'Storage connection failed' });
       }
     }
 
@@ -446,7 +501,7 @@ export default {
           const s3Path = `/${creds.bucket}/${encodeS3Path(rawPath)}`;
           const putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bytes, { 'Content-Type': contentType });
           if (!putRes.ok) {
-            return jsonResponse({ success: false, error: `R2 HTTP ${putRes.status}` }, 500);
+            return jsonResponse({ success: false, error: `Storage HTTP ${putRes.status}` }, 500);
           }
         }
         const outUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
@@ -534,12 +589,12 @@ export default {
           const putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bodyBytes, { 'Content-Type': contentType });
           if (!putRes.ok) {
             const errTxt = await putRes.text();
-            return jsonResponse({ success: false, error: `שגיאת R2 (${putRes.status}): ${errTxt}` }, 500);
+            return jsonResponse({ success: false, error: `שגיאת אחסון (${putRes.status}): ${errTxt}` }, 500);
           }
         }
 
         const outUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
-        return jsonResponse({ success: true, url: outUrl, path: rawPath, bucket: creds.bucket, mode: 'r2' });
+        return jsonResponse({ success: true, url: outUrl, path: rawPath });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Upload failed' }, 500);
       }
@@ -571,7 +626,7 @@ export default {
             if (token) q['continuation-token'] = token;
             const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
             if (!listRes.ok) {
-              return jsonResponse({ success: false, error: `R2 list error ${listRes.status}` }, 500);
+              return jsonResponse({ success: false, error: `Storage list error ${listRes.status}` }, 500);
             }
             const xml = await listRes.text();
             const items = parseXmlTagValues(xml, 'Contents', ['Key', 'Size']);
@@ -819,7 +874,7 @@ export default {
         rangeHeader ? { Range: rangeHeader } : {}
       );
       if (!s3Res.ok && s3Res.status !== 206) {
-        return new Response('File not found in R2 storage', { status: 404 });
+        return new Response('File not found in storage', { status: 404 });
       }
       const headers = new Headers(s3Res.headers);
       headers.set('Accept-Ranges', 'bytes');
@@ -1354,61 +1409,7 @@ export default {
     }
 
     // 15. Server-Side Google OAuth 2.0 + R2 Avatar Persistence
-    const getGoogleCreds = () => {
-      const envObj = (env as Record<string, any>) || {};
-      const cleanVal = (raw: string) => raw.trim().replace(/^["']|["']$/g, '');
-      const readEnvVar = (...names: string[]): string => {
-        for (const name of names) {
-          const direct = envObj[name];
-          if (typeof direct === 'string' && direct.trim()) {
-            return cleanVal(direct);
-          }
-        }
-        const wanted = new Set(names.map((n) => n.toLowerCase()));
-        for (const [k, v] of Object.entries(envObj)) {
-          if (typeof v === 'string' && v.trim() && wanted.has(k.trim().toLowerCase())) {
-            return cleanVal(v);
-          }
-        }
-        return '';
-      };
-
-      let clientId = readEnvVar('Client_ID', 'CLIENT_ID', 'GOOGLE_CLIENT_ID', 'VITE_GOOGLE_CLIENT_ID');
-      let clientSecret = readEnvVar('Client_secret', 'CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET');
-
-      // Sanitize if a key prefix or multiline .env block was accidentally pasted inside a single value
-      if (clientId) {
-        const idMatch = clientId.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
-        if (idMatch) clientId = idMatch[1];
-      }
-      if (clientSecret) {
-        const secMatch = clientSecret.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
-        if (secMatch) clientSecret = secMatch[1];
-      }
-
-      // Fallback recovery: inspect concatenated key names (e.g. Client_ID1029...apps.googleusercontent.com) & values
-      if (!clientId || !clientSecret) {
-        for (const [k, v] of Object.entries(envObj)) {
-          if (!clientId) {
-            const keyIdMatch = k.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
-            if (keyIdMatch) clientId = keyIdMatch[1];
-          }
-          if (typeof v === 'string' && v.trim()) {
-            if (!clientId) {
-              const valIdMatch = v.match(/(\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com)/);
-              if (valIdMatch) clientId = valIdMatch[1];
-            }
-            if (!clientSecret) {
-              const valSecMatch = v.match(/(GOCSPX-[A-Za-z0-9_-]+)/);
-              if (valSecMatch) clientSecret = valSecMatch[1];
-            }
-          }
-        }
-      }
-
-      const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
-      return { clientId, clientSecret, sessionSecret };
-    };
+    const getGoogleCreds = resolveGoogleCredsTop;
 
     const toB64Url = (bytes: Uint8Array) =>
       uint8ToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -1447,26 +1448,28 @@ export default {
 
     const extractWorkerSession = async (secret: string): Promise<{ session: any; token: string } | null> => {
       const authHdr = (request.headers.get('authorization') || '').trim();
-      let token = '';
       if (authHdr.toLowerCase().startsWith('bearer ')) {
-        token = authHdr.slice(7).trim();
+        const bearerToken = authHdr.slice(7).trim();
+        if (bearerToken) {
+          const bearerSession = await verifyWorkerHmac(bearerToken, secret);
+          if (bearerSession?.uid) return { session: bearerSession, token: bearerToken };
+        }
       }
-      if (!token) {
-        const cookieHdr = request.headers.get('cookie') || '';
-        for (const pair of cookieHdr.split(';')) {
-          const idx = pair.indexOf('=');
-          if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
-            try {
-              token = decodeURIComponent(pair.slice(idx + 1).trim());
-            } catch {
-              token = pair.slice(idx + 1).trim();
-            }
+      const cookieHdr = request.headers.get('cookie') || '';
+      for (const pair of cookieHdr.split(';')) {
+        const idx = pair.indexOf('=');
+        if (idx > 0 && pair.slice(0, idx).trim() === 'kolot_session') {
+          let cookieToken = pair.slice(idx + 1).trim();
+          try {
+            cookieToken = decodeURIComponent(cookieToken);
+          } catch {}
+          if (cookieToken) {
+            const cookieSession = await verifyWorkerHmac(cookieToken, secret);
+            if (cookieSession?.uid) return { session: cookieSession, token: cookieToken };
           }
         }
       }
-      if (!token) return null;
-      const session = await verifyWorkerHmac(token, secret);
-      return session?.uid ? { session, token } : null;
+      return null;
     };
 
     const resolveSafeWorkerOrigin = (explicitOrigin?: string) => {
@@ -1530,7 +1533,7 @@ export default {
       if (!clientId || !clientSecret) {
         const missing = [!clientId ? 'Client_ID' : '', !clientSecret ? 'Client_secret' : ''].filter(Boolean).join(' + ');
         const envKeyList = Object.keys((env as Record<string, any>) || {}).join(', ') || 'none';
-        const errMsg = `מזהה ההתחברות של Google (${missing}) אינו מוגדר ב-Cloudflare Runtime Variables & Secrets. (מפתחות פעילים כרגע ב-Worker: ${envKeyList})`;
+        const errMsg = `מזהה ההתחברות של Google (${missing}) אינו מוגדר בהגדרות השרת. (מפתחות פעילים: ${envKeyList})`;
         const html = `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${errMsg}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`;
         return new Response(html, {
           status: 500,
@@ -1568,7 +1571,7 @@ export default {
         return jsonResponse(
           {
             success: false,
-            error: `מזהה ההתחברות של Google (${missing}) אינו מוגדר ב-Cloudflare Runtime Variables & Secrets.`,
+            error: `מזהה ההתחברות של Google (${missing}) אינו מוגדר בהגדרות השרת.`,
             envKeys,
           },
           500
@@ -1636,7 +1639,7 @@ export default {
 
         const { clientId, clientSecret, sessionSecret } = getGoogleCreds();
         if (!clientId || !clientSecret) {
-          return renderPopupResult(false, {}, 'הגדרות השרת (Client_ID / Client_secret) חסרות ב-Cloudflare.');
+          return renderPopupResult(false, {}, 'הגדרות השרת (Client_ID / Client_secret) חסרות.');
         }
 
         const verifiedState = await verifyWorkerHmac(stateRaw, sessionSecret);
@@ -1859,6 +1862,7 @@ export default {
 
       return jsonResponse({
         success: true,
+        sessionToken: parsed.token,
         user: {
           uid: session.uid,
           displayName: liveName || session.displayName,
@@ -1895,7 +1899,7 @@ export default {
         }
         const r2AvatarUrl = await importExternalAvatarWorker(session.uid, googlePhotoUrl);
         if (!r2AvatarUrl) {
-          return jsonResponse({ success: false, error: 'הורדת תמונת Google אל אחסון R2 נכשלה.' }, 502);
+          return jsonResponse({ success: false, error: 'הורדת תמונת Google אל האחסון נכשלה.' }, 502);
         }
         const existingProfile = (await r2ReadJson(`profiles/${session.uid}.json`)) || {};
         const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile;

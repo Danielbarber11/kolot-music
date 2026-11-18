@@ -193,7 +193,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 <p className="text-xs text-white/60">
                   {isHe
                     ? 'ניהול חשבונות, מצב אחסון ענן ודיווחים • עריכת ומחיקת שירים זמינה רק לבעל הפרופיל'
-                    : 'Account management, R2 storage & reports • Songs can only be edited or removed by their owner'}
+                    : 'Account management, cloud storage & reports • Songs can only be edited or removed by their owner'}
                 </p>
               </div>
             </div>
@@ -423,14 +423,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       </div>
                       <div>
                         <h4 className="text-base text-white flex items-center gap-2">
-                          <span>{isHe ? 'שרת אחסון ענן (Cloudflare R2)' : 'Cloud Storage (R2)'}</span>
+                          <span>{isHe ? 'שרת אחסון ענן מאובטח' : 'Secure Cloud Storage'}</span>
                           <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                             <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
                           </span>
                         </h4>
                         <p className="text-xs text-white/60 mt-0.5">
-                          {isHe ? 'כל השירים והמדיה מאוחסנים בשרת מאובטח ומהיר' : 'All media stored on secure high-speed R2 server'}
+                          {isHe ? 'כל השירים והמדיה מאוחסנים בשרת מאובטח ומהיר' : 'All media stored on secure high-speed cloud server'}
                         </p>
                       </div>
                     </div>
@@ -463,7 +463,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-xs space-y-2">
                   <h4 className="text-amber-300">{isHe ? 'מידע על האחסון והבעלות:' : 'Storage & Ownership Info:'}</h4>
                   <ul className="list-disc list-inside text-white/70 space-y-1 text-[11px]">
-                    <li>{isHe ? 'האחסון מבוסס על שירות Cloudflare R2 לאבטחה ומהירות מקסימלית.' : 'Storage powered by Cloudflare R2.'}</li>
+                    <li>{isHe ? 'האחסון פועל בתשתית ענן מאובטחת לאבטחה ומהירות מקסימלית.' : 'Storage powered by secure high-speed cloud infrastructure.'}</li>
                     <li>{isHe ? 'רק בעל הפרופיל המחובר יכול להוסיף, לערוך ולמחוק שירים בפרופיל שלו.' : 'Only the profile owner can add, edit, or delete songs on their profile.'}</li>
                     <li>{isHe ? 'פרופילים שלא העלו אפילו שיר אחד מוסתרים משאר המשתמשים.' : 'Profiles with 0 songs are hidden from other users.'}</li>
                   </ul>
@@ -511,7 +511,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <h4 className="text-xs text-rose-300 flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4 text-rose-400" />
-                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים (ב-Cloudflare R2)' : 'User Track Reports'}</span>
+                    <span>{isHe ? 'דיווחים שהתקבלו מגולשים' : 'User Track Reports'}</span>
                   </h4>
                   <span className="text-xs text-rose-400">{reports.length} דיווחים</span>
                 </div>

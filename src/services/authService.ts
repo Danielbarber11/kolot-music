@@ -97,6 +97,9 @@ export async function refreshCurrentAuthUser(): Promise<AuthUser | null> {
     }
     const data = await res.json().catch(() => null);
     initialSessionResolved = true;
+    if (data?.sessionToken) {
+      writeSessionToken(data.sessionToken);
+    }
     if (data?.user?.uid) {
       return setCurrentUserInternal(data.user);
     }

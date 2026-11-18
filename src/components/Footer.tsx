@@ -114,8 +114,8 @@ export const Footer: React.FC<FooterProps> = ({
 
               <p className="text-xs text-white/70 leading-relaxed max-w-md font-normal">
                 {isHe
-                  ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול ישיר ומאובטח בענן Cloudflare R2 ללא הגבלה ובאיכות סאונד גבוהה.'
-                  : 'Free music streaming and creator publishing platform powered by Cloudflare R2 storage.'}
+                  ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול ישיר ומאובטח בענן ללא הגבלה ובאיכות סאונד גבוהה.'
+                  : 'Free music streaming and creator publishing platform powered by secure cloud storage.'}
               </p>
 
               <div className="flex items-center gap-2 text-xs text-white/50 pt-1">
@@ -430,7 +430,7 @@ export const Footer: React.FC<FooterProps> = ({
               <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
                 <h4 className="font-semibold text-white text-sm">3. אחסון ופרטיות מידע</h4>
                 <p>
-                  הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית ענן Cloudflare R2 בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
+                  הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית הענן של האתר בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
                 </p>
               </section>
 

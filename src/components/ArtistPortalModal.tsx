@@ -40,6 +40,7 @@ import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, CURRENT_
 import {
   AuthUser,
   getCurrentAuthUser,
+  refreshCurrentAuthUser,
   loginWithGoogle,
   logoutUser,
   onAuthUserChanged,
@@ -844,7 +845,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         { purgeOldAvatars: !!avatarBlobToUpload }
       );
       if (!saveRes.success) {
-        setAuthError(saveRes.error || (isHe ? 'שמירת הפרופיל ל-Cloudflare R2 נכשלה.' : 'Failed to save profile to R2.'));
+        setAuthError(saveRes.error || (isHe ? 'שמירת הפרופיל באחסון הענן נכשלה.' : 'Failed to save profile to cloud storage.'));
         return;
       }
 
@@ -958,7 +959,25 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsPublishing(true);
     setPublishErrorMessage(null);
     setUploadProgressPercent(4);
-    setPublishProgressStep(isHe ? 'מכין העלאה ישירה ל-Cloudflare R2...' : 'Preparing direct Cloudflare R2 upload...');
+    setPublishProgressStep(isHe ? 'מכין העלאה לאחסון האתר...' : 'Preparing cloud upload...');
+
+    let verifiedUser = getCurrentAuthUser() || currentUser;
+    if (!verifiedUser?.uid) {
+      verifiedUser = await refreshCurrentAuthUser();
+      if (verifiedUser) {
+        setCurrentUser(verifiedUser);
+      }
+    }
+    if (!verifiedUser?.uid) {
+      setIsPublishing(false);
+      setUploadProgressPercent(0);
+      setPublishErrorMessage(
+        isHe
+          ? 'לא זוהה חיבור פעיל לחשבון. אנא התחבר מחדש עם Google ונסה לפרסם שוב.'
+          : 'No active account session found. Please sign in with Google again and retry.'
+      );
+      return;
+    }
 
     let effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
 
@@ -1034,12 +1053,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     const updatedArtist: ArtistProfile = {
       ...currentArtist,
+      id: verifiedUser.uid,
+      googleUid: verifiedUser.uid,
       isPrivate: false,
       tracksCount: (currentArtist.tracksCount || 0) + 1,
     };
     setCurrentArtist(updatedArtist);
 
-    const finalArtistName = performingArtistInput.trim() || currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist');
+    const finalArtistName = performingArtistInput.trim() || currentArtist.name || verifiedUser.displayName || (isHe ? 'אמן' : 'Artist');
 
     let finalDraftSegments = whisperDraftSegments;
     let finalDraftSegmentsHe = whisperDraftSegmentsHe;
@@ -1078,7 +1099,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
       license: 'Kolot Music Cloud Storage (10GB)',
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      source: 'Kolot R2 Storage',
+      source: 'Kolot Cloud Storage',
       legalStatus: '100% שיר עצמאי מקורי ומאושר להאזנה',
       lyrics: includeSubtitles ? (sanitizedManualLyrics || finalDraftLyricsHe || finalDraftLyricsEn || undefined) : undefined,
       lyricsHe: includeSubtitles ? (finalDraftLyricsHe || sanitizedManualLyrics || undefined) : undefined,
@@ -1088,9 +1109,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
       hasWhisperSubtitles: hasAnyDraftSubtitles,
       artistBio: currentArtist.bio,
-      artistAvatarUrl: getEffectiveUserAvatar(currentUser, currentArtist) || undefined,
+      artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      uploadedByUid: currentUser?.uid || currentArtist.googleUid || currentArtist.id,
+      uploadedByUid: verifiedUser.uid,
       isPrivate: false,
       customServerUrl: customServerUrlInput.trim() || undefined,
       bgColor: cachedBgColor,
@@ -1101,9 +1122,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     const currentCoverFile = rawCoverFile;
 
     try {
-      setPublishProgressStep(isHe ? 'מעלה ישירות ל-Cloudflare R2...' : 'Uploading directly to Cloudflare R2...');
+      setPublishProgressStep(isHe ? 'מעלה לאחסון האתר...' : 'Uploading to cloud storage...');
 
-      // 1. DIRECT PARALLEL UPLOAD TO CLOUDFLARE R2 (audio + compressed cover + tracks/*.json)
+      // 1. DIRECT PARALLEL UPLOAD (audio + compressed cover + tracks/*.json)
       const cloudRes = await uploadTrackToCloud(
         newTrack,
         currentAudioFile || undefined,
@@ -1120,8 +1141,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         setPublishErrorMessage(
           cloudRes.error ||
             (isHe
-              ? 'שגיאה בשמירת השיר באחסון Cloudflare R2. אנא ודא שהדלי והמפתחות בשרת תקינים.'
-              : 'Failed to publish track to Cloudflare R2.')
+              ? 'שגיאה בשמירת השיר באחסון הענן. אנא נסה שוב.'
+              : 'Failed to publish track to cloud storage.')
         );
         return;
       }
@@ -1133,13 +1154,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         newTrack.coverUrl = cloudRes.coverUrl;
       }
 
-      // Pre-cache color under both track ID and final R2 cover URL
+      // Pre-cache color under both track ID and final cover URL
       globalTrackColorCache.set(newTrack.id, computedColor);
       if (newTrack.coverUrl) {
         globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
-      // 2. Sync artist profile in R2
+      // 2. Sync artist profile
       void saveArtistAccountToR2(updatedArtist).catch(() => {});
 
       // 3. Broadcast track immediately to UI
@@ -1149,7 +1170,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       void fetchAllArtistProfiles().catch(() => {});
 
       setUploadProgressPercent(100);
-      setPublishProgressStep(isHe ? 'השיר נשמר ב-Cloudflare R2 וזמין בכל המכשירים!' : 'Track saved to Cloudflare R2!');
+      setPublishProgressStep(isHe ? 'השיר פורסם וזמין כעת בכל המכשירים!' : 'Track saved to cloud storage!');
       setPublishSuccess(true);
 
       // Reset form
@@ -2384,7 +2405,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400">
                     <div className="flex items-center gap-2">
                       <Cloud className="w-4 h-4 text-white" />
-                      <span>{r2Status.configured ? 'אחסון Cloudflare R2 מחובר ומוכן' : 'אחסון ענן פעיל'}</span>
+                      <span>{r2Status.configured ? 'אחסון הענן של האתר מחובר ומוכן' : 'אחסון ענן פעיל'}</span>
                     </div>
                     <Check className="w-4 h-4 text-white" />
                   </div>
@@ -2985,9 +3006,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </div>
                     <div className="space-y-1.5 text-center sm:text-right flex-1">
                       <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
-                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר ב-Cloudflare R2 ובכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save to Cloudflare R2 and all tracks.'}</p>
+                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר בענן ובכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save to your profile and all tracks.'}</p>
                       <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
-                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר ב-Cloudflare R2 ובפרופיל האמן' : 'Saved to Cloudflare R2'}</span>
+                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר בפרופיל האמן' : 'Saved to artist profile'}</span>
                         {(() => {
                           const freshUser = getCurrentAuthUser() || currentUser;
                           const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
@@ -3163,13 +3184,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </div>
               </div>
 
-              {/* Section 4: Cloudflare R2 Cloud Storage Settings */}
+              {/* Section 4: Cloud Storage Settings */}
               <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-neutral-800 space-y-3 shadow-xl">
                 <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
                   <div className="flex items-center gap-2">
                     <Cloud className="w-4 h-4 text-emerald-400" />
                     <h3 className="text-xs font-black text-white uppercase tracking-wider">
-                      {isHe ? 'אחסון ענן מוגן Cloudflare R2' : 'Cloudflare R2 Storage'}
+                      {isHe ? 'אחסון ענן מאובטח' : 'Secure Cloud Storage'}
                     </h3>
                   </div>
                   <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
@@ -3180,8 +3201,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                 <p className="text-xs text-neutral-400 leading-relaxed">
                   {isHe
-                    ? 'אחסון השירים והתמונות מנוהל בצורה מאובטחת 100% בשרת דרך Cloudflare R2. מפתחות האחסון מוגנים בשרת ואינם נחשפים בדפדפן או בכלים למפתחים.'
-                    : 'Storage is handled 100% server-side via Cloudflare R2. Credentials are secured on the server.'}
+                    ? 'אחסון השירים והתמונות מנוהל בצורה מאובטחת 100% בשרתי הענן של האתר. מפתחות האחסון מוגנים בשרת ואינם נחשפים בדפדפן או בכלים למפתחים.'
+                    : 'Storage is handled 100% server-side in secure cloud storage. Credentials are secured on the server.'}
                 </p>
               </div>
 

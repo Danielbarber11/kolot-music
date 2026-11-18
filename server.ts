@@ -602,13 +602,13 @@ app.post('/api/storage/config', async (req, res) => {
     return res.json({
       success: true,
       bucket: detectedBucket || 'kolot-music',
-      message: 'חיבור Cloudflare R2 אומת ונשמר בהצלחה!',
+      message: 'חיבור אחסון הענן אומת ונשמר בהצלחה!',
     });
   } catch (err: any) {
-    console.error('R2 Config Verification Error:', err);
+    console.error('Storage Config Verification Error:', err);
     return res.status(500).json({
       success: false,
-      error: `שגיאה באימות החיבור ל-Cloudflare R2: ${err?.message || 'אנא ודא שהמפתחות וה-Endpoint תקינים'}`,
+      error: `שגיאה באימות החיבור לאחסון הענן: ${err?.message || 'אנא ודא שהמפתחות תקינים'}`,
     });
   }
 });
@@ -622,7 +622,7 @@ app.get('/api/storage/status', async (req, res) => {
       return res.json({
         success: true,
         configured: false,
-        message: 'R2 storage credentials not set yet',
+        message: 'Cloud storage credentials not set yet',
       });
     }
 
@@ -638,7 +638,7 @@ app.get('/api/storage/status', async (req, res) => {
     return res.json({
       success: false,
       configured: false,
-      error: err?.message || 'Failed to connect to Cloudflare R2',
+      error: err?.message || 'Failed to connect to cloud storage',
     });
   }
 });
@@ -792,7 +792,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
             r2Success = true;
           } catch (createErr: any) {
             console.warn('[R2 Storage] Bucket auto-creation failed:', createErr?.message);
-            lastR2Error = `לא נמצא דלי (Bucket) בשם '${bucket}' ב-Cloudflare R2.`;
+            lastR2Error = `אחסון הענן של האתר אינו זמין כרגע.`;
           }
         }
       }
@@ -808,7 +808,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     if (!r2Success) {
       return res.status(500).json({
         success: false,
-        error: lastR2Error || `שגיאה בהעלאה ל-Cloudflare R2`,
+        error: lastR2Error || `שגיאה בהעלאה לאחסון הענן`,
         bucketNeeded: bucketName || 'kolot-music',
       });
     }
@@ -869,7 +869,7 @@ app.get('/api/storage/list', async (req, res) => {
     console.error('Storage List Error:', err);
     return res.status(500).json({
       success: false,
-      error: `Failed to list files from R2: ${err?.message || 'Unknown error'}`,
+      error: `Failed to list files from storage: ${err?.message || 'Unknown error'}`,
     });
   }
 });
@@ -1094,7 +1094,7 @@ app.delete('/api/storage/delete', async (req, res) => {
     console.error('Storage Delete Error:', err);
     return res.status(500).json({
       success: false,
-      error: `Failed to delete file from R2: ${err?.message || 'Unknown error'}`,
+      error: `Failed to delete file from storage: ${err?.message || 'Unknown error'}`,
     });
   }
 });
@@ -1155,7 +1155,7 @@ app.get('/api/storage/raw/*', async (req, res) => {
     console.warn('[R2 Proxy] R2 getObject error:', filePath, r2Err?.message);
   }
 
-  return res.status(404).send('File not found in R2 storage');
+  return res.status(404).send('File not found in storage');
 });
 
 // 4b. Image CORS Proxy for accurate dominant color sampling on external avatars & covers
@@ -2667,17 +2667,20 @@ function parseCookiesHeader(cookieHeader?: string): Record<string, string> {
 
 function extractSessionFromRequest(req: express.Request, secret: string): { session: any; token: string } | null {
   const authHdr = String(req.headers.authorization || '').trim();
-  let token = '';
   if (authHdr.toLowerCase().startsWith('bearer ')) {
-    token = authHdr.slice(7).trim();
+    const bearerToken = authHdr.slice(7).trim();
+    if (bearerToken) {
+      const bearerSession = verifyHmacToken(bearerToken, secret);
+      if (bearerSession?.uid) return { session: bearerSession, token: bearerToken };
+    }
   }
-  if (!token) {
-    const cookies = parseCookiesHeader(req.headers.cookie);
-    token = cookies['kolot_session'] || '';
+  const cookies = parseCookiesHeader(req.headers.cookie);
+  const cookieToken = cookies['kolot_session'] || '';
+  if (cookieToken) {
+    const cookieSession = verifyHmacToken(cookieToken, secret);
+    if (cookieSession?.uid) return { session: cookieSession, token: cookieToken };
   }
-  if (!token) return null;
-  const session = verifyHmacToken(token, secret);
-  return session?.uid ? { session, token } : null;
+  return null;
 }
 
 function resolveSafeAppOrigin(req: express.Request, explicitOrigin?: string): string {
@@ -3116,6 +3119,7 @@ app.get('/api/auth/me', async (req, res) => {
 
   return res.json({
     success: true,
+    sessionToken: parsed.token,
     user: {
       uid: session.uid,
       displayName: liveName || session.displayName,
@@ -3155,7 +3159,7 @@ app.post('/api/auth/restore-google-avatar', async (req, res) => {
     const { client, bucket } = await getR2Context(req);
     const r2AvatarUrl = await importExternalAvatarToR2(client, bucket, session.uid, googlePhotoUrl);
     if (!r2AvatarUrl) {
-      return res.status(502).json({ success: false, error: 'הורדת תמונת Google אל אחסון R2 נכשלה.' });
+      return res.status(502).json({ success: false, error: 'הורדת תמונת Google אל האחסון נכשלה.' });
     }
 
     let existingProfile: any = {};
