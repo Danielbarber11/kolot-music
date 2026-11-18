@@ -48,14 +48,14 @@ import {
   isValidTrackWithOwner,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
-import { TrackCoverArt } from './TrackCoverArt';
+import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistPortalModal } from './ArtistPortalModal';
 import { ArtistProfileModal } from './ArtistProfileModal';
 import { AdminPanelModal } from './AdminPanelModal';
 import { AlbumModal } from './AlbumModal';
 import { Logo } from './Logo';
 import { TermsModal } from './TermsModal';
-import { Footer } from './Footer';
+import { Footer, TermsReaderModal } from './Footer';
 import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
 import { AuthModal } from './AuthModal';
@@ -154,6 +154,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
+  const [showLegalTermsModal, setShowLegalTermsModal] = useState(false);
   const [showPromoBanner, setShowPromoBanner] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
@@ -785,8 +786,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
       {/* MANDATORY TERMS OVERLAY */}
       <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
 
+      {/* READ-ONLY TERMS OF SERVICE VIEWER */}
+      <TermsReaderModal isOpen={showLegalTermsModal} onClose={() => setShowLegalTermsModal(false)} lang={lang} />
+
       {/* COOKIE CONSENT BANNER */}
-      <CookieBanner lang={lang} currentUser={authUser} artistProfile={activeArtistProfile} />
+      <CookieBanner
+        lang={lang}
+        currentUser={authUser}
+        artistProfile={activeArtistProfile}
+        onOpenTerms={() => setShowLegalTermsModal(true)}
+      />
 
       {/* FLOATING TOP NAVIGATION BAR */}
       <div className="px-3 sm:px-6 pt-2.5 pb-1 shrink-0 z-40">
@@ -1405,58 +1414,64 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 );
               })()}
 
-              {/* QUICK ACCESS MIXES STRIP (Desktop Grid) */}
+              {/* QUICK ACCESS MIXES STRIP (Desktop Grid — covers strictly match songs inside each category) */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
-                {[
-                  {
-                    title: isHe ? 'השירים המובילים' : 'Top Hits',
-                    action: () => {
-                      setActiveTab('all');
-                      setSelectedGenre(null);
-                      setArtistFilter(null);
+                {(() => {
+                  const strictChillTracks = validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Chill');
+                  const likedCoverTrack = validHomeTracks.find(
+                    (t) => likedSongIds.includes(t.id) && isAuthenticCover(t.coverUrl)
+                  );
+                  return [
+                    {
+                      title: isHe ? 'השירים המובילים' : 'Top Hits',
+                      action: () => {
+                        setActiveTab('all');
+                        setSelectedGenre(null);
+                        setArtistFilter(null);
+                      },
+                      icon: Play,
+                      cover: leadingTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                     },
-                    icon: Play,
-                    cover: leadingTracks[0]?.coverUrl,
-                  },
-                  {
-                    title: isHe ? 'מזרחית וים-תיכוני' : 'Mizrahi Vibes',
-                    action: () => setSelectedGenre('Mizrahi'),
-                    icon: Sparkles,
-                    cover: mizrahiTracks[0]?.coverUrl || leadingTracks[0]?.coverUrl,
-                  },
-                  {
-                    title: isHe ? 'היפ הופ וראפ' : 'Hip Hop & Rap',
-                    action: () => setSelectedGenre('Hip Hop'),
-                    icon: Disc,
-                    cover: hipHopTracks[0]?.coverUrl,
-                  },
-                  {
-                    title: isHe ? 'צ׳יל ורגיעה' : 'Chill Vibes',
-                    action: () => setSelectedGenre('Chill'),
-                    icon: Disc,
-                    cover: chillTracks[0]?.coverUrl,
-                  },
-                  {
-                    title: isHe ? 'להיטי פופ' : 'Pop Bangers',
-                    action: () => setSelectedGenre('Pop'),
-                    icon: Play,
-                    cover: popTracks[0]?.coverUrl,
-                  },
-                  {
-                    title: isHe ? 'השירים שאהבת' : 'Liked Songs',
-                    action: () => setActiveTab('favorites'),
-                    icon: Heart,
-                    cover: null,
-                    count: likedSongIds.length,
-                  },
-                ].map((item, i) => (
+                    {
+                      title: isHe ? 'מזרחית וים-תיכוני' : 'Mizrahi Vibes',
+                      action: () => setSelectedGenre('Mizrahi'),
+                      icon: Sparkles,
+                      cover: mizrahiTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                    },
+                    {
+                      title: isHe ? 'היפ הופ וראפ' : 'Hip Hop & Rap',
+                      action: () => setSelectedGenre('Hip Hop'),
+                      icon: Disc,
+                      cover: hipHopTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                    },
+                    {
+                      title: isHe ? 'צ׳יל ורגיעה' : 'Chill Vibes',
+                      action: () => setSelectedGenre('Chill'),
+                      icon: Disc,
+                      cover: strictChillTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                    },
+                    {
+                      title: isHe ? 'להיטי פופ' : 'Pop Bangers',
+                      action: () => setSelectedGenre('Pop'),
+                      icon: Play,
+                      cover: popTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                    },
+                    {
+                      title: isHe ? 'השירים שאהבת' : 'Liked Songs',
+                      action: () => setActiveTab('favorites'),
+                      icon: Heart,
+                      cover: likedCoverTrack?.coverUrl || null,
+                      count: likedSongIds.length,
+                    },
+                  ];
+                })().map((item, i) => (
                   <button
                     key={i}
                     onClick={item.action}
                     className="group flex items-center gap-3 p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.10] border border-white/10 hover:border-white/25 backdrop-blur-md transition-all text-start cursor-pointer shadow-sm active:scale-98 overflow-hidden"
                   >
                     <div className="w-10 h-10 rounded-lg bg-neutral-900 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
-                      {item.cover ? (
+                      {item.cover && isAuthenticCover(item.cover) ? (
                         <img src={getStreamingMediaUrl(item.cover)} alt="" loading="eager" decoding="async" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       ) : (
                         <item.icon className="w-4 h-4 text-white fill-white/20" />
@@ -2028,7 +2043,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           <Footer
             lang={lang}
             onOpenPortal={() => setIsArtistPortalOpen(true)}
-            onOpenTerms={() => setShowTermsModal(true)}
+            onOpenTerms={() => setShowLegalTermsModal(true)}
             onOpenAccessibility={onOpenAccessibility}
           />
         </main>

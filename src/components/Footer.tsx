@@ -393,67 +393,7 @@ export const Footer: React.FC<FooterProps> = ({
       )}
 
       {/* MODAL 2: TERMS OF SERVICE MODAL */}
-      {showTermsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="relative w-full max-w-2xl max-h-[85vh] bg-[#0a0f1d] border border-white/20 rounded-3xl p-6 sm:p-8 shadow-2xl flex flex-col text-right text-white">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4 mb-4">
-              <button
-                type="button"
-                onClick={() => setShowTermsModal(false)}
-                className="p-1.5 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-              <div className="flex items-center gap-2.5">
-                <h3 className="text-lg font-bold">{isHe ? 'תנאי שימוש ומדיניות האתר' : 'Terms of Service'}</h3>
-                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
-                  <FileText className="w-4 h-4" />
-                </div>
-              </div>
-            </div>
-
-            <div className="overflow-y-auto space-y-4 text-xs sm:text-sm text-white/80 leading-relaxed pl-2 pr-1 custom-scrollbar">
-              <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
-                <h4 className="font-semibold text-white text-sm">1. מטרת הפלטפורמה</h4>
-                <p>
-                  קולות מוזיקה (Kolot Music) הינה פלטפורמה חופשית המיועדת להאזנה, שיתוף והפצת יצירות מוזיקליות של אמנים עצמאיים. השימוש באתר הינו אישי, חופשי וללא תשלום.
-                </p>
-              </section>
-
-              <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
-                <h4 className="font-semibold text-white text-sm">2. זכויות יוצרים והעלאת תכנים</h4>
-                <p>
-                  כל משתמש או אמן המעלה יצירה (שיר, מילים, עטיפה או אלבום) מצהיר כי הינו בעל הזכויות הבלעדיות ביצירה או קיבל הרשאה מפורשת כחוק להעלותה ולהפיצה. חל איסור מוחלט על העלאת תכנים המפרים זכויות צד שלישי או חוקי מדינת ישראל.
-                </p>
-              </section>
-
-              <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
-                <h4 className="font-semibold text-white text-sm">3. אחסון ופרטיות מידע</h4>
-                <p>
-                  הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית הענן של האתר בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
-                </p>
-              </section>
-
-              <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-2xl border border-white/5">
-                <h4 className="font-semibold text-white text-sm">4. הסרת תכנים ויצירת קשר</h4>
-                <p>
-                  הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-teal-300 font-mono">danielbarber1246@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
-                </p>
-              </section>
-            </div>
-
-            <div className="pt-4 mt-4 border-t border-white/10 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowTermsModal(false)}
-                className="px-6 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-colors cursor-pointer"
-              >
-                {isHe ? 'הבנתי ואישרתי' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <TermsReaderModal isOpen={showTermsModal} onClose={() => setShowTermsModal(false)} lang={lang} />
 
       {/* MODAL 3: IOS PWA INSTALL GUIDE MODAL */}
       {showIOSInstallGuide && (
@@ -514,3 +454,76 @@ export const Footer: React.FC<FooterProps> = ({
     </>
   );
 };
+
+export const TermsReaderModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  lang: Language;
+}> = ({ isOpen, onClose, lang }) => {
+  if (!isOpen) return null;
+  const isHe = lang === 'he';
+
+  return (
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" dir={isHe ? 'rtl' : 'ltr'}>
+      <div className="relative w-full max-w-2xl max-h-[85vh] bg-[#0a0a0c] border border-white/15 rounded-2xl p-6 sm:p-8 shadow-2xl flex flex-col text-start text-white">
+        <div className="flex items-center justify-between border-b border-white/10 pb-4 mb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-white/10 text-white flex items-center justify-center border border-white/15">
+              <FileText className="w-4 h-4" />
+            </div>
+            <h3 className="text-lg font-bold">{isHe ? 'תנאי שימוש ומדיניות האתר' : 'Terms of Service'}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
+            aria-label={isHe ? 'סגור' : 'Close'}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto space-y-4 text-xs sm:text-sm text-white/80 leading-relaxed pl-2 pr-1 custom-scrollbar">
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">1. מטרת הפלטפורמה</h4>
+            <p>
+              קולות מוזיקה (Kolot Music) הינה פלטפורמה חופשית המיועדת להאזנה, שיתוף והפצת יצירות מוזיקליות של אמנים עצמאיים. השימוש באתר הינו אישי, חופשי וללא תשלום.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">2. זכויות יוצרים והעלאת תכנים</h4>
+            <p>
+              כל משתמש או אמן המעלה יצירה (שיר, מילים, עטיפה או אלבום) מצהיר כי הינו בעל הזכויות הבלעדיות ביצירה או קיבל הרשאה מפורשת כחוק להעלותה ולהפיצה. חל איסור מוחלט על העלאת תכנים המפרים זכויות צד שלישי או חוקי מדינת ישראל.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">3. אחסון ופרטיות מידע</h4>
+            <p>
+              הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית הענן של האתר בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">4. הסרת תכנים ויצירת קשר</h4>
+            <p>
+              הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-white font-mono">danielbarber1246@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
+            </p>
+          </section>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-white/10 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-6 py-2 rounded-full bg-white hover:bg-neutral-200 text-black text-xs font-normal transition-colors cursor-pointer"
+          >
+            {isHe ? 'סגור' : 'Close'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+

@@ -25,6 +25,9 @@ function excludeOversizedOnnxWasmPlugin(): Plugin {
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss(), excludeOversizedOnnxWasmPlugin()],
+    worker: {
+      format: 'es' as const,
+    },
     resolve: {
       alias: {
         '@': path.resolve(process.cwd(), '.'),

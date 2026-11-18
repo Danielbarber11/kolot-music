@@ -1563,14 +1563,26 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       `If the audio has no vocals at all (purely instrumental), output ONLY: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track (No vocals)'}. ` +
       `Do not invent lyrics that are not heard in the audio.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-transcribe',
-      contents: {
-        parts: [audioPart, { text: transcribeInstruction }],
-      },
-    });
+    let transcribedText = '';
+    const modelsToTry = ['gemini-3.5-transcribe', 'gemini-2.5-flash'];
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: {
+            parts: [audioPart, { text: transcribeInstruction }],
+          },
+        });
+        const candidate = (response.text || '').trim();
+        if (candidate) {
+          transcribedText = candidate;
+          break;
+        }
+      } catch (modelErr: any) {
+        console.warn(`[Transcribe] ${modelName} fallback:`, modelErr?.message || modelErr);
+      }
+    }
 
-    const transcribedText = (response.text || '').trim();
     if (!transcribedText) {
       return res.status(500).json({
         success: false,

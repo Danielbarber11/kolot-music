@@ -991,19 +991,30 @@ export default {
           `Format every line as [MM:SS - MM:SS] Lyric text. ` +
           `If purely instrumental output only: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track'}.`;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
-            }),
+        let textOut = '';
+        for (const modelName of ['gemini-3.5-transcribe', 'gemini-2.5-flash']) {
+          try {
+            const geminiRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
+                }),
+              }
+            );
+            if (!geminiRes.ok) continue;
+            const gJson: any = await geminiRes.json();
+            const candidate = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+            if (candidate) {
+              textOut = candidate;
+              break;
+            }
+          } catch {
+            // Try next fallback model
           }
-        );
-
-        const gJson: any = await geminiRes.json();
-        const textOut = gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        }
         const segments = buildSegmentsFromText(textOut, duration);
         return jsonResponse({
           success: segments.length > 0,

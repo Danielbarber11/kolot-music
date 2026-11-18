@@ -191,9 +191,10 @@ export function generateSynchronizedLyrics(
   };
 }
 
+export { buildInstantSubtitlesFromLyrics } from './services/onDeviceWhisperService';
+
 /**
- * Runs 100% On-Device Whisper AI transcription directly inside the browser (WASM).
- * Produces BOTH Hebrew and English letters-only subtitle tracks.
+ * Generates bilingual letters-only subtitle tracks without blocking the main UI thread.
  */
 export async function transcribeTrackWithWhisperAI(
   options: {
@@ -202,6 +203,7 @@ export async function transcribeTrackWithWhisperAI(
     language?: 'he' | 'en';
     subtitleLanguageHint?: 'auto' | 'he' | 'en';
     startTimeSeconds?: number;
+    signal?: AbortSignal;
     onProgress?: (statusText: string, percent?: number) => void;
     onPartialSegments?: (partial: {
       segments: SubtitleSegment[];
@@ -215,6 +217,7 @@ export async function transcribeTrackWithWhisperAI(
   }
 ): Promise<{
   success: boolean;
+  aborted?: boolean;
   segments?: SubtitleSegment[];
   segmentsHe?: SubtitleSegment[];
   segmentsEn?: SubtitleSegment[];
@@ -232,6 +235,7 @@ export async function transcribeTrackWithWhisperAI(
     trackDuration: options.track?.duration || 180,
     hintTitle: options.track?.name,
     startTimeSeconds: options.startTimeSeconds,
+    signal: options.signal,
     onProgress: options.onProgress,
     onPartialSegments: options.onPartialSegments,
   });

@@ -61,7 +61,7 @@ import {
 } from '../services/cloudStorageService';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
-import { transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
+import { transcribeTrackWithWhisperAI, buildInstantSubtitlesFromLyrics } from '../aiLyricsGenerator';
 import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
@@ -179,7 +179,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [subtitleLangChoice, setSubtitleLangChoice] = useState<'auto' | 'he' | 'en'>('auto');
   const [isTranscribingUpload, setIsTranscribingUpload] = useState(false);
   const [whisperProgressText, setWhisperProgressText] = useState('');
+  const [whisperProgressPercent, setWhisperProgressPercent] = useState(0);
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
+  const uploadSubAbortRef = useRef<AbortController | null>(null);
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
   const [genreProgressText, setGenreProgressText] = useState('');
   const [genreDetectionNotice, setGenreDetectionNotice] = useState<AudioClassificationResult | null>(null);
@@ -262,7 +264,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editSubLangTab, setEditSubLangTab] = useState<'he' | 'en'>('he');
   const [isTranscribingEdit, setIsTranscribingEdit] = useState(false);
   const [editWhisperProgressText, setEditWhisperProgressText] = useState('');
+  const [editWhisperProgressPercent, setEditWhisperProgressPercent] = useState(0);
   const [editWhisperNotice, setEditWhisperNotice] = useState<string | null>(null);
+  const editSubAbortRef = useRef<AbortController | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -311,16 +315,23 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setEditIsAiGenerated(!!track.isAiGenerated);
   };
 
+  const sanitizeMultilineLyrics = (raw: string) =>
+    raw
+      .split(/\r?\n/)
+      .map((line) => sanitizeSubtitleLettersOnly(line))
+      .filter(Boolean)
+      .join('\n');
+
   const handleSaveEditTrack = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTrack || !canManageTrack(editingTrack)) return;
     setIsSavingEdit(true);
 
     const sanitizedHe = editIncludeSubtitles
-      ? sanitizeSubtitleLettersOnly((editLyrics || editLyricsHe || '').trim())
+      ? sanitizeMultilineLyrics((editLyrics || editLyricsHe || '').trim())
       : '';
     const sanitizedEn = editIncludeSubtitles
-      ? sanitizeSubtitleLettersOnly((editLyricsEn || '').trim())
+      ? sanitizeMultilineLyrics((editLyricsEn || '').trim())
       : '';
     const hasSubSegments =
       editIncludeSubtitles &&
@@ -1707,101 +1718,178 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </div>
               )}
 
-            {/* EDIT SONG MODAL FOR PROFILE OWNER */}
+            {/* RECREATED EDIT SONG STUDIO MODAL */}
             {editingTrack && (
-              <div className="fixed inset-0 z-[160] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-                <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar bg-neutral-900 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-fadeIn">
-                  <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                    <h3 className="text-base font-black text-white flex items-center gap-2">
-                      <Pencil className="w-4 h-4 text-emerald-400" />
-                      <span>{isHe ? `עריכת שיר: ${editingTrack.name}` : `Edit Track: ${editingTrack.name}`}</span>
-                    </h3>
+              <div
+                className="fixed inset-0 z-[160] bg-black/85 backdrop-blur-xl flex items-center justify-center p-3 sm:p-6"
+                dir={isHe ? 'rtl' : 'ltr'}
+              >
+                <div className="w-full max-w-3xl max-h-[90vh] bg-[#09090b] border border-white/15 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-fadeIn">
+                  {/* Top Studio Header */}
+                  <div className="px-5 sm:px-7 py-4 border-b border-white/10 flex items-center justify-between gap-4 shrink-0 bg-[#09090b]">
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <div className="w-12 h-12 rounded-xl overflow-hidden bg-neutral-900 border border-white/15 shrink-0">
+                        <TrackCoverArt
+                          coverUrl={editingTrack.coverUrl}
+                          artistName={editingTrack.artistName}
+                          trackName={editingTrack.name}
+                          genre={editingTrack.genre}
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="text-base sm:text-lg font-bold text-white truncate">
+                          {isHe ? 'עריכת יצירה' : 'Edit Release'}
+                        </h3>
+                        <p className="text-xs text-neutral-400 truncate mt-0.5">
+                          {editTitle || editingTrack.name} · {editPerformingArtist || editingTrack.artistName} · {editGenre || editingTrack.genre || (isHe ? 'מוזיקה' : 'Music')}
+                        </p>
+                      </div>
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => setEditingTrack(null)}
-                      className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                      onClick={() => {
+                        editSubAbortRef.current?.abort();
+                        setIsTranscribingEdit(false);
+                        setEditingTrack(null);
+                      }}
+                      className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 text-neutral-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                      aria-label={isHe ? 'סגור' : 'Close'}
                     >
                       <X className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <form onSubmit={handleSaveEditTrack} className="space-y-4 text-xs">
-                    <div>
-                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'שם השיר' : 'Song Title'}</label>
-                      <input
-                        type="text"
-                        required
-                        value={editTitle}
-                        onChange={(e) => setEditTitle(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-white/90 font-bold mb-1">{isHe ? 'שם הזמר / אמן מבצע' : 'Performing Artist'}</label>
-                        <input
-                          type="text"
-                          value={editPerformingArtist}
-                          onChange={(e) => setEditPerformingArtist(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                        />
+                  {/* Scrollable Studio Form Body */}
+                  <form id="editTrackStudioForm" onSubmit={handleSaveEditTrack} className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-white/8 text-xs">
+                    {/* Section 1: Track Credits & Metadata */}
+                    <div className="p-5 sm:p-7 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+                          {isHe ? 'פרטי היצירה והקרדיטים' : 'Track Metadata & Credits'}
+                        </span>
                       </div>
 
-                      <div>
-                        <label className="block text-white/90 font-bold mb-1">{isHe ? 'זמר אורח (Feat.)' : 'Featured Artist'}</label>
-                        <input
-                          type="text"
-                          value={editFeaturedArtist}
-                          onChange={(e) => setEditFeaturedArtist(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                        />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'שם השיר *' : 'Song Title *'}
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={editTitle}
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'שם האמן המבצע' : 'Performing Artist'}
+                          </label>
+                          <input
+                            type="text"
+                            value={editPerformingArtist}
+                            onChange={(e) => setEditPerformingArtist(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'אמן אורח (Feat.)' : 'Featured Artist'}
+                          </label>
+                          <input
+                            type="text"
+                            value={editFeaturedArtist}
+                            onChange={(e) => setEditFeaturedArtist(e.target.value)}
+                            placeholder={isHe ? 'אופציונלי' : 'Optional'}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-600 text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'מילים ולחן / יוצרים' : 'Writers & Composers'}
+                          </label>
+                          <input
+                            type="text"
+                            value={editWriters}
+                            onChange={(e) => setEditWriters(e.target.value)}
+                            placeholder={isHe ? 'אופציונלי' : 'Optional'}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-600 text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'ז׳אנר מוזיקלי' : 'Genre'}
+                          </label>
+                          <select
+                            value={CANONICAL_GENRES.some((g) => g.id === editGenre) ? editGenre : 'custom'}
+                            onChange={(e) => {
+                              if (e.target.value !== 'custom') setEditGenre(e.target.value);
+                            }}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors cursor-pointer"
+                          >
+                            {CANONICAL_GENRES.map((g) => (
+                              <option key={g.id} value={g.id}>
+                                {isHe ? `${g.labelHe} (${g.id})` : g.labelEn}
+                              </option>
+                            ))}
+                            {!CANONICAL_GENRES.some((g) => g.id === editGenre) && (
+                              <option value="custom">{editGenre || (isHe ? 'מותאם אישית' : 'Custom')}</option>
+                            )}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-neutral-300 font-medium mb-1.5">
+                            {isHe ? 'שם האלבום / סינגל' : 'Album / Single'}
+                          </label>
+                          <input
+                            type="text"
+                            value={editAlbum}
+                            onChange={(e) => setEditAlbum(e.target.value)}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors"
+                          />
+                        </div>
                       </div>
+
+                      <label
+                        htmlFor="editIsAiGeneratedCheck"
+                        className="flex items-center justify-between gap-3 pt-2 cursor-pointer select-none"
+                      >
+                        <div className="flex items-center gap-2.5 text-neutral-200">
+                          <Sparkles className="w-4 h-4 text-neutral-400 shrink-0" />
+                          <span className="font-medium">
+                            {isHe ? 'היצירה נוצרה באמצעות בינה מלאכותית (תג AI)' : 'AI Generated Release (AI Badge)'}
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          id="editIsAiGeneratedCheck"
+                          checked={editIsAiGenerated}
+                          onChange={(e) => setEditIsAiGenerated(e.target.checked)}
+                          className="w-4.5 h-4.5 rounded border-white/30 bg-black accent-white cursor-pointer"
+                        />
+                      </label>
                     </div>
 
-                    <div>
-                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'כותבים ומלחינים' : 'Writers & Composers'}</label>
-                      <input
-                        type="text"
-                        value={editWriters}
-                        onChange={(e) => setEditWriters(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'ז׳אנר / סגנון מוזיקלי' : 'Genre'}</label>
-                      <input
-                        type="text"
-                        value={editGenre}
-                        onChange={(e) => setEditGenre(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-white/90 font-bold mb-1">{isHe ? 'שם האלבום / סינגל' : 'Album Name'}</label>
-                      <input
-                        type="text"
-                        value={editAlbum}
-                        onChange={(e) => setEditAlbum(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white font-bold focus:outline-none focus:border-emerald-400"
-                      />
-                    </div>
-
-                    {/* SUBTITLES & LYRICS SECTION IN EDIT MODAL */}
-                    <div className="p-4 rounded-2xl bg-neutral-950 border border-white/15 space-y-3">
+                    {/* Section 2: Subtitles & Synchronized Lyrics Studio */}
+                    <div className="p-5 sm:p-7 space-y-4">
                       <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Captions className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Captions className="w-4 h-4 text-white shrink-0" />
                           <div className="min-w-0">
-                            <span className="font-bold text-white block">
-                              {editIncludeSubtitles
-                                ? (isHe ? 'כתוביות ומילות השיר (פעיל)' : 'Song Subtitles (Enabled)')
-                                : (isHe ? 'כתוביות כבויות (יוסרו מהשיר)' : 'Subtitles Off')}
+                            <span className="font-semibold text-white block text-sm">
+                              {isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}
                             </span>
-                            <span className="text-[10px] text-neutral-400 block">
-                              {isHe ? 'לחץ ליצירת כתוביות מהירה בשניות' : 'Fast subtitle generation in seconds'}
+                            <span className="text-[11px] text-neutral-400 block">
+                              {editIncludeSubtitles
+                                ? (isHe ? 'ייצוא כתוביות ברקע ללא השבתת המסך • שמירה קבועה בשיר' : 'Non-blocking subtitle studio · Saved with track')
+                                : (isHe ? 'מצב כבוי — הכתוביות יוסרו בעת השמירה' : 'Disabled — subtitles will be removed on save')}
                             </span>
                           </div>
                         </div>
@@ -1821,9 +1909,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       </div>
 
                       {editIncludeSubtitles && (
-                        <div className="space-y-2.5 pt-2 border-t border-white/10">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="inline-flex items-center rounded-xl bg-black border border-white/20 p-0.5 text-[10px] font-bold">
+                        <div className="space-y-3.5 pt-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2.5">
+                            <div className="inline-flex items-center rounded-xl bg-black border border-white/15 p-0.5 text-[11px] font-medium">
                               {([
                                 { id: 'auto', label: isHe ? 'אוטומטי' : 'Auto' },
                                 { id: 'he', label: 'עברית' },
@@ -1833,8 +1921,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                   key={opt.id}
                                   type="button"
                                   onClick={() => setEditSubtitleLangChoice(opt.id)}
-                                  className={`px-2 py-1 rounded-lg transition-colors cursor-pointer ${
-                                    editSubtitleLangChoice === opt.id ? 'bg-white text-black font-black' : 'text-neutral-400 hover:text-white'
+                                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                                    editSubtitleLangChoice === opt.id ? 'bg-white text-black font-semibold' : 'text-neutral-400 hover:text-white'
                                   }`}
                                 >
                                   {opt.label}
@@ -1842,54 +1930,118 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               ))}
                             </div>
 
-                            <button
-                              type="button"
-                              disabled={isTranscribingEdit}
-                              onClick={async () => {
-                                setIsTranscribingEdit(true);
-                                setEditWhisperProgressText(isHe ? 'מייצר כתוביות במהירות...' : 'Generating subtitles fast...');
-                                setEditWhisperNotice(null);
-                                const wRes = await transcribeTrackWithWhisperAI({
-                                  track: editingTrack,
-                                  language: isHe ? 'he' : 'en',
-                                  subtitleLanguageHint: editSubtitleLangChoice,
-                                  onProgress: (txt) => setEditWhisperProgressText(txt),
-                                });
-                                setIsTranscribingEdit(false);
-                                setEditWhisperProgressText('');
-                                if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
-                                  setEditWhisperSegments(wRes.segments || wRes.segmentsHe);
-                                  setEditWhisperSegmentsHe(wRes.segmentsHe);
-                                  setEditWhisperSegmentsEn(wRes.segmentsEn);
-                                  setEditLyricsHe(wRes.lyricsHe || wRes.lyrics || '');
-                                  setEditLyricsEn(wRes.lyricsEn || '');
-                                  setEditLyrics(wRes.lyricsHe || wRes.lyrics || '');
-                                  setEditWhisperNotice(
-                                    isHe
-                                      ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} באנגלית — לחץ שמור שינויים`
-                                      : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
-                                  );
-                                } else {
-                                  setEditWhisperNotice(wRes.error || (isHe ? 'לא ניתן היה ליצור כתוביות כרגע' : 'Subtitle generation failed'));
-                                }
-                              }}
-                              className="px-3 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-45"
-                            >
-                              {isTranscribingEdit ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-3.5 h-3.5" />
+                            <div className="flex flex-wrap items-center gap-2">
+                              {(editLyrics.trim() || editLyricsHe.trim() || editLyricsEn.trim()) && !isTranscribingEdit && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const src = (editSubLangTab === 'en' && editLyricsEn ? editLyricsEn : editLyrics || editLyricsHe).trim();
+                                    const res = await buildInstantSubtitlesFromLyrics(src, editingTrack.duration || 180, isHe ? 'he' : 'en');
+                                    if (res.success) {
+                                      setEditWhisperSegments(res.segments);
+                                      setEditWhisperSegmentsHe(res.segmentsHe);
+                                      setEditWhisperSegmentsEn(res.segmentsEn);
+                                      setEditLyricsHe(res.lyricsHe);
+                                      setEditLyricsEn(res.lyricsEn);
+                                      setEditLyrics(res.lyricsHe);
+                                      setEditWhisperNotice(
+                                        isHe
+                                          ? `המילים סונכרנו מיידית ל-${res.segmentsHe.length} כתוביות! לחץ "שמור שינויים"`
+                                          : `Synced ${res.segmentsHe.length} subtitle lines cleanly!`
+                                      );
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
+                                >
+                                  {isHe ? 'סנכרן מילים מיידית' : 'Sync Typed Lyrics'}
+                                </button>
                               )}
-                              <span>
-                                {isTranscribingEdit
-                                  ? (editWhisperProgressText || (isHe ? 'מייצר כתוביות...' : 'Generating...'))
-                                  : (isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now')}
-                              </span>
-                            </button>
+
+                              {isTranscribingEdit ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    editSubAbortRef.current?.abort();
+                                    setIsTranscribingEdit(false);
+                                    setEditWhisperProgressText('');
+                                    setEditWhisperProgressPercent(0);
+                                    setEditWhisperNotice(isHe ? 'יצירת הכתוביות בוטלה' : 'Subtitle generation cancelled');
+                                  }}
+                                  className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/25 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>{isHe ? 'ביטול יצירה' : 'Cancel'}</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    editSubAbortRef.current?.abort();
+                                    const controller = new AbortController();
+                                    editSubAbortRef.current = controller;
+                                    setIsTranscribingEdit(true);
+                                    setEditWhisperProgressText(isHe ? 'מייצר כתוביות ברקע...' : 'Generating subtitles...');
+                                    setEditWhisperProgressPercent(8);
+                                    setEditWhisperNotice(null);
+                                    const wRes = await transcribeTrackWithWhisperAI({
+                                      track: editingTrack,
+                                      language: isHe ? 'he' : 'en',
+                                      subtitleLanguageHint: editSubtitleLangChoice,
+                                      signal: controller.signal,
+                                      onProgress: (txt, pct) => {
+                                        setEditWhisperProgressText(txt);
+                                        if (typeof pct === 'number') setEditWhisperProgressPercent(pct);
+                                      },
+                                    });
+                                    setIsTranscribingEdit(false);
+                                    setEditWhisperProgressText('');
+                                    setEditWhisperProgressPercent(0);
+                                    if (wRes.aborted) return;
+                                    if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
+                                      setEditWhisperSegments(wRes.segments || wRes.segmentsHe);
+                                      setEditWhisperSegmentsHe(wRes.segmentsHe);
+                                      setEditWhisperSegmentsEn(wRes.segmentsEn);
+                                      setEditLyricsHe(wRes.lyricsHe || wRes.lyrics || '');
+                                      setEditLyricsEn(wRes.lyricsEn || '');
+                                      setEditLyrics(wRes.lyricsHe || wRes.lyrics || '');
+                                      setEditWhisperNotice(
+                                        isHe
+                                          ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} באנגלית — לחץ שמור שינויים`
+                                          : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
+                                      );
+                                    } else {
+                                      setEditWhisperNotice(wRes.error || (isHe ? 'לא ניתן היה ליצור כתוביות כרגע' : 'Subtitle generation failed'));
+                                    }
+                                  }}
+                                  className="px-4 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                                >
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                  <span>{isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles'}</span>
+                                </button>
+                              )}
+                            </div>
                           </div>
 
+                          {isTranscribingEdit && (
+                            <div className="space-y-1.5 py-1">
+                              <div className="flex items-center justify-between text-[11px] text-neutral-300">
+                                <span className="flex items-center gap-2">
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                                  <span>{editWhisperProgressText || (isHe ? 'מעבד ברקע...' : 'Processing...')}</span>
+                                </span>
+                                <span className="font-mono text-white">{editWhisperProgressPercent}%</span>
+                              </div>
+                              <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                                <div
+                                  className="h-full bg-white transition-all duration-200"
+                                  style={{ width: `${Math.max(5, editWhisperProgressPercent)}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
                           {editWhisperNotice && (
-                            <p className="text-[11px] text-white font-bold bg-black border border-white/25 px-3 py-2 rounded-xl">
+                            <p className="text-[11px] text-neutral-200 bg-white/[0.05] border border-white/15 px-3.5 py-2 rounded-xl">
                               {editWhisperNotice}
                             </p>
                           )}
@@ -1899,8 +2051,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setEditSubLangTab('he')}
-                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${
-                                  editSubLangTab === 'he' ? 'bg-white text-black border-white font-black' : 'bg-black text-neutral-300 border-white/20'
+                                className={`px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer border transition-colors ${
+                                  editSubLangTab === 'he' ? 'bg-white text-black border-white font-semibold' : 'bg-black text-neutral-300 border-white/15'
                                 }`}
                               >
                                 עברית ({editWhisperSegmentsHe?.length || 0})
@@ -1908,8 +2060,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setEditSubLangTab('en')}
-                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer border transition-all ${
-                                  editSubLangTab === 'en' ? 'bg-white text-black border-white font-black' : 'bg-black text-neutral-300 border-white/20'
+                                className={`px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer border transition-colors ${
+                                  editSubLangTab === 'en' ? 'bg-white text-black border-white font-semibold' : 'bg-black text-neutral-300 border-white/15'
                                 }`}
                               >
                                 English ({editWhisperSegmentsEn?.length || 0})
@@ -1918,7 +2070,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           )}
 
                           <textarea
-                            rows={3}
+                            rows={4}
                             value={editSubLangTab === 'en' && editLyricsEn ? editLyricsEn : editLyrics}
                             onChange={(e) => {
                               if (editSubLangTab === 'en' && editLyricsEn) {
@@ -1928,45 +2080,36 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                 setEditLyricsHe(e.target.value);
                               }
                             }}
-                            placeholder={isHe ? 'מילות השיר או הערות ליצירה...' : 'Lyrics or description...'}
-                            className="w-full px-3.5 py-2.5 rounded-xl bg-neutral-800 border border-neutral-700 text-white focus:outline-none focus:border-emerald-400"
+                            placeholder={isHe ? 'מילות השיר (כל שורה תוצג בזמן הניגון)...' : 'Song lyrics (one line per subtitle)...'}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-600 text-xs leading-relaxed focus:outline-none focus:border-white/50 transition-colors"
                           />
                         </div>
                       )}
                     </div>
-
-                    {/* AI GENERATED TRACK TOGGLE IN EDIT MODAL */}
-                    <div className="flex items-center gap-3 p-3.5 rounded-xl bg-purple-950/40 border border-purple-500/40">
-                      <input
-                        type="checkbox"
-                        id="editIsAiGeneratedCheck"
-                        checked={editIsAiGenerated}
-                        onChange={(e) => setEditIsAiGenerated(e.target.checked)}
-                        className="w-4 h-4 rounded text-purple-500 bg-neutral-800 border-purple-400 focus:ring-purple-400 cursor-pointer"
-                      />
-                      <label htmlFor="editIsAiGeneratedCheck" className="text-white font-bold text-xs cursor-pointer flex items-center gap-2 select-none">
-                        <Sparkles className="w-4 h-4 text-purple-400" />
-                        <span>{isHe ? 'שיר שנוצר בבינה מלאכותית (יסומן בתווית AI)' : 'AI Generated track (Mark with AI badge)'}</span>
-                      </label>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/10">
-                      <button
-                        type="button"
-                        onClick={() => setEditingTrack(null)}
-                        className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold cursor-pointer"
-                      >
-                        {isHe ? 'ביטול' : 'Cancel'}
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={isSavingEdit}
-                        className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black cursor-pointer shadow-lg disabled:opacity-50"
-                      >
-                        {isSavingEdit ? (isHe ? 'שומר...' : 'Saving...') : (isHe ? 'שמור שינויים' : 'Save Changes')}
-                      </button>
-                    </div>
                   </form>
+
+                  {/* Sticky Bottom Studio Bar */}
+                  <div className="px-5 sm:px-7 py-4 border-t border-white/10 bg-[#09090b] flex items-center justify-end gap-3 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        editSubAbortRef.current?.abort();
+                        setIsTranscribingEdit(false);
+                        setEditingTrack(null);
+                      }}
+                      className="px-5 py-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white text-xs font-medium cursor-pointer transition-colors"
+                    >
+                      {isHe ? 'ביטול' : 'Cancel'}
+                    </button>
+                    <button
+                      type="submit"
+                      form="editTrackStudioForm"
+                      disabled={isSavingEdit}
+                      className="px-6 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-black text-xs font-bold cursor-pointer shadow-lg transition-colors disabled:opacity-50"
+                    >
+                      {isSavingEdit ? (isHe ? 'שומר שינויים...' : 'Saving...') : (isHe ? 'שמור שינויים' : 'Save Changes')}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2435,60 +2578,125 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           ))}
                         </div>
 
-                        <button
-                          type="button"
-                          disabled={isTranscribingUpload || (!rawAudioFile && !audioStreamUrl.trim())}
-                          onClick={async () => {
-                            setIsTranscribingUpload(true);
-                            setWhisperProgressText(isHe ? 'מייצר כתוביות במהירות...' : 'Generating subtitles fast...');
-                            setWhisperUploadNotice(null);
-                            const wRes = await transcribeTrackWithWhisperAI({
-                              audioFile: rawAudioFile || undefined,
-                              track: !rawAudioFile && audioStreamUrl.trim() ? {
-                                id: 'draft',
-                                name: songTitle || 'שיר',
-                                artistName: currentArtist.name || 'אמן',
-                                albumName: albumTitle || 'Single',
-                                duration: 180,
-                                audioUrl: audioStreamUrl.trim(),
-                                coverUrl: coverArtUrl.trim(),
-                              } : undefined,
-                              language: isHe ? 'he' : 'en',
-                              subtitleLanguageHint: subtitleLangChoice,
-                              onProgress: (txt) => setWhisperProgressText(txt),
-                            });
-                            setIsTranscribingUpload(false);
-                            setWhisperProgressText('');
-                            if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
-                              setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
-                              setWhisperDraftSegmentsHe(wRes.segmentsHe);
-                              setWhisperDraftSegmentsEn(wRes.segmentsEn);
-                              setWhisperDraftLyricsHe(wRes.lyricsHe || '');
-                              setWhisperDraftLyricsEn(wRes.lyricsEn || '');
-                              setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
-                              setWhisperUploadNotice(
-                                isHe
-                                  ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית — ניתן לערוך או לפרסם ישירות`
-                                  : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
-                              );
-                            } else {
-                              setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
-                            }
-                          }}
-                          className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
-                        >
-                          {isTranscribingUpload ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Sparkles className="w-3.5 h-3.5" />
+                        <div className="flex flex-wrap items-center gap-2">
+                          {(lyricsInput.trim() || whisperDraftLyricsHe.trim() || whisperDraftLyricsEn.trim()) && !isTranscribingUpload && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const src = (uploadSubtitleLangTab === 'en' && whisperDraftLyricsEn ? whisperDraftLyricsEn : lyricsInput).trim();
+                                const res = await buildInstantSubtitlesFromLyrics(src, 180, isHe ? 'he' : 'en');
+                                if (res.success) {
+                                  setWhisperDraftSegments(res.segments);
+                                  setWhisperDraftSegmentsHe(res.segmentsHe);
+                                  setWhisperDraftSegmentsEn(res.segmentsEn);
+                                  setWhisperDraftLyricsHe(res.lyricsHe);
+                                  setWhisperDraftLyricsEn(res.lyricsEn);
+                                  setLyricsInput(res.lyricsHe);
+                                  setWhisperUploadNotice(
+                                    isHe
+                                      ? `סונכרנו ${res.segmentsHe.length} שורות מילים מיידית — מוכן לפרסום`
+                                      : `Synced ${res.segmentsHe.length} subtitle lines cleanly`
+                                  );
+                                }
+                              }}
+                              className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-[11px] font-medium cursor-pointer transition-colors"
+                            >
+                              {isHe ? 'סנכרן מילים מיידית' : 'Sync Typed Lyrics'}
+                            </button>
                           )}
-                          <span>
-                            {isTranscribingUpload
-                              ? (whisperProgressText || (isHe ? 'מתמלל במכשיר...' : 'Transcribing...'))
-                              : (isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now')}
-                          </span>
-                        </button>
+
+                          {isTranscribingUpload ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                uploadSubAbortRef.current?.abort();
+                                setIsTranscribingUpload(false);
+                                setWhisperProgressText('');
+                                setWhisperProgressPercent(0);
+                                setWhisperUploadNotice(isHe ? 'יצירת הכתוביות בוטלה' : 'Subtitle generation cancelled');
+                              }}
+                              className="px-3.5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/25 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              <span>{isHe ? 'ביטול יצירה' : 'Cancel'}</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={!rawAudioFile && !audioStreamUrl.trim()}
+                              onClick={async () => {
+                                uploadSubAbortRef.current?.abort();
+                                const controller = new AbortController();
+                                uploadSubAbortRef.current = controller;
+                                setIsTranscribingUpload(true);
+                                setWhisperProgressText(isHe ? 'מייצר כתוביות ברקע...' : 'Generating subtitles fast...');
+                                setWhisperProgressPercent(8);
+                                setWhisperUploadNotice(null);
+                                const wRes = await transcribeTrackWithWhisperAI({
+                                  audioFile: rawAudioFile || undefined,
+                                  track: !rawAudioFile && audioStreamUrl.trim() ? {
+                                    id: 'draft',
+                                    name: songTitle || 'שיר',
+                                    artistName: currentArtist.name || 'אמן',
+                                    albumName: albumTitle || 'Single',
+                                    duration: 180,
+                                    audioUrl: audioStreamUrl.trim(),
+                                    coverUrl: coverArtUrl.trim(),
+                                  } : undefined,
+                                  language: isHe ? 'he' : 'en',
+                                  subtitleLanguageHint: subtitleLangChoice,
+                                  signal: controller.signal,
+                                  onProgress: (txt, pct) => {
+                                    setWhisperProgressText(txt);
+                                    if (typeof pct === 'number') setWhisperProgressPercent(pct);
+                                  },
+                                });
+                                setIsTranscribingUpload(false);
+                                setWhisperProgressText('');
+                                setWhisperProgressPercent(0);
+                                if (wRes.aborted) return;
+                                if (wRes.success && ((wRes.segmentsHe && wRes.segmentsHe.length > 0) || (wRes.segmentsEn && wRes.segmentsEn.length > 0) || (wRes.segments && wRes.segments.length > 0))) {
+                                  setWhisperDraftSegments(wRes.segments || wRes.segmentsHe);
+                                  setWhisperDraftSegmentsHe(wRes.segmentsHe);
+                                  setWhisperDraftSegmentsEn(wRes.segmentsEn);
+                                  setWhisperDraftLyricsHe(wRes.lyricsHe || '');
+                                  setWhisperDraftLyricsEn(wRes.lyricsEn || '');
+                                  setLyricsInput(wRes.lyricsHe || wRes.lyrics || '');
+                                  setWhisperUploadNotice(
+                                    isHe
+                                      ? `נוצרו ${wRes.segmentsHe?.length || 0} שורות בעברית ו-${wRes.segmentsEn?.length || 0} שורות באנגלית — ניתן לערוך או לפרסם ישירות`
+                                      : `Generated ${wRes.segmentsHe?.length || 0} Hebrew and ${wRes.segmentsEn?.length || 0} English lines`
+                                  );
+                                } else {
+                                  setWhisperUploadNotice(wRes.error || (isHe ? 'לא ניתן לתמלל קובץ זה כרגע' : 'Transcription failed'));
+                                }
+                              }}
+                              className="px-3.5 py-1.5 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
+                            >
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>{isHe ? 'צור כתוביות עכשיו' : 'Generate Subtitles Now'}</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
+
+                      {isTranscribingUpload && (
+                        <div className="space-y-1.5 py-1">
+                          <div className="flex items-center justify-between text-[11px] text-neutral-300">
+                            <span className="flex items-center gap-2">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                              <span>{whisperProgressText || (isHe ? 'מעבד כתוביות ברקע...' : 'Processing...')}</span>
+                            </span>
+                            <span className="font-mono text-white">{whisperProgressPercent}%</span>
+                          </div>
+                          <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                            <div
+                              className="h-full bg-white transition-all duration-200"
+                              style={{ width: `${Math.max(5, whisperProgressPercent)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
 
                       {whisperUploadNotice && (
                         <p className="text-[11px] text-white font-bold bg-black border border-white/25 px-3 py-2 rounded-xl">
@@ -3044,34 +3252,43 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
         )}
 
-        {/* 4. LUXURY PROFESSIONAL ACCOUNT SETTINGS VIEW */}
+        {/* 4. RECREATED STUDIO ACCOUNT & PROFILE SETTINGS VIEW */}
         {activeTab === 'account_settings' && (
-          <div className="max-w-2xl mx-auto px-4 py-20 sm:py-24 w-full space-y-7 animate-fadeIn">
-            {/* Header */}
-            <div className="space-y-2 border-b border-white/10 pb-5">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.05] border border-white/10 text-[11px] font-bold text-neutral-300">
-                <Settings className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{isHe ? 'KOLOT STUDIO • הגדרות אמן ומערכת' : 'KOLOT STUDIO • Artist & Account Settings'}</span>
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
+            {/* Editorial Header */}
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/10 pb-5">
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-semibold tracking-widest uppercase text-neutral-400">
+                  {isHe ? 'KOLOT STUDIO · ניהול אמן' : 'KOLOT STUDIO · ARTIST WORKSPACE'}
+                </p>
+                <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                  {isHe ? 'הגדרות חשבון ופרופיל' : 'Account & Profile Settings'}
+                </h2>
+                <p className="text-xs sm:text-sm text-neutral-400">
+                  {isHe
+                    ? 'זהות הבמה, תמונת הפרופיל, חיבור Google והגדרות שידור והפצה.'
+                    : 'Stage identity, profile photo, Google connection, and distribution settings.'}
+                </p>
               </div>
-              <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-                {isHe ? 'הגדרות חשבון ופרופיל' : 'Account & Profile Settings'}
-              </h2>
-              <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
-                {isHe
-                  ? 'ניהול זהות האמן, פרטי הבמה, סנכרון Google ושרתי אחסון שירים בענן.'
-                  : 'Manage your artist identity, stage details, Google sync, and cloud music storage.'}
-              </p>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('profile')}
+                className="self-start sm:self-auto px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-white flex items-center gap-2 transition-colors cursor-pointer"
+              >
+                {isHe ? <ArrowRight className="w-3.5 h-3.5" /> : <ArrowLeft className="w-3.5 h-3.5" />}
+                <span>{isHe ? 'חזרה לפרופיל' : 'Back to Profile'}</span>
+              </button>
             </div>
 
-            {/* Google Account Authentication Status Card */}
-            <div
-              className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-white/15 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-center justify-between gap-4 transition-all duration-500"
-              style={{
-                background: `linear-gradient(135deg, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.24) 0%, rgba(10, 10, 12, 0.94) 65%)`,
-              }}
+            {/* Unified Elevated Studio Container (Single-surface hairline separation, zero nested cards) */}
+            <form
+              onSubmit={handleSaveArtistAccount}
+              className="rounded-2xl bg-[#09090b] border border-white/12 divide-y divide-white/8 overflow-hidden shadow-2xl"
             >
-              <div className="flex items-center gap-3.5 w-full sm:w-auto">
-                <div className="relative">
+              {/* Row 1: Google Account Connection */}
+              <div className="p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5 min-w-0">
                   {currentUser?.photoURL ? (
                     <img
                       src={upgradeGooglePhotoQuality(currentUser.photoURL) || currentUser.photoURL}
@@ -3079,334 +3296,272 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       referrerPolicy="no-referrer"
                       loading="eager"
                       decoding="async"
-                      className="w-12 h-12 rounded-2xl object-cover border border-white/20 shadow-md"
+                      className="w-11 h-11 rounded-full object-cover border border-white/20 shrink-0"
                     />
                   ) : (
-                    <div className="w-12 h-12 rounded-2xl bg-neutral-900 border border-white/15 flex items-center justify-center text-white">
-                      <User className="w-6 h-6 text-emerald-400" />
+                    <div className="w-11 h-11 rounded-full bg-neutral-900 border border-white/15 flex items-center justify-center text-white shrink-0">
+                      <User className="w-5 h-5 text-neutral-300" />
                     </div>
                   )}
-                  {currentUser && (
-                    <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-neutral-950" />
-                  )}
-                </div>
 
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-black text-white truncate">
-                      {currentUser?.displayName || (isHe ? 'אמן אורח' : 'Guest Artist')}
-                    </span>
-                    {currentUser && (
-                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">
-                        {isHe ? 'מאומת' : 'Verified'}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-white truncate">
+                        {currentUser?.displayName || (isHe ? 'חשבון Google לא מחובר' : 'Google Account Disconnected')}
                       </span>
-                    )}
-                  </div>
-                  <span className="text-xs text-neutral-400 block truncate">
-                    {currentUser
-                      ? (isHe ? 'מחובר באמצעות Google • פרופיל שמור בענן' : 'Signed in with Google • Cloud synced')
-                      : (isHe ? 'התחבר כדי לשמור ולסנכרן את המוזיקה שלך' : 'Sign in to sync your music')}
-                  </span>
-                </div>
-              </div>
-
-              <div className="w-full sm:w-auto flex justify-end">
-                {currentUser ? (
-                  <button
-                    type="button"
-                    onClick={handleLogout}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
-                  >
-                    <LogOut className="w-4 h-4 text-rose-400" />
-                    <span>{isHe ? 'התנתק מחשבון Google' : 'Sign Out'}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={isAuthLoading}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-white hover:bg-neutral-200 active:scale-95 text-black font-black text-xs shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    <span>{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Main Settings Form */}
-            <form onSubmit={handleSaveArtistAccount} className="space-y-6">
-              {/* Section 1: Artist Identity */}
-              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-neutral-800 space-y-4 shadow-xl">
-                <div className="flex items-center gap-2 border-b border-neutral-800/80 pb-3">
-                  <Mic2 className="w-4 h-4 text-emerald-400" />
-                  <h3 className="text-xs font-black text-white uppercase tracking-wider">
-                    {isHe ? 'פרטי אמן ובמה' : 'Artist Identity & Stage'}
-                  </h3>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row gap-5 items-center pb-4 border-b border-neutral-800/50">
-                    <div className="relative group">
-                      <div
-                        className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 group-hover:border-white/55 transition-all cursor-pointer"
-                        style={{
-                          boxShadow: `0 8px 30px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.45)`,
-                        }}
-                      >
-                        <div className="relative w-24 h-24 rounded-full border border-white/20 overflow-hidden flex items-center justify-center bg-black/40">
-                          {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
-                            <img
-                              src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
-                              referrerPolicy="no-referrer"
-                              loading="eager"
-                              decoding="async"
-                              className="w-full h-full object-cover"
-                              alt="Preview"
-                            />
-                          ) : (
-                            <User className="w-8 h-8 text-white/60 group-hover:text-emerald-400 transition-colors" />
-                          )}
-                          <div className="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-b from-white/20 via-transparent to-transparent" />
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="absolute inset-0 opacity-0 cursor-pointer"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                setArtistAvatarFile(file);
-                                const reader = new FileReader();
-                                reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
-                                reader.readAsDataURL(file);
-                              }
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className="absolute -bottom-1 -right-1 bg-emerald-500 p-1.5 rounded-full shadow-lg border-2 border-neutral-950 pointer-events-none">
-                        <Pencil className="w-3 h-3 text-white" />
-                      </div>
-                    </div>
-                    <div className="space-y-1.5 text-center sm:text-right flex-1">
-                      <h4 className="text-white font-black text-sm">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h4>
-                      <p className="text-[10px] text-neutral-400">{isHe ? 'ברירת המחדל היא תמונת חשבון Google שלך. ניתן להעלות תמונה חדשה והיא תישמר בענן ובכל השירים.' : 'Defaults to your Google account photo. Upload a new one to save to your profile and all tracks.'}</p>
-                      <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
-                        <span className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-widest">{isHe ? 'נשמר בפרופיל האמן' : 'Saved to artist profile'}</span>
-                        {(() => {
-                          const freshUser = getCurrentAuthUser() || currentUser;
-                          const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
-                          if (!googlePhoto) return null;
-                          return (
-                            <button
-                              type="button"
-                              onClick={handleRestoreGoogleAvatar}
-                              disabled={isRestoringGoogleAvatar}
-                              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold border border-white/15 cursor-pointer transition-all disabled:opacity-50"
-                            >
-                              {isRestoringGoogleAvatar
-                                ? (isHe ? 'משחזר תמונת Google...' : 'Restoring Google Photo...')
-                                : (isHe ? 'החזר לתמונת Google' : 'Use Google Photo')}
-                            </button>
-                          );
-                        })()}
-                      </div>
-                      {authError && (
-                        <p className="text-[11px] text-rose-300 font-bold pt-1">{authError}</p>
+                      {currentUser && (
+                        <span className="text-[11px] font-medium text-neutral-400">
+                          · {isHe ? 'מאומת' : 'Verified'}
+                        </span>
                       )}
                     </div>
+                    <p className="text-xs text-neutral-400 truncate mt-0.5">
+                      {currentUser
+                        ? (isHe ? 'מחובר באמצעות Google · השירים והפרופיל מסונכרנים בענן' : 'Connected with Google · Synced to cloud')
+                        : (isHe ? 'התחבר כדי לשמור שירים ולערוך את הפרופיל שלך' : 'Sign in to publish tracks and save profile')}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="shrink-0">
+                  {currentUser ? (
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="w-full sm:w-auto px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-neutral-200 border border-white/15 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>{isHe ? 'התנתק מ-Google' : 'Sign Out'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      disabled={isAuthLoading}
+                      className="w-full sm:w-auto px-5 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      <span>{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 2: Avatar & Artist Stage Identity */}
+              <div className="p-5 sm:p-7 space-y-6">
+                <div className="flex flex-col sm:flex-row items-center gap-5">
+                  <div className="relative group shrink-0">
+                    <div
+                      className="p-1.5 rounded-full bg-white/[0.1] backdrop-blur-2xl border border-white/30 group-hover:border-white/55 transition-all cursor-pointer"
+                      style={{
+                        boxShadow: `0 8px 28px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.4)`,
+                      }}
+                    >
+                      <div className="relative w-20 h-20 sm:w-22 sm:h-22 rounded-full border border-white/20 overflow-hidden flex items-center justify-center bg-black">
+                        {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
+                          <img
+                            src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
+                            referrerPolicy="no-referrer"
+                            loading="eager"
+                            decoding="async"
+                            className="w-full h-full object-cover"
+                            alt="Avatar"
+                          />
+                        ) : (
+                          <User className="w-8 h-8 text-white/50" />
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setArtistAvatarFile(file);
+                              const reader = new FileReader();
+                              reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="absolute -bottom-0.5 -right-0.5 bg-white text-black p-1.5 rounded-full shadow-lg border-2 border-[#09090b] pointer-events-none">
+                      <Pencil className="w-3 h-3" />
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="block text-white font-extrabold text-xs mb-2">
-                      {isHe ? 'שם האמן / שם הבמה (חובה) *' : 'Artist / Stage Name (Required) *'}
+                  <div className="flex-1 text-center sm:text-start space-y-1.5 min-w-0">
+                    <h3 className="text-sm font-semibold text-white">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h3>
+                    <p className="text-xs text-neutral-400 leading-relaxed">
+                      {isHe
+                        ? 'לחץ על המסגרת כדי לבחור תמונה חדשה, שתישמר בפרופיל ובכל השירים שלך.'
+                        : 'Click the circular glass frame to upload a photo synced across your profile and releases.'}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
+                      {(() => {
+                        const freshUser = getCurrentAuthUser() || currentUser;
+                        const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
+                        if (!googlePhoto) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={handleRestoreGoogleAvatar}
+                            disabled={isRestoringGoogleAvatar}
+                            className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.15] text-white text-[11px] font-medium border border-white/15 cursor-pointer transition-colors disabled:opacity-50"
+                          >
+                            {isRestoringGoogleAvatar
+                              ? (isHe ? 'משחזר...' : 'Restoring...')
+                              : (isHe ? 'שחזר תמונת Google' : 'Use Google Photo')}
+                          </button>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div className="sm:col-span-2">
+                    <label className="block text-neutral-300 font-medium mb-1.5">
+                      {isHe ? 'שם האמן / שם הבמה *' : 'Artist / Stage Name *'}
                     </label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        required
-                        value={artistNameInput || currentArtist.name}
-                        onChange={(e) => setArtistNameInput(e.target.value)}
-                        placeholder={currentUser?.displayName || 'שם אמן'}
-                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-bold text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-white font-extrabold text-xs mb-2">
-                        {isHe ? 'סגנון מוזיקלי מוביל' : 'Primary Musical Style'}
-                      </label>
-                      <select
-                        value={genreInput}
-                        onChange={(e) => setGenreInput(e.target.value)}
-                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white text-xs font-bold focus:outline-none focus:border-emerald-400 transition-all cursor-pointer"
-                      >
-                        <option value="ללא סגנון מוזיקלי">{isHe ? 'ללא סגנון מוזיקלי' : 'No Style'}</option>
-                        <option value="Pop">{isHe ? 'Pop (פופ)' : 'Pop'}</option>
-                        <option value="Electronic">{isHe ? 'Electronic (אלקטרוני)' : 'Electronic'}</option>
-                        <option value="Rock">{isHe ? 'Rock (רוק)' : 'Rock'}</option>
-                        <option value="Mizrahi">{isHe ? 'Mizrahi (מזרחית)' : 'Mizrahi'}</option>
-                        <option value="Chill">{isHe ? 'Chill / Lo-Fi (צ׳יל מרגיע)' : 'Chill'}</option>
-                        <option value="Hip Hop">{isHe ? 'Hip Hop (היפ הופ / ראפ)' : 'Hip Hop'}</option>
-                        <option value="Classical">{isHe ? 'Classical (קלאסי)' : 'Classical'}</option>
-                        <option value="Jazz">{isHe ? 'Jazz (ג׳אז)' : 'Jazz'}</option>
-                        <option value="Acoustic">{isHe ? 'Acoustic (אקוסטי)' : 'Acoustic'}</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-white font-extrabold text-xs mb-2 flex items-center gap-1.5">
-                        <Key className="w-3.5 h-3.5 text-neutral-400" />
-                        <span>{isHe ? 'מפתח גישה / כינוי Audius' : 'Audius Handle / Key'}</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={connectionCodeInput}
-                        onChange={(e) => setConnectionCodeInput(e.target.value)}
-                        placeholder="key_abc123 or @handle"
-                        className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
-                      />
-                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={artistNameInput || currentArtist.name}
+                      onChange={(e) => setArtistNameInput(e.target.value)}
+                      placeholder={currentUser?.displayName || (isHe ? 'שם אמן' : 'Artist Name')}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
+                    />
                   </div>
 
                   <div>
-                    <label className="block text-white font-extrabold text-xs mb-2">
-                      {isHe ? 'ביוגרפיה ותיאור אמן (Bio)' : 'Artist Bio'}
+                    <label className="block text-neutral-300 font-medium mb-1.5">
+                      {isHe ? 'סגנון מוזיקלי מוביל' : 'Primary Musical Style'}
+                    </label>
+                    <select
+                      value={genreInput}
+                      onChange={(e) => setGenreInput(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors cursor-pointer"
+                    >
+                      <option value="ללא סגנון מוזיקלי">{isHe ? 'ללא סגנון מוזיקלי' : 'No Style'}</option>
+                      <option value="Pop">{isHe ? 'פופ (Pop)' : 'Pop'}</option>
+                      <option value="Electronic">{isHe ? 'אלקטרוני (Electronic)' : 'Electronic'}</option>
+                      <option value="Rock">{isHe ? 'רוק (Rock)' : 'Rock'}</option>
+                      <option value="Mizrahi">{isHe ? 'מזרחית (Mizrahi)' : 'Mizrahi'}</option>
+                      <option value="Chill">{isHe ? 'צ׳יל / רגוע (Chill)' : 'Chill'}</option>
+                      <option value="Hip Hop">{isHe ? 'היפ הופ / ראפ (Hip Hop)' : 'Hip Hop'}</option>
+                      <option value="Classical">{isHe ? 'קלאסי (Classical)' : 'Classical'}</option>
+                      <option value="Jazz">{isHe ? 'ג׳אז (Jazz)' : 'Jazz'}</option>
+                      <option value="Acoustic">{isHe ? 'אקוסטי (Acoustic)' : 'Acoustic'}</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-neutral-300 font-medium mb-1.5">
+                      {isHe ? 'כינוי / קישור אמן' : 'Artist Handle'}
+                    </label>
+                    <input
+                      type="text"
+                      value={connectionCodeInput}
+                      onChange={(e) => setConnectionCodeInput(e.target.value)}
+                      placeholder="@artist_handle"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white font-mono text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-neutral-300 font-medium mb-1.5">
+                      {isHe ? 'תיאור אמן וביוגרפיה (Bio)' : 'Artist Bio'}
                     </label>
                     <textarea
                       rows={3}
                       value={artistBioInput}
                       onChange={(e) => setArtistBioInput(e.target.value)}
-                      placeholder={isHe ? 'כתוב תיאור קצר אודות האמן, הסגנון והיצירות...' : 'Short bio about the artist...'}
-                      className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white text-xs leading-relaxed focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
+                      placeholder={isHe ? 'ספר בקצרה על היצירה והסגנון שלך...' : 'Short bio about you and your music...'}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm leading-relaxed focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Section: Kolot Cloud Storage */}
-              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-emerald-500/30 space-y-4 shadow-2xl">
-                <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <Globe className="w-5 h-5 text-emerald-400" />
-                    <div>
-                      <h3 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
-                        <span>{isHe ? 'אחסון ענן מאובטח • Kolot Cloud Storage' : 'Secure Cloud Storage • Kolot Cloud'}</span>
-                      </h3>
-                      <p className="text-[10px] text-emerald-400 font-mono">
-                        {isHe ? 'סנכרון ענן אוטומטי (1,000 MB)' : 'Auto Cloud Sync (1,000 MB)'}
-                      </p>
-                    </div>
+              {/* Row 3: Custom Server & Distribution Agreement */}
+              <div className="p-5 sm:p-7 space-y-5 text-xs">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-neutral-300 font-medium">
+                      {isHe ? 'כתובת שרת הזרמה פרטי' : 'Custom Streaming Endpoint'}
+                    </label>
+                    <span className="text-[11px] text-neutral-500">
+                      {isHe ? 'אופציונלי' : 'Optional'}
+                    </span>
                   </div>
-                  <span className="px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5 bg-emerald-500/15 border-emerald-500/30 text-emerald-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>{isHe ? 'אחסון מחובר ופעיל ✓' : 'Cloud Connected ✓'}</span>
-                  </span>
+                  <input
+                    type="url"
+                    value={customServerUrlInput}
+                    onChange={(e) => setCustomServerUrlInput(e.target.value)}
+                    placeholder="https://your-music-server.com/api/tracks"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white font-mono text-xs focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
+                  />
+                  <p className="text-[11px] text-neutral-500 mt-1.5">
+                    {isHe
+                      ? 'כברירת מחדל כל השירים והעטיפות נשמרים אוטומטית באחסון הענן המאובטח של Kolot.'
+                      : 'By default, tracks and artwork sync automatically to Kolot secure cloud hosting.'}
+                  </p>
                 </div>
 
-                <p className="text-[11px] text-neutral-300 leading-relaxed">
-                  {isHe
-                    ? 'כל השירים, האלבומים, התמונות והמטא-דאטה נשמרים ישירות באחסון הענן המוגן של קולות ומופצים בעולם דרך CDN מהיר. השרתים מחוברים אוטומטית בצורה מאובטחת ומוצפנת.'
-                    : 'All songs, albums, and artwork are committed directly to Kolot Cloud Storage and served worldwide via CDN. Connection is secure and active automatically.'}
-                </p>
-              </div>
-
-              {/* Section 2: Cloud Storage Server */}
-              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-neutral-800 space-y-3 shadow-xl">
-                <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
-                  <div className="flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-emerald-400" />
-                    <h3 className="text-xs font-black text-white uppercase tracking-wider">
-                      {isHe ? 'שרת אחסון מוזיקה פרטי' : 'Custom Music Server'}
-                    </h3>
-                  </div>
-                  <span className="text-[10px] text-neutral-400 font-mono">
-                    {isHe ? 'אופציונלי' : 'Optional'}
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-neutral-400">
-                  {isHe
-                    ? 'ניתן להזין כתובת שרת אישי או שרת ענן חיצוני לקריאת שירים וסטרימינג ישיר.'
-                    : 'Optionally specify a custom streaming server endpoint for direct audio streaming.'}
-                </p>
-
-                <input
-                  type="url"
-                  value={customServerUrlInput}
-                  onChange={(e) => {
-                    setCustomServerUrlInput(e.target.value);
-                  }}
-                  placeholder="https://your-custom-music-server.com/api/tracks"
-                  className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
-                />
-              </div>
-
-              {/* Section 3: Terms of Use & Distribution Rights */}
-              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-amber-500/30 space-y-2 text-xs shadow-xl">
-                <div className="flex items-start gap-3">
+                <label htmlFor="termsSettingsCheckPortal" className="flex items-start gap-3 cursor-pointer select-none pt-1">
                   <input
                     type="checkbox"
                     id="termsSettingsCheckPortal"
                     required
                     checked={hasAcceptedTerms}
                     onChange={(e) => setHasAcceptedTerms(e.target.checked)}
-                    className="mt-1 w-5 h-5 rounded border-amber-400 bg-neutral-900 text-amber-500 focus:ring-amber-500 cursor-pointer flex-shrink-0"
+                    className="mt-0.5 w-4.5 h-4.5 rounded border-white/30 bg-black accent-white cursor-pointer flex-shrink-0"
                   />
-                  <label htmlFor="termsSettingsCheckPortal" className="font-medium text-xs leading-relaxed cursor-pointer select-none">
-                    <span className="font-extrabold text-amber-300 block mb-1">
-                      {isHe ? 'תנאי שימוש והרשאת הפצה (חובה לאשר) *' : 'Terms of Use & Distribution Rights (Required) *'}
+                  <span className="text-xs leading-relaxed text-neutral-300">
+                    <span className="font-semibold text-white block mb-0.5">
+                      {isHe ? 'תנאי שימוש והרשאת הפצה *' : 'Terms of Use & Distribution Rights *'}
                     </span>
-                    <span className="text-neutral-300">
-                      {isHe
-                        ? 'אני מאשר/ת כי העלאת השיר מהווה הרשאה לבעלי הפלטפורמה להשמיע, להפיץ ולאחסן את המוזיקה בשרתי האחסון הציבוריים ובשרתי הענן בהתאם לתנאי הפלטפורמה.'
-                        : 'I certify and grant permission to host, stream, and store tracks on cloud and public storage servers.'}
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Section 4: Cloud Storage Settings */}
-              <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-neutral-800 space-y-3 shadow-xl">
-                <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3">
-                  <div className="flex items-center gap-2">
-                    <Cloud className="w-4 h-4 text-emerald-400" />
-                    <h3 className="text-xs font-black text-white uppercase tracking-wider">
-                      {isHe ? 'אחסון ענן מאובטח' : 'Secure Cloud Storage'}
-                    </h3>
-                  </div>
-                  <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
-                    <Check className="w-3 h-3" />
-                    <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
+                    {isHe
+                      ? 'אני מאשר/ת כי תכני האמן מועלים בהתאם לתנאי האתר ובאחריותי המלאה לזכויות היוצרים.'
+                      : 'I confirm all releases comply with platform terms and I hold valid distribution rights.'}
                   </span>
-                </div>
+                </label>
 
-                <p className="text-xs text-neutral-400 leading-relaxed">
-                  {isHe
-                    ? 'אחסון השירים והתמונות מנוהל בצורה מאובטחת 100% בשרתי הענן של האתר. מפתחות האחסון מוגנים בשרת ואינם נחשפים בדפדפן או בכלים למפתחים.'
-                    : 'Storage is handled 100% server-side in secure cloud storage. Credentials are secured on the server.'}
-                </p>
-              </div>
-
-              {/* Submit Save Button */}
-              <button
-                type="submit"
-                disabled={isPairing || !hasAcceptedTerms}
-                className="w-full py-4 rounded-2xl bg-white hover:bg-neutral-200 active:scale-95 text-black font-black text-sm transition-all shadow-2xl cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
-              >
-                {isPairing ? (
-                  <span className="flex items-center gap-2">
-                    <RefreshCw className="w-5 h-5 animate-spin text-black" />
-                    <span>{isHe ? 'שומר הגדרות...' : 'Saving settings...'}</span>
-                  </span>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-5 h-5 text-black" />
-                    <span>{isHe ? 'שמור שינויים והגדרות' : 'Save Settings'}</span>
-                  </>
+                {authError && (
+                  <p className="text-xs text-rose-300 font-medium bg-rose-500/10 border border-rose-500/25 px-3.5 py-2.5 rounded-xl">
+                    {authError}
+                  </p>
                 )}
-              </button>
+              </div>
+
+              {/* Row 4: Footer Submit Bar */}
+              <div className="px-5 sm:px-7 py-4 bg-white/[0.02] flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('profile')}
+                  className="px-5 py-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white text-xs font-medium cursor-pointer transition-colors"
+                >
+                  {isHe ? 'ביטול' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPairing || !hasAcceptedTerms}
+                  className="px-7 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs sm:text-sm transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
+                >
+                  {isPairing ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-black" />
+                      <span>{isHe ? 'שומר...' : 'Saving...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-black" />
+                      <span>{isHe ? 'שמור שינויים והגדרות' : 'Save Settings'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </form>
           </div>
         )}

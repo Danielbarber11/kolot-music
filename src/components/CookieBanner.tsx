@@ -9,9 +9,10 @@ interface CookieBannerProps {
   lang: Language;
   currentUser?: AuthUser | null;
   artistProfile?: ArtistProfile | null;
+  onOpenTerms?: () => void;
 }
 
-export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, artistProfile }) => {
+export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, artistProfile, onOpenTerms }) => {
   const isHe = lang === 'he';
   const [isVisible, setIsVisible] = useState(false);
 
@@ -20,7 +21,6 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
     const hasAccount = !!currentUser || !!artistProfile;
     const profileAccepted = !!artistProfile?.hasAcceptedTerms;
 
-    // If user has an account or already dismissed the cookie notice, hide banner
     if (localAccepted || hasAccount || profileAccepted) {
       setIsVisible(false);
     } else {
@@ -43,7 +43,7 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
       try {
         await saveArtistAccountToR2(updated);
       } catch (err) {
-        console.warn('Failed to update consent in R2 account:', err);
+        console.warn('Failed to update consent in account:', err);
       }
     }
   };
@@ -57,25 +57,47 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 80, opacity: 0 }}
         transition={{ type: 'spring', bounce: 0.1, duration: 0.4 }}
-        className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 z-[160] max-w-md w-full p-4 rounded-2xl bg-slate-900/95 border border-white/20 backdrop-blur-2xl shadow-2xl text-white flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
+        className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 z-[160] max-w-md w-full p-4 rounded-2xl bg-[#0a0a0c]/95 border border-white/15 backdrop-blur-2xl shadow-2xl text-white flex flex-col sm:flex-row items-center justify-between gap-3 text-xs font-normal"
         dir={isHe ? 'rtl' : 'ltr'}
       >
-        <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/30 flex-shrink-0">
-            <Cookie className="w-5 h-5 text-amber-400" />
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-full bg-white/10 border border-white/15 flex-shrink-0 text-white">
+            <Cookie className="w-5 h-5 text-white" />
           </div>
-          <p className="font-bold text-white/90 leading-snug">
-            {isHe
-              ? 'הישארותך באתר מהווה הסכמה לקבצי עוגיות ולתנאי שימוש באתר'
-              : 'Your stay on the site constitutes consent to cookies and terms of use'}
+          <p className="font-normal text-white/85 leading-relaxed">
+            {isHe ? (
+              <>
+                הישארותך באתר מהווה הסכמה לקבצי עוגיות ול
+                <button
+                  type="button"
+                  onClick={onOpenTerms}
+                  className="font-normal text-white underline underline-offset-4 decoration-white/80 bg-white/10 hover:bg-white/20 px-1.5 py-0.5 mx-0.5 rounded transition-colors cursor-pointer"
+                >
+                  תנאי השימוש
+                </button>
+                {' '}באתר
+              </>
+            ) : (
+              <>
+                Your stay on the site constitutes consent to cookies and{' '}
+                <button
+                  type="button"
+                  onClick={onOpenTerms}
+                  className="font-normal text-white underline underline-offset-4 decoration-white/80 bg-white/10 hover:bg-white/20 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                >
+                  terms of use
+                </button>
+              </>
+            )}
           </p>
         </div>
 
         <button
+          type="button"
           onClick={handleAccept}
-          className="w-full sm:w-auto px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition-all shadow-lg cursor-pointer flex items-center justify-center gap-1.5 flex-shrink-0"
+          className="w-full sm:w-auto px-5 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-normal text-xs transition-all shadow-lg cursor-pointer flex items-center justify-center gap-1.5 flex-shrink-0 active:scale-95"
         >
-          <Check className="w-4 h-4 text-slate-950" />
+          <Check className="w-4 h-4 text-black" />
           <span>{isHe ? 'הבנתי' : 'Got it'}</span>
         </button>
       </motion.div>
