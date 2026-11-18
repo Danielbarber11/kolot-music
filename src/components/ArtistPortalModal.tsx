@@ -59,7 +59,7 @@ import {
   checkR2StorageStatus,
 } from '../services/cloudStorageService';
 import { TrackCoverArt } from './TrackCoverArt';
-import { getTrackInstantColor, globalTrackColorCache, extractImageColor } from '../services/colorService';
+import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { transcribeTrackWithWhisperAI } from '../aiLyricsGenerator';
 import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
@@ -1181,6 +1181,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   });
 
   const activeAvatar = artistAvatarPreview || getEffectiveUserAvatar(currentUser, currentArtist);
+  const profileThemeColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
 
   if (!currentUser) {
     return (
@@ -1307,12 +1308,27 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         {/* 1. PUBLIC ARTIST PROFILE SCREEN - STEADY DARK HEADER, ZERO COLOR FLASHES */}
         {activeTab === 'profile' && (
           <div className="w-full flex-1 flex flex-col bg-[#08090d]">
-            <div className="relative w-full overflow-hidden border-b border-white/10 bg-[#0b0d13]">
-              <div className="relative w-full h-28 sm:h-36 overflow-hidden bg-gradient-to-b from-white/[0.04] to-[#08090d]" />
+            <div
+              className="relative w-full overflow-hidden border-b border-white/10 bg-[#08090d]"
+              style={{
+                background: `radial-gradient(circle at 50% 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.45) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.16) 52%, #08090d 100%)`,
+              }}
+            >
+              <div
+                className="relative w-full h-28 sm:h-36 overflow-hidden transition-all duration-500"
+                style={{
+                  background: `linear-gradient(180deg, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.55) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.22) 60%, rgba(8, 9, 13, 0) 100%)`,
+                }}
+              />
 
               <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#08090d] bg-neutral-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
+                  <div
+                    className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 border-[#08090d] bg-neutral-900 overflow-hidden ring-2 ring-white/25 flex items-center justify-center transition-shadow duration-500"
+                    style={{
+                      boxShadow: `0 0 38px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.5)`,
+                    }}
+                  >
                     {activeAvatar ? (
                       <img
                         src={activeAvatar}
@@ -2821,7 +2837,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             </div>
 
             {/* Google Account Authentication Status Card */}
-            <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-white/10 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div
+              className="p-5 sm:p-6 rounded-3xl bg-neutral-950/90 border border-white/15 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-center justify-between gap-4 transition-all duration-500"
+              style={{
+                background: `linear-gradient(135deg, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.24) 0%, rgba(10, 10, 12, 0.94) 65%)`,
+              }}
+            >
               <div className="flex items-center gap-3.5 w-full sm:w-auto">
                 <div className="relative">
                   {currentUser?.photoURL ? (

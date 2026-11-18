@@ -293,18 +293,28 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
         </div>
 
         {/* HERO HEADER: CLEAN STEADY DARK SURFACE MATCHING PROFILE ARTWORK WITHOUT COLOR FLASH */}
-        <div className="relative w-full border-b border-white/10 bg-[#08090d]">
+        <div
+          className="relative w-full border-b border-white/10 bg-[#08090d] transition-all duration-500"
+          style={{
+            background: `radial-gradient(circle at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.45) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.16) 52%, #070b14 100%)`,
+          }}
+        >
           <div
-            className="relative w-full h-32 sm:h-40 overflow-hidden bg-neutral-950"
+            className="relative w-full h-32 sm:h-40 overflow-hidden transition-all duration-500"
             style={{
-              background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.22) 0%, #070b14 100%)`,
+              background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.55) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.2) 60%, rgba(7, 11, 20, 0) 100%)`,
             }}
           />
 
           {/* PROFILE CARD */}
           <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-14 sm:-mt-16 pb-6 flex flex-col sm:flex-row items-center sm:items-end gap-4 sm:gap-6">
             <div className="relative flex-shrink-0">
-              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-[#070b14] bg-neutral-900 shadow-2xl overflow-hidden ring-2 ring-white/20 flex items-center justify-center">
+              <div
+                className="w-24 h-24 sm:w-28 sm:h-28 rounded-full border-4 border-[#070b14] bg-neutral-900 overflow-hidden ring-2 ring-white/25 flex items-center justify-center transition-shadow duration-500"
+                style={{
+                  boxShadow: `0 0 38px rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.5)`,
+                }}
+              >
                 {avatarUrl && !avatarImgError ? (
                   <img
                     src={avatarUrl}

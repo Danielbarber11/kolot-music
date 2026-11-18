@@ -2810,24 +2810,116 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
 
     const uid = String(googleUser.sub).replace(/[^a-zA-Z0-9_\-]/g, '');
     const displayName = String(googleUser.name || 'אמן').trim();
+    const verifiedEmail = googleUser.email_verified ? String(googleUser.email || '').trim().toLowerCase() : '';
     const googlePhotoUrl = upgradeGooglePhotoQualityServer(googleUser.picture);
 
     // Sync Google account & store Google avatar in Cloudflare R2 (never overwriting an artist's custom uploaded R2 avatar)
     let canonicalAvatarUrl = googlePhotoUrl;
     try {
       const { client, bucket } = await getR2Context(req);
-      let existingProfile: any = null;
-      try {
-        const pObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `profiles/${uid}.json` }));
-        if (pObj.Body) existingProfile = JSON.parse(await pObj.Body.transformToString('utf-8'));
-      } catch {}
-      if (!existingProfile) {
+      const readJsonS3 = async (key: string) => {
         try {
-          const legacyObj = await client.send(
-            new GetObjectCommand({ Bucket: bucket, Key: `profiles/artist_${uid}.json` })
+          const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+          return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
+        } catch {
+          return null;
+        }
+      };
+      const writeJsonS3 = async (key: string, data: unknown) => {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Body: Buffer.from(JSON.stringify(data, null, 2), 'utf-8'),
+            ContentType: 'application/json',
+          })
+        );
+      };
+      const listKeysS3 = async (prefix: string): Promise<string[]> => {
+        const resList = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix })).catch(() => null);
+        return (resList?.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+      };
+
+      let existingProfile: any = (await readJsonS3(`profiles/${uid}.json`)) || (await readJsonS3(`profiles/artist_${uid}.json`));
+
+      if (verifiedEmail) {
+        const isDanielOwner = verifiedEmail === 'danielbarber1246@gmail.com';
+        const legacyUids = new Set<string>();
+        const allProfileKeys = await listKeysS3('profiles/');
+        const keysToDelete: string[] = [];
+
+        for (const pKey of allProfileKeys) {
+          if (pKey === `profiles/${uid}.json` || pKey === `profiles/artist_${uid}.json`) continue;
+          const pData = await readJsonS3(pKey);
+          if (!pData || typeof pData !== 'object') continue;
+          const pEmail = String(pData.googleEmail || pData.email || '').trim().toLowerCase();
+          const pName = String(pData.name || '').trim();
+          const pUid = String(pData.googleUid || pData.id || '').replace(/^artist_/, '').trim();
+          const matchesEmail = !!pEmail && pEmail === verifiedEmail;
+          const matchesDaniel = isDanielOwner && pName === 'דניאל ברבר';
+          if (matchesEmail || matchesDaniel) {
+            if (pUid && pUid !== uid) legacyUids.add(pUid);
+            const keyUid = pKey.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+            if (keyUid && keyUid !== uid) legacyUids.add(keyUid);
+            existingProfile = existingProfile
+              ? { ...pData, ...existingProfile, name: existingProfile.name || pData.name, bio: existingProfile.bio || pData.bio, avatarUrl: existingProfile.avatarUrl || pData.avatarUrl, genre: existingProfile.genre || pData.genre }
+              : pData;
+            keysToDelete.push(pKey);
+          }
+        }
+
+        const shouldClaimTrack = (t: any) => {
+          if (!t || typeof t !== 'object') return false;
+          const tUid = String(t.uploadedByUid || '').replace(/^artist_/, '').trim();
+          if (tUid === uid) return false;
+          const tEmail = String(t.uploadedByEmail || '').trim().toLowerCase();
+          const tArtist = String(t.artistName || '').trim();
+          return (
+            (!!tUid && legacyUids.has(tUid)) ||
+            (!!tEmail && tEmail === verifiedEmail) ||
+            (isDanielOwner && tArtist === 'דניאל ברבר')
           );
-          if (legacyObj.Body) existingProfile = JSON.parse(await legacyObj.Body.transformToString('utf-8'));
-        } catch {}
+        };
+
+        const trackKeys = await listKeysS3('tracks/');
+        for (const tKey of trackKeys) {
+          const tData = await readJsonS3(tKey);
+          if (shouldClaimTrack(tData)) {
+            const { uploadedByEmail: _omitEmail, ...cleanTrack } = tData;
+            await writeJsonS3(tKey, { ...cleanTrack, uploadedByUid: uid, artistId: uid });
+          }
+        }
+
+        const idxData = await readJsonS3('tracks_index.json');
+        if (Array.isArray(idxData)) {
+          let idxChanged = false;
+          const updatedIdx = idxData.map((t: any) => {
+            if (shouldClaimTrack(t)) {
+              idxChanged = true;
+              const { uploadedByEmail: _omitEmail, ...cleanTrack } = t;
+              return { ...cleanTrack, uploadedByUid: uid, artistId: uid };
+            }
+            return t;
+          });
+          if (idxChanged) {
+            await writeJsonS3('tracks_index.json', updatedIdx);
+          }
+        }
+
+        const albumKeys = await listKeysS3('albums/');
+        for (const aKey of albumKeys) {
+          const aData = await readJsonS3(aKey);
+          if (!aData || typeof aData !== 'object') continue;
+          const aUid = String(aData.uploadedByUid || aData.artistId || '').replace(/^artist_/, '').trim();
+          const aArtist = String(aData.artistName || '').trim();
+          if ((aUid && legacyUids.has(aUid)) || (isDanielOwner && aArtist === 'דניאל ברבר')) {
+            await writeJsonS3(aKey, { ...aData, artistId: uid, uploadedByUid: uid });
+          }
+        }
+
+        for (const oldKey of keysToDelete) {
+          await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: oldKey })).catch(() => {});
+        }
       }
 
       const existingAvatar = String(existingProfile?.avatarUrl || '').trim();

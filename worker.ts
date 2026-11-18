@@ -675,6 +675,7 @@ export default {
         if (!obj) return new Response('File not found', { status: 404 });
         const headers = new Headers();
         headers.set('Accept-Ranges', 'bytes');
+        headers.set('Access-Control-Allow-Origin', '*');
         headers.set('Content-Type', obj.httpMetadata?.contentType || (filePath.endsWith('.json') ? 'application/json; charset=utf-8' : 'application/octet-stream'));
         headers.set('Cache-Control', filePath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
         return new Response(obj.body, { headers });
@@ -693,6 +694,7 @@ export default {
       }
       const headers = new Headers(s3Res.headers);
       headers.set('Accept-Ranges', 'bytes');
+      headers.set('Access-Control-Allow-Origin', '*');
       headers.set('Cache-Control', filePath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
       return new Response(s3Res.body, { status: s3Res.status, headers });
     }
@@ -1541,12 +1543,108 @@ export default {
 
         const uid = String(googleUser.sub).replace(/[^a-zA-Z0-9_\-]/g, '');
         const displayName = String(googleUser.name || 'אמן').trim();
+        const verifiedEmail = googleUser.email_verified ? String(googleUser.email || '').trim().toLowerCase() : '';
         const googlePhotoUrl = upgradeGooglePhotoWorker(googleUser.picture);
 
         let canonicalAvatarUrl = googlePhotoUrl;
         try {
-          const existingProfile =
+          let existingProfile =
             (await r2ReadJson(`profiles/${uid}.json`)) || (await r2ReadJson(`profiles/artist_${uid}.json`));
+
+          // Verified Legacy Account Migration (Firebase UID -> Google OAuth sub UID)
+          // Scoped strictly to Google-verified email ownership (and specifically 'דניאל ברבר' for danielbarber1246@gmail.com)
+          if (verifiedEmail) {
+            const isDanielOwner = verifiedEmail === 'danielbarber1246@gmail.com';
+            const legacyUids = new Set<string>();
+            const allProfileKeys = (await r2ListKeys('profiles/').catch(() => [])).filter((k) => k.endsWith('.json'));
+            const keysToDelete: string[] = [];
+
+            for (const pKey of allProfileKeys) {
+              if (pKey === `profiles/${uid}.json` || pKey === `profiles/artist_${uid}.json`) continue;
+              const pData = await r2ReadJson(pKey);
+              if (!pData || typeof pData !== 'object') continue;
+              const pEmail = String(pData.googleEmail || pData.email || '').trim().toLowerCase();
+              const pName = String(pData.name || '').trim();
+              const pUid = String(pData.googleUid || pData.id || '')
+                .replace(/^artist_/, '')
+                .trim();
+              const matchesEmail = !!pEmail && pEmail === verifiedEmail;
+              const matchesDaniel = isDanielOwner && pName === 'דניאל ברבר';
+              if (matchesEmail || matchesDaniel) {
+                if (pUid && pUid !== uid) legacyUids.add(pUid);
+                const keyUid = pKey.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+                if (keyUid && keyUid !== uid) legacyUids.add(keyUid);
+                existingProfile = existingProfile
+                  ? { ...pData, ...existingProfile, name: existingProfile.name || pData.name, bio: existingProfile.bio || pData.bio, avatarUrl: existingProfile.avatarUrl || pData.avatarUrl, genre: existingProfile.genre || pData.genre }
+                  : pData;
+                keysToDelete.push(pKey);
+              }
+            }
+
+            // Migrate tracks/*.json & tracks_index.json belonging to legacy UID(s) or verified owner
+            const shouldClaimTrack = (t: any) => {
+              if (!t || typeof t !== 'object') return false;
+              const tUid = String(t.uploadedByUid || '').replace(/^artist_/, '').trim();
+              if (tUid === uid) return false;
+              const tEmail = String(t.uploadedByEmail || '').trim().toLowerCase();
+              const tArtist = String(t.artistName || '').trim();
+              return (
+                (!!tUid && legacyUids.has(tUid)) ||
+                (!!tEmail && tEmail === verifiedEmail) ||
+                (isDanielOwner && tArtist === 'דניאל ברבר')
+              );
+            };
+
+            const trackKeys = (await r2ListKeys('tracks/').catch(() => [])).filter((k) => k.endsWith('.json'));
+            for (const tKey of trackKeys) {
+              const tData = await r2ReadJson(tKey);
+              if (shouldClaimTrack(tData)) {
+                const { uploadedByEmail: _omitEmail, ...cleanTrack } = tData;
+                await r2WriteJson(tKey, {
+                  ...cleanTrack,
+                  uploadedByUid: uid,
+                  artistId: uid,
+                });
+              }
+            }
+
+            const idxData = await r2ReadJson('tracks_index.json');
+            if (Array.isArray(idxData)) {
+              let idxChanged = false;
+              const updatedIdx = idxData.map((t: any) => {
+                if (shouldClaimTrack(t)) {
+                  idxChanged = true;
+                  const { uploadedByEmail: _omitEmail, ...cleanTrack } = t;
+                  return { ...cleanTrack, uploadedByUid: uid, artistId: uid };
+                }
+                return t;
+              });
+              if (idxChanged) {
+                await r2WriteJson('tracks_index.json', updatedIdx);
+              }
+            }
+
+            // Migrate albums/*.json
+            const albumKeys = (await r2ListKeys('albums/').catch(() => [])).filter((k) => k.endsWith('.json'));
+            for (const aKey of albumKeys) {
+              const aData = await r2ReadJson(aKey);
+              if (!aData || typeof aData !== 'object') continue;
+              const aUid = String(aData.uploadedByUid || aData.artistId || '').replace(/^artist_/, '').trim();
+              const aArtist = String(aData.artistName || '').trim();
+              if ((aUid && legacyUids.has(aUid)) || (isDanielOwner && aArtist === 'דניאל ברבר')) {
+                await r2WriteJson(aKey, {
+                  ...aData,
+                  artistId: uid,
+                  uploadedByUid: uid,
+                });
+              }
+            }
+
+            for (const oldKey of keysToDelete) {
+              void r2DeleteKey(oldKey).catch(() => {});
+            }
+          }
+
           const existingAvatar = String(existingProfile?.avatarUrl || '').trim();
           const hasR2StoredAvatar =
             !!existingAvatar &&
