@@ -1573,16 +1573,21 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
     };
 
     const structuredPrompt =
-      `תמלל את השירה והמילים המושרות/מדוברות בקובץ השמע לשורות כתוביות קצרות ומסונכרנות היטב לקצב השירה או הדיבור.\n` +
+      `זהה את השפה המרכזית שבה השיר מושר או מדובר בקובץ השמע ותמלל את המילים לשורות כתוביות קצרות ומסונכרנות היטב לקצב.\n` +
       `${songTitle ? `שם השיר: "${songTitle}". ` : ''}` +
       `${artistName ? `שם הזמר/אמן: "${artistName}". ` : ''}` +
-      `עבור כל שורה ספק:\n` +
-      `1. זמן התחלה מדויק (start) וזמן סיום מדויק (end) בפורמט SRT תקני: HH:MM:SS,mmm (לדוגמה: 00:00:08,200).\n` +
-      `2. text: המילים המקוריות שנשמעות בפועל בשפת המקור (עברית/אנגלית/שפה אחרת).\n` +
-      `3. textHe: המילים בעברית (אם השירה בעברית כתוב במדויק בעברית; אם באנגלית או שפה אחרת, תרגם לעברית טבעית).\n` +
-      `4. textEn: המילים באנגלית (אם השירה באנגלית כתוב במדויק באנגלית; אם בעברית או שפה אחרת, תרגם לאנגלית טבעית).\n` +
-      `אם הקובץ אינסטרומנטלי לחלוטין ללא שום שירה או דיבור, החזר מערך ריק []. אל תמציא מילים או הערות.`;
+      `חוקי חובה:\n` +
+      `1. detectedLanguageCode: קוד שפה קצר (ISO-639-1) של השפה הנשמעת בשיר, לדוגמה "he", "en", "ar", "es", "fr", "ru", "yi", "it", "pt", "de", "ja".\n` +
+      `2. detectedLanguageLabel: שם השפה לקורא (לדוגמה "עברית", "English", "العربية", "Español", "Français", "Русский", "ייִדיש").\n` +
+      `3. עבור כל שורה ב-segments ספק:\n` +
+      `   - start ו-end בפורמט HH:MM:SS,mmm (לדוגמה 00:00:08,200).\n` +
+      `   - text: המילים המקוריות בדיוק בשפה שבה הן מושרות בפועל.\n` +
+      `   - textHe (ברירת מחדל חובה): המילים בעברית (אם השיר בעברית - התמלול המדויק בעברית; אם באנגלית או בכל שפה אחרת - תרגום טבעי ומדויק לעברית).\n` +
+      `   - textEn (ברירת מחדל חובה): המילים באנגלית (אם השיר באנגלית - התמלול המדויק באנגלית; אם בעברית או בכל שפה אחרת - תרגום טבעי ומדויק לאנגלית).\n` +
+      `אם השיר אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר segments ריק []. אל תמציא מילים או הערות.`;
 
+    let detectedLanguageCode = '';
+    let detectedLanguageLabel = '';
     let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
     try {
       const response = await ai.models.generateContent({
@@ -1594,19 +1599,28 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           responseMimeType: 'application/json',
           responseSchema: {
-            type: Type.ARRAY,
-            description: 'רשימת כתוביות מסודרת כרונולוגית',
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                start: { type: Type.STRING, description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
-                end: { type: Type.STRING, description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
-                text: { type: Type.STRING, description: 'הטקסט המושר בשפת המקור' },
-                textHe: { type: Type.STRING, description: 'הטקסט בעברית' },
-                textEn: { type: Type.STRING, description: 'הטקסט באנגלית' },
+            type: Type.OBJECT,
+            description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
+            properties: {
+              detectedLanguageCode: { type: Type.STRING, description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
+              detectedLanguageLabel: { type: Type.STRING, description: 'שם שפת המקור בשפתה או בעברית' },
+              segments: {
+                type: Type.ARRAY,
+                description: 'רשימת כתוביות מסודרת כרונולוגית',
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    start: { type: Type.STRING, description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+                    end: { type: Type.STRING, description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+                    text: { type: Type.STRING, description: 'הטקסט המושר בשפת המקור' },
+                    textHe: { type: Type.STRING, description: 'הטקסט בעברית' },
+                    textEn: { type: Type.STRING, description: 'הטקסט באנגלית' },
+                  },
+                  required: ['start', 'end', 'text', 'textHe', 'textEn'],
+                },
               },
-              required: ['start', 'end', 'text', 'textHe', 'textEn'],
             },
+            required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
           },
         },
       });
@@ -1615,6 +1629,10 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
         const parsed = JSON.parse(rawJson);
         if (Array.isArray(parsed)) {
           structuredItems = parsed;
+        } else if (parsed && Array.isArray(parsed.segments)) {
+          structuredItems = parsed.segments;
+          detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+          detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
         }
       }
     } catch (structErr: any) {
@@ -1625,6 +1643,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       const segments: TranscribedSegment[] = [];
       const segmentsHe: TranscribedSegment[] = [];
       const segmentsEn: TranscribedSegment[] = [];
+      const segmentsOrigRaw: TranscribedSegment[] = [];
 
       structuredItems.forEach((item, idx) => {
         const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
@@ -1646,15 +1665,31 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
           endTime,
           text: String(item?.textEn || mainText).trim(),
         });
+        segmentsOrigRaw.push({
+          id: `gem_orig_${idx}`,
+          startTime,
+          endTime,
+          text: mainText,
+        });
       });
 
       if (segments.length > 0) {
+        const baseLang = detectedLanguageCode.split('-')[0];
+        const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
         return res.json({
           success: true,
           provider: 'gemini-subtitles-srt',
+          detectedLanguageCode: detectedLanguageCode || undefined,
+          detectedLanguageLabel: detectedLanguageLabel || undefined,
           segments,
           segmentsHe,
           segmentsEn,
+          ...(isOrigNonHeEn
+            ? {
+                segmentsOrig: segmentsOrigRaw,
+                lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
+              }
+            : {}),
           lyrics: segments.map((s) => s.text).join('\n'),
           lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
           lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
@@ -2736,7 +2771,10 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
     const incomingSegs = Array.isArray(req.body?.subtitleSegments) ? req.body.subtitleSegments : [];
     const incomingHe = Array.isArray(req.body?.subtitleSegmentsHe) ? req.body.subtitleSegmentsHe : [];
     const incomingEn = Array.isArray(req.body?.subtitleSegmentsEn) ? req.body.subtitleSegmentsEn : [];
-    if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0) {
+    const incomingOrig = Array.isArray(req.body?.subtitleSegmentsOrig) ? req.body.subtitleSegmentsOrig : [];
+    const incomingOrigCode = String(req.body?.detectedLanguageCode || '').trim().slice(0, 12);
+    const incomingOrigLabel = String(req.body?.detectedLanguageLabel || '').trim().slice(0, 48);
+    if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0 && incomingOrig.length === 0) {
       return res.status(400).json({ success: false, error: 'Missing subtitles payload' });
     }
 
@@ -2771,9 +2809,13 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
       subtitleSegments: incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn),
       ...(incomingHe.length > 0 ? { subtitleSegmentsHe: incomingHe } : {}),
       ...(incomingEn.length > 0 ? { subtitleSegmentsEn: incomingEn } : {}),
+      ...(incomingOrig.length > 0 ? { subtitleSegmentsOrig: incomingOrig } : {}),
       ...(req.body?.lyrics ? { lyrics: String(req.body.lyrics) } : {}),
       ...(req.body?.lyricsHe ? { lyricsHe: String(req.body.lyricsHe) } : {}),
       ...(req.body?.lyricsEn ? { lyricsEn: String(req.body.lyricsEn) } : {}),
+      ...(req.body?.lyricsOrig ? { lyricsOrig: String(req.body.lyricsOrig) } : {}),
+      ...(incomingOrigCode ? { detectedLanguageCode: incomingOrigCode } : {}),
+      ...(incomingOrigLabel ? { detectedLanguageLabel: incomingOrigLabel } : {}),
       hasWhisperSubtitles: true,
       viewsCount: Math.max(Number(existing.viewsCount) || 0, optimisticTrackViewCounts.get(cleanId) || 0),
     };
@@ -2803,9 +2845,13 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
                     subtitleSegments: updated.subtitleSegments,
                     ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
                     ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                    ...(updated.subtitleSegmentsOrig ? { subtitleSegmentsOrig: updated.subtitleSegmentsOrig } : {}),
                     ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
                     ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
                     ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                    ...(updated.lyricsOrig ? { lyricsOrig: updated.lyricsOrig } : {}),
+                    ...(updated.detectedLanguageCode ? { detectedLanguageCode: updated.detectedLanguageCode } : {}),
+                    ...(updated.detectedLanguageLabel ? { detectedLanguageLabel: updated.detectedLanguageLabel } : {}),
                     hasWhisperSubtitles: true,
                   };
                 }
@@ -2848,6 +2894,7 @@ app.post('/api/contact', async (req, res) => {
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
     const rawSenderEmail = String(parsedSession?.session?.email || req.body?.senderEmail || '').trim();
+    const category = String(req.body?.category || 'general').trim().slice(0, 48);
     const subject = String(req.body?.subject || '').trim().slice(0, 200);
     const message = String(req.body?.message || '').trim().slice(0, 5000);
 
@@ -2858,11 +2905,22 @@ app.post('/api/contact', async (req, res) => {
       return res.status(400).json({ success: false, error: 'יש למלא נושא ותוכן להודעה' });
     }
 
+    const categoryLabels: Record<string, string> = {
+      complaint: 'תלונה',
+      request: 'בקשה / הצעה',
+      support: 'תקלה טכנית',
+      copyright: 'זכויות יוצרים',
+      general: 'פנייה כללית',
+    };
+    const categoryLabel = categoryLabels[category] || category || 'פנייה';
+
     const msgId = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const targetRecipient = 'kolot.music1@gmail.com';
     const record = {
       id: msgId,
       to: targetRecipient,
+      category,
+      categoryLabel,
       senderEmail: rawSenderEmail,
       senderUid: parsedSession?.session?.uid || undefined,
       senderName: parsedSession?.session?.displayName || undefined,
@@ -2871,6 +2929,14 @@ app.post('/api/contact', async (req, res) => {
       createdAt: new Date().toISOString(),
       status: 'new',
     };
+
+    const fullSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
+    const plainBody =
+      `פנייה חדשה מאתר Kolot Music\n` +
+      `סוג הפנייה: ${categoryLabel}\n` +
+      `מאת: ${rawSenderEmail}${record.senderName ? ` (${record.senderName})` : ''}\n` +
+      `נושא: ${subject}\n\n` +
+      `${message}`;
 
     let storedInR2 = false;
     try {
@@ -2887,8 +2953,11 @@ app.post('/api/contact', async (req, res) => {
     } catch {}
 
     let emailDispatched = false;
+    let emailProvider = '';
+
+    // 1. Resend API
     const resendKey = sanitizeKey(process.env.RESEND_API_KEY);
-    if (resendKey) {
+    if (resendKey && !emailDispatched) {
       try {
         const resendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
@@ -2900,15 +2969,70 @@ app.post('/api/contact', async (req, res) => {
             from: process.env.RESEND_FROM_EMAIL || 'Kolot Music <onboarding@resend.dev>',
             to: [targetRecipient],
             reply_to: rawSenderEmail,
-            subject: `[Kolot Music] ${subject}`,
-            text: `פנייה חדשה מאתר Kolot Music\n\nמאת: ${rawSenderEmail}${record.senderName ? ` (${record.senderName})` : ''}\nנושא: ${subject}\n\n${message}`,
+            subject: fullSubject,
+            text: plainBody,
           }),
           signal: AbortSignal.timeout(8000),
         });
-        if (resendRes.ok) emailDispatched = true;
+        if (resendRes.ok) {
+          emailDispatched = true;
+          emailProvider = 'resend';
+        }
       } catch {}
     }
 
+    // 2. Brevo API
+    const brevoKey = sanitizeKey(process.env.BREVO_API_KEY);
+    if (brevoKey && !emailDispatched) {
+      try {
+        const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: {
+            'api-key': brevoKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            sender: { name: 'Kolot Music', email: targetRecipient },
+            to: [{ email: targetRecipient, name: 'Kolot Music' }],
+            replyTo: { email: rawSenderEmail, name: record.senderName || rawSenderEmail },
+            subject: fullSubject,
+            textContent: plainBody,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (brevoRes.ok) {
+          emailDispatched = true;
+          emailProvider = 'brevo';
+        }
+      } catch {}
+    }
+
+    // 3. Web3Forms API
+    const web3Key = sanitizeKey(process.env.WEB3FORMS_ACCESS_KEY);
+    if (web3Key && !emailDispatched) {
+      try {
+        const wRes = await fetch('https://api.web3forms.com/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            access_key: web3Key,
+            from_name: record.senderName || rawSenderEmail,
+            replyto: rawSenderEmail,
+            subject: fullSubject,
+            message: plainBody,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const wData: any = await wRes.json().catch(() => null);
+        if (wRes.ok && wData?.success === true) {
+          emailDispatched = true;
+          emailProvider = 'web3forms';
+        }
+      } catch {}
+    }
+
+    // 4. FormSubmit AJAX Relay (strictly verify JSON response .success === true / "true")
+    let formSubmitNeedsActivation = false;
     if (!emailDispatched) {
       try {
         const appOrigin = resolveSafeAppOrigin(req);
@@ -2923,14 +3047,21 @@ app.post('/api/contact', async (req, res) => {
           body: JSON.stringify({
             name: record.senderName || rawSenderEmail,
             email: rawSenderEmail,
+            category: categoryLabel,
             _replyto: rawSenderEmail,
-            _subject: `[Kolot Music] ${subject}`,
-            message,
+            _subject: fullSubject,
+            message: plainBody,
             _template: 'table',
           }),
           signal: AbortSignal.timeout(8000),
         });
-        if (fsRes.ok) emailDispatched = true;
+        const fsData: any = await fsRes.json().catch(() => null);
+        if (fsRes.ok && (fsData?.success === true || fsData?.success === 'true')) {
+          emailDispatched = true;
+          emailProvider = 'formsubmit';
+        } else if (String(fsData?.message || '').toLowerCase().includes('activat')) {
+          formSubmitNeedsActivation = true;
+        }
       } catch {}
     }
 
@@ -2938,9 +3069,68 @@ app.post('/api/contact', async (req, res) => {
       return res.status(502).json({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' });
     }
 
-    return res.json({ success: true, id: msgId, recipient: targetRecipient, emailDispatched, storedInR2 });
+    return res.json({
+      success: true,
+      id: msgId,
+      recipient: targetRecipient,
+      emailDispatched,
+      emailProvider: emailProvider || undefined,
+      formSubmitNeedsActivation,
+      storedInR2,
+      needsClientRelay: !emailDispatched,
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' });
+  }
+});
+
+// 4i-4. Admin-only Contact Messages Inbox (list & dismiss stored R2 contact_messages/)
+app.get('/api/admin/contact-messages', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    if (!parsed?.session?.isAdmin) {
+      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    const listed = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'contact_messages/' }));
+    const keys = (listed.Contents || []).map((o) => o.Key).filter((k): k is string => !!k && k.endsWith('.json'));
+    const messages = (
+      await Promise.all(
+        keys.map(async (k) => {
+          try {
+            const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+            return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
+          } catch {
+            return null;
+          }
+        })
+      )
+    )
+      .filter(Boolean)
+      .sort((a: any, b: any) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
+    return res.json({ success: true, messages });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'טעינת הפניות נכשלה' });
+  }
+});
+
+app.delete('/api/admin/contact-messages/:id', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    if (!parsed?.session?.isAdmin) {
+      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
+    }
+    const cleanId = String(req.params.id || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false, error: 'Invalid message ID' });
+    const { client, bucket } = await getR2Context(req);
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `contact_messages/${cleanId}.json` }));
+    return res.json({ success: true, id: cleanId });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'מחיקת הפנייה נכשלה' });
   }
 });
 

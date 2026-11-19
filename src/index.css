@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  --color-spotify-green: #1ed760;
+  --color-spotify-green: #ffffff;
   --color-signal-red: #b85850;
   --color-void-black: #000000;
   --color-carbon: #121212;
@@ -18,7 +18,7 @@
 }
 
 :root {
-  --color-spotify-green: #1ed760;
+  --color-spotify-green: #ffffff;
   --color-signal-red: #b85850;
   --color-void-black: #000000;
   --color-carbon: #121212;

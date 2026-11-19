@@ -28,6 +28,7 @@ import {
   FAVORITES_CHANGED_EVENT,
 } from './services/favoritesService';
 import { prewarmTrackColor } from './services/colorService';
+import { trackPageView, trackSongPlay } from './services/analyticsService';
 
 function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = Array.from(
@@ -119,6 +120,7 @@ export default function App() {
   // Coordinate single-roundtrip /api/bootstrap + color prewarming + top cover & avatar image decode BEFORE dismissing SplashScreen
   // so initial tracks, cards, avatars, and covers appear together immediately without an empty flash or snap.
   useEffect(() => {
+    trackPageView('/', 'Kolot Music');
     let active = true;
 
     const preloadDataAndTopCovers = async () => {
@@ -181,6 +183,7 @@ export default function App() {
         : prev
     );
     incrementTrackViewsInCloud(track);
+    trackSongPlay(track);
     setActivePlayerTrack(updatedTrack);
   };
 

@@ -196,7 +196,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-semibold text-sm text-white truncate group-hover:text-emerald-400 transition-colors">
+                          <h3 className="font-semibold text-sm text-white truncate group-hover:text-white/80 transition-colors">
                             {track.name}
                           </h3>
                           <p className="text-xs text-white/60 truncate mt-0.5">

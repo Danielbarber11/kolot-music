@@ -22,11 +22,11 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
         <motion.div
           initial={{ opacity: 0, scale: 0.9, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          className="relative w-full max-w-xl bg-[#0f172a] border-2 border-emerald-500/50 rounded-3xl p-6 sm:p-8 shadow-2xl text-white space-y-6"
+          className="relative w-full max-w-xl bg-[#09090b] border border-white/25 rounded-3xl p-6 sm:p-8 shadow-2xl text-white space-y-6"
         >
           <div className="flex items-center gap-3 border-b border-white/10 pb-4">
-            <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              <ShieldCheck className="w-7 h-7 text-emerald-400" />
+            <div className="p-3 rounded-2xl bg-white/10 text-white border border-white/20">
+              <ShieldCheck className="w-7 h-7 text-white" />
             </div>
             <div>
               <h2 className="text-lg sm:text-xl font-black text-white flex items-center gap-2">
@@ -38,8 +38,8 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
             </div>
           </div>
 
-          <div className="space-y-3 text-xs leading-relaxed text-white/85 max-h-60 overflow-y-auto p-4 rounded-2xl bg-slate-900 border border-white/10 custom-scrollbar">
-            <h4 className="font-extrabold text-emerald-300 text-sm">
+          <div className="space-y-3 text-xs leading-relaxed text-white/85 max-h-60 overflow-y-auto p-4 rounded-2xl bg-neutral-900 border border-white/10 custom-scrollbar">
+            <h4 className="font-extrabold text-white text-sm">
               {isHe ? 'תנאי ההפצה ואחסון השירים (Terms & Public Storage Rights):' : 'Music Streaming & Storage Terms:'}
             </h4>
             <ul className="space-y-2 list-disc list-inside text-[11px] text-white/80">
@@ -68,9 +68,9 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
 
           <button
             onClick={onAccept}
-            className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:brightness-110 text-slate-950 font-black text-sm transition-all shadow-xl cursor-pointer flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-95"
+            className="w-full py-4 rounded-2xl bg-white hover:bg-neutral-200 text-black font-black text-sm transition-all shadow-xl cursor-pointer flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-95"
           >
-            <Check className="w-5 h-5 text-slate-950" />
+            <Check className="w-5 h-5 text-black" />
             <span>{isHe ? 'אני מאשר/ת את תנאי השימוש וממשיך/ה לאתר' : 'I Accept & Continue'}</span>
           </button>
         </motion.div>

@@ -811,20 +811,30 @@ export async function saveTrackSubtitlesInCloud(
   extra?: {
     subtitleSegmentsHe?: JamendoTrack['subtitleSegmentsHe'];
     subtitleSegmentsEn?: JamendoTrack['subtitleSegmentsEn'];
+    subtitleSegmentsOrig?: JamendoTrack['subtitleSegmentsOrig'];
     lyricsHe?: string;
     lyricsEn?: string;
+    lyricsOrig?: string;
+    detectedLanguageCode?: string;
+    detectedLanguageLabel?: string;
   }
 ): Promise<boolean> {
   try {
     const updatedTrack: JamendoTrack = {
       ...track,
       subtitleSegments,
-      hasWhisperSubtitles: subtitleSegments.length > 0 || !!(extra?.subtitleSegmentsHe?.length || extra?.subtitleSegmentsEn?.length),
+      hasWhisperSubtitles:
+        subtitleSegments.length > 0 ||
+        !!(extra?.subtitleSegmentsHe?.length || extra?.subtitleSegmentsEn?.length || extra?.subtitleSegmentsOrig?.length),
       ...(lyrics ? { lyrics } : {}),
       ...(extra?.subtitleSegmentsHe?.length ? { subtitleSegmentsHe: extra.subtitleSegmentsHe } : {}),
       ...(extra?.subtitleSegmentsEn?.length ? { subtitleSegmentsEn: extra.subtitleSegmentsEn } : {}),
+      ...(extra?.subtitleSegmentsOrig?.length ? { subtitleSegmentsOrig: extra.subtitleSegmentsOrig } : {}),
       ...(extra?.lyricsHe ? { lyricsHe: extra.lyricsHe } : {}),
       ...(extra?.lyricsEn ? { lyricsEn: extra.lyricsEn } : {}),
+      ...(extra?.lyricsOrig ? { lyricsOrig: extra.lyricsOrig } : {}),
+      ...(extra?.detectedLanguageCode ? { detectedLanguageCode: extra.detectedLanguageCode } : {}),
+      ...(extra?.detectedLanguageLabel ? { detectedLanguageLabel: extra.detectedLanguageLabel } : {}),
     };
     const res = await fetch('/api/storage/upload', {
       method: 'POST',
@@ -850,9 +860,13 @@ export async function saveGeneratedSubtitlesToCloud(
     segments: NonNullable<JamendoTrack['subtitleSegments']>;
     segmentsHe?: JamendoTrack['subtitleSegmentsHe'];
     segmentsEn?: JamendoTrack['subtitleSegmentsEn'];
+    segmentsOrig?: JamendoTrack['subtitleSegmentsOrig'];
     lyrics?: string;
     lyricsHe?: string;
     lyricsEn?: string;
+    lyricsOrig?: string;
+    detectedLanguageCode?: string;
+    detectedLanguageLabel?: string;
   }
 ): Promise<JamendoTrack | null> {
   try {
@@ -867,9 +881,13 @@ export async function saveGeneratedSubtitlesToCloud(
         subtitleSegments: subData.segments,
         subtitleSegmentsHe: subData.segmentsHe,
         subtitleSegmentsEn: subData.segmentsEn,
+        subtitleSegmentsOrig: subData.segmentsOrig,
         lyrics: subData.lyrics,
         lyricsHe: subData.lyricsHe,
         lyricsEn: subData.lyricsEn,
+        lyricsOrig: subData.lyricsOrig,
+        detectedLanguageCode: subData.detectedLanguageCode,
+        detectedLanguageLabel: subData.detectedLanguageLabel,
       }),
     });
     if (!res.ok) return null;

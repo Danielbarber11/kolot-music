@@ -188,7 +188,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   }, [allArtists.length]);
 
-  const [subtitleLang, setSubtitleLang] = useState<'he' | 'en'>(() =>
+  const [subtitleLang, setSubtitleLang] = useState<'he' | 'en' | 'orig'>(() =>
     track.subtitleSegmentsHe?.length
       ? 'he'
       : track.subtitleSegmentsEn?.length && !track.subtitleSegmentsHe?.length
@@ -203,32 +203,57 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [whisperSegmentsEn, setWhisperSegmentsEn] = useState<SubtitleSegment[] | undefined>(
     track.subtitleSegmentsEn
   );
+  const [whisperSegmentsOrig, setWhisperSegmentsOrig] = useState<SubtitleSegment[] | undefined>(
+    track.subtitleSegmentsOrig
+  );
   const [whisperLyricsHe, setWhisperLyricsHe] = useState<string | undefined>(track.lyricsHe || track.lyrics);
   const [whisperLyricsEn, setWhisperLyricsEn] = useState<string | undefined>(track.lyricsEn);
+  const [whisperLyricsOrig, setWhisperLyricsOrig] = useState<string | undefined>(track.lyricsOrig);
+  const [detectedLangLabel, setDetectedLangLabel] = useState<string | undefined>(track.detectedLanguageLabel);
 
   useEffect(() => {
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
     const hasEn = !!track.subtitleSegmentsEn?.length;
     setWhisperSegmentsHe(track.subtitleSegmentsHe || track.subtitleSegments);
     setWhisperSegmentsEn(track.subtitleSegmentsEn);
+    setWhisperSegmentsOrig(track.subtitleSegmentsOrig);
     setWhisperLyricsHe(track.lyricsHe || track.lyrics);
     setWhisperLyricsEn(track.lyricsEn);
+    setWhisperLyricsOrig(track.lyricsOrig);
+    setDetectedLangLabel(track.detectedLanguageLabel);
     setSubtitleLang(!hasHe && hasEn ? 'en' : 'he');
-  }, [track.id, track.subtitleSegments, track.subtitleSegmentsHe, track.subtitleSegmentsEn, track.lyrics, track.lyricsHe, track.lyricsEn]);
+  }, [
+    track.id,
+    track.subtitleSegments,
+    track.subtitleSegmentsHe,
+    track.subtitleSegmentsEn,
+    track.subtitleSegmentsOrig,
+    track.lyrics,
+    track.lyricsHe,
+    track.lyricsEn,
+    track.lyricsOrig,
+    track.detectedLanguageLabel,
+  ]);
 
   const activeSegments =
-    subtitleLang === 'en'
-      ? whisperSegmentsEn && whisperSegmentsEn.length > 0
-        ? whisperSegmentsEn
-        : whisperSegmentsHe
-      : whisperSegmentsHe && whisperSegmentsHe.length > 0
-        ? whisperSegmentsHe
-        : whisperSegmentsEn;
+    subtitleLang === 'orig'
+      ? whisperSegmentsOrig && whisperSegmentsOrig.length > 0
+        ? whisperSegmentsOrig
+        : whisperSegmentsHe || whisperSegmentsEn
+      : subtitleLang === 'en'
+        ? whisperSegmentsEn && whisperSegmentsEn.length > 0
+          ? whisperSegmentsEn
+          : whisperSegmentsHe
+        : whisperSegmentsHe && whisperSegmentsHe.length > 0
+          ? whisperSegmentsHe
+          : whisperSegmentsEn;
 
   const activeLyricsText =
-    subtitleLang === 'en'
-      ? whisperLyricsEn || whisperLyricsHe || track.lyrics
-      : whisperLyricsHe || whisperLyricsEn || track.lyrics;
+    subtitleLang === 'orig'
+      ? whisperLyricsOrig || whisperLyricsHe || whisperLyricsEn || track.lyrics
+      : subtitleLang === 'en'
+        ? whisperLyricsEn || whisperLyricsHe || track.lyrics
+        : whisperLyricsHe || whisperLyricsEn || track.lyrics;
 
   const effectiveTrackForLyrics = React.useMemo(
     () => ({
@@ -236,11 +261,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       subtitleSegments: activeSegments,
       subtitleSegmentsHe: whisperSegmentsHe,
       subtitleSegmentsEn: whisperSegmentsEn,
+      subtitleSegmentsOrig: whisperSegmentsOrig,
       lyrics: activeLyricsText,
       lyricsHe: whisperLyricsHe,
       lyricsEn: whisperLyricsEn,
+      lyricsOrig: whisperLyricsOrig,
     }),
-    [track, activeSegments, whisperSegmentsHe, whisperSegmentsEn, activeLyricsText, whisperLyricsHe, whisperLyricsEn]
+    [track, activeSegments, whisperSegmentsHe, whisperSegmentsEn, whisperSegmentsOrig, activeLyricsText, whisperLyricsHe, whisperLyricsEn, whisperLyricsOrig]
   );
 
   const syncedLyrics = React.useMemo(
@@ -326,9 +353,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             segments: genRes.segments,
             segmentsHe: genRes.segmentsHe,
             segmentsEn: genRes.segmentsEn,
+            segmentsOrig: genRes.segmentsOrig,
             lyrics: genRes.lyrics,
             lyricsHe: genRes.lyricsHe,
             lyricsEn: genRes.lyricsEn,
+            lyricsOrig: genRes.lyricsOrig,
+            detectedLanguageCode: genRes.detectedLanguageCode,
+            detectedLanguageLabel: genRes.detectedLanguageLabel,
           });
           if (!savedTrack) {
             return null;
@@ -348,10 +379,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       if (cancelled || !savedTrack || savedTrack.id !== track.id) return;
       const savedHe = savedTrack.subtitleSegmentsHe || savedTrack.subtitleSegments;
       const savedEn = savedTrack.subtitleSegmentsEn;
+      const savedOrig = savedTrack.subtitleSegmentsOrig;
       setWhisperSegmentsHe(savedHe);
       setWhisperSegmentsEn(savedEn);
+      setWhisperSegmentsOrig(savedOrig);
       setWhisperLyricsHe(savedTrack.lyricsHe || savedTrack.lyrics);
       setWhisperLyricsEn(savedTrack.lyricsEn);
+      setWhisperLyricsOrig(savedTrack.lyricsOrig);
+      setDetectedLangLabel(savedTrack.detectedLanguageLabel);
       if (!savedHe?.length && savedEn?.length) {
         setSubtitleLang('en');
       }
@@ -367,8 +402,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     effectiveAudioUrl,
     whisperSegmentsHe,
     whisperSegmentsEn,
+    whisperSegmentsOrig,
     whisperLyricsHe,
     whisperLyricsEn,
+    whisperLyricsOrig,
   ]);
 
   const togglePlayPause = () => {
@@ -738,7 +775,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               className="text-xs sm:text-sm font-bold text-white hover:text-white/80 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <span>{track.artistName}</span>
-              {track.featuredArtist && <span className="text-emerald-300 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
+              {track.featuredArtist && <span className="text-white/80 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
               <ArrowUpRight className="w-3.5 h-3.5 text-white" />
             </button>
           </div>
@@ -821,7 +858,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               <button
                 type="button"
                 onClick={handleOpenArtistProfile}
-                className="font-bold text-emerald-400 hover:text-emerald-300 text-sm truncate block text-start cursor-pointer underline decoration-dotted"
+                className="font-bold text-white hover:text-white/80 text-sm truncate block text-start cursor-pointer underline decoration-dotted"
               >
                 {track.artistName}
               </button>
@@ -830,7 +867,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             {track.featuredArtist && (
               <div>
                 <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר אורח:' : 'Featured Artist:'}</span>
-                <span className="font-bold text-emerald-300 text-xs truncate block">{track.featuredArtist}</span>
+                <span className="font-bold text-white/90 text-xs truncate block">{track.featuredArtist}</span>
               </div>
             )}
 
@@ -862,7 +899,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             )}
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
-              <span className="font-bold text-emerald-400 truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
+              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
             </div>
           </div>
         </div>
@@ -878,7 +915,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20 shrink-0">
-                    <Captions className="w-4 h-4 text-emerald-400" />
+                    <Captions className="w-4 h-4 text-white" />
                   </div>
                   <div className="min-w-0">
                     <h3 className="text-sm font-extrabold text-white flex items-center gap-2 truncate">
@@ -905,16 +942,21 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               </button>
             </div>
 
-            {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0) || syncedLyrics.isWhisperSynced) && (
+            {((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
+              (whisperSegmentsEn && whisperSegmentsEn.length > 0) ||
+              (whisperSegmentsOrig && whisperSegmentsOrig.length > 0) ||
+              syncedLyrics.isWhisperSynced) && (
               <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <div className="flex items-center gap-2">
-                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
-                    <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
+                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
+                    (whisperSegmentsEn && whisperSegmentsEn.length > 0) ||
+                    (whisperSegmentsOrig && whisperSegmentsOrig.length > 0)) && (
+                    <div className="inline-flex items-center flex-wrap gap-0.5 rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
                       <button
                         type="button"
                         onClick={() => setSubtitleLang('he')}
                         className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                          subtitleLang === 'he' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                          subtitleLang === 'he' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
                         }`}
                       >
                         עברית
@@ -923,17 +965,28 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                         type="button"
                         onClick={() => setSubtitleLang('en')}
                         className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                          subtitleLang === 'en' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                          subtitleLang === 'en' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
                         }`}
                       >
                         English
                       </button>
+                      {whisperSegmentsOrig && whisperSegmentsOrig.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSubtitleLang('orig')}
+                          className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                            subtitleLang === 'orig' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
+                          }`}
+                        >
+                          {detectedLangLabel || (isHe ? 'שפת המקור' : 'Original')}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
 
                 {syncedLyrics.isWhisperSynced && (
-                  <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                  <span className="text-[10px] font-bold text-white/90 bg-white/10 border border-white/20 px-2.5 py-1 rounded-lg">
                     {isHe ? 'כתוביות מסונכרנות' : 'Synced Subtitles'}
                   </span>
                 )}
@@ -971,7 +1024,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                               : 'hover:bg-white/5'
                           }`}
                         >
-                          <span className="text-[10px] font-mono text-emerald-300/80 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
+                          <span className="text-[10px] font-mono text-white/70 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
                             {mm}:{ss}
                           </span>
                           <div className="flex flex-wrap items-center gap-1.5 flex-1">
@@ -984,7 +1037,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                                   className={`text-xs sm:text-sm transition-all duration-150 ${
                                     isWordActive
                                       ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
-                                      : 'text-white font-medium hover:text-emerald-300'
+                                      : 'text-white font-medium hover:text-white/80'
                                   }`}
                                 >
                                   {w.text}
@@ -1008,8 +1061,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
       {/* SHARE FEEDBACK TOAST */}
       {copiedLink && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] px-5 py-2.5 rounded-full bg-emerald-500 text-slate-950 font-black text-xs shadow-2xl flex items-center gap-2 animate-bounce">
-          <Share2 className="w-4 h-4 text-slate-950" />
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] px-5 py-2.5 rounded-full bg-white text-black font-black text-xs shadow-2xl flex items-center gap-2 animate-bounce">
+          <Share2 className="w-4 h-4 text-black" />
           <span>{isHe ? 'הקישור לשיר הועתק בהצלחה! ✓' : 'Song link copied! ✓'}</span>
         </div>
       )}

@@ -55,7 +55,7 @@ export function sanitizeSubtitleLettersOnly(rawText: string): string {
     .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, ' ');
 
   cleaned = cleaned
-    .replace(/[^\p{L}\s]/gu, ' ')
+    .replace(/[^\p{L}\p{M}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -767,9 +767,13 @@ export interface GeminiSubtitlesResult {
   segments: SubtitleSegment[];
   segmentsHe: SubtitleSegment[];
   segmentsEn: SubtitleSegment[];
+  segmentsOrig?: SubtitleSegment[];
   lyrics: string;
   lyricsHe: string;
   lyricsEn: string;
+  lyricsOrig?: string;
+  detectedLanguageCode?: string;
+  detectedLanguageLabel?: string;
   provider?: string;
   error?: string;
 }
@@ -958,8 +962,23 @@ export async function generateSubtitlesWithGeminiMethod(options: {
       segmentsEn = segmentsHe.map((s, idx) => ({ ...s, id: `gem_en_${idx}`, text: trLines?.[idx] || s.text }));
     }
 
+    const detectedCode = String(sData.detectedLanguageCode || '').trim().toLowerCase();
+    const detectedBase = detectedCode.split('-')[0];
+    const detectedLabel = String(sData.detectedLanguageLabel || '').trim();
+    const isDetectedNonHeEn = Boolean(detectedBase && detectedBase !== 'he' && detectedBase !== 'iw' && detectedBase !== 'en');
+
+    let segmentsOrig: SubtitleSegment[] | undefined;
+    if (isDetectedNonHeEn) {
+      const rawOrig = Array.isArray(sData.segmentsOrig) && sData.segmentsOrig.length > 0 ? sData.segmentsOrig : sData.segments;
+      const cleanedOrig = normalizeList(rawOrig, 'gem_orig');
+      if (cleanedOrig.length > 0) {
+        segmentsOrig = cleanedOrig;
+      }
+    }
+
     const lyricsHe = segmentsHe.map((s) => s.text).join('\n');
     const lyricsEn = segmentsEn.map((s) => s.text).join('\n');
+    const lyricsOrig = segmentsOrig ? segmentsOrig.map((s) => s.text).join('\n') : undefined;
     const isEn = options.language === 'en';
 
     return {
@@ -967,6 +986,9 @@ export async function generateSubtitlesWithGeminiMethod(options: {
       segments: isEn ? segmentsEn : segmentsHe,
       segmentsHe,
       segmentsEn,
+      ...(segmentsOrig ? { segmentsOrig, lyricsOrig } : {}),
+      ...(detectedCode ? { detectedLanguageCode: detectedCode } : {}),
+      ...(detectedLabel ? { detectedLanguageLabel: detectedLabel } : {}),
       lyrics: isEn ? lyricsEn : lyricsHe,
       lyricsHe,
       lyricsEn,
@@ -1003,9 +1025,13 @@ export async function transcribeAudioOnDevice(options: {
   segments?: SubtitleSegment[];
   segmentsHe?: SubtitleSegment[];
   segmentsEn?: SubtitleSegment[];
+  segmentsOrig?: SubtitleSegment[];
   lyrics?: string;
   lyricsHe?: string;
   lyricsEn?: string;
+  lyricsOrig?: string;
+  detectedLanguageCode?: string;
+  detectedLanguageLabel?: string;
   provider?: string;
   error?: string;
 }> {

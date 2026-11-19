@@ -441,3 +441,45 @@ export async function deleteArtistAccountInAdmin(uid: string): Promise<{ success
     return { success: false, error: err?.message || 'שגיאת רשת במחיקת החשבון' };
   }
 }
+
+export interface ContactMessageRecord {
+  id: string;
+  to: string;
+  category?: string;
+  categoryLabel?: string;
+  senderEmail: string;
+  senderName?: string;
+  subject: string;
+  message: string;
+  createdAt: string;
+  status?: string;
+}
+
+export async function getContactMessagesInAdmin(): Promise<ContactMessageRecord[]> {
+  try {
+    const res = await fetch('/api/admin/contact-messages', {
+      headers: getAuthHeaders(),
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    const data = await res.json().catch(() => null);
+    return Array.isArray(data?.messages) ? data.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function dismissContactMessageInAdmin(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/admin/contact-messages/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+      credentials: 'include',
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+

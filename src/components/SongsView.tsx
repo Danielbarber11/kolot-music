@@ -24,6 +24,11 @@ import {
   Loader2,
   WifiOff,
   AlertTriangle,
+  Music,
+  Mic,
+  Guitar,
+  Headphones,
+  Film,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album, CURRENT_TERMS_VERSION } from '../types';
@@ -87,6 +92,33 @@ import {
   toggleUserFavorite,
   FAVORITES_CHANGED_EVENT,
 } from '../services/favoritesService';
+import { trackSearchQuery, trackEvent } from '../services/analyticsService';
+
+const renderCategoryIcon = (genreId: string, className = 'w-3.5 h-3.5 text-white shrink-0') => {
+  switch (genreId) {
+    case 'Mizrahi':
+      return <Flame className={className} />;
+    case 'Pop':
+      return <Sparkles className={className} />;
+    case 'Hip Hop':
+      return <Mic className={className} />;
+    case 'Rock':
+      return <Guitar className={className} />;
+    case 'Electronic':
+      return <Radio className={className} />;
+    case 'Chill':
+      return <Headphones className={className} />;
+    case 'Cinematic':
+      return <Film className={className} />;
+    case 'Classical':
+    case 'Jazz':
+    case 'Blues':
+      return <Disc className={className} />;
+    case 'Acoustic':
+    default:
+      return <Music className={className} />;
+  }
+};
 
 const ArtistCircleImage: React.FC<{
   src?: string;
@@ -472,6 +504,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     const term = searchQuery.trim();
 
     const timer = setTimeout(async () => {
+      trackSearchQuery(term);
       try {
         const modernResults = await searchModern21stCenturyTracks(term, 24);
         if (modernResults.length > 0) {
@@ -777,7 +810,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   return (
     <div
-      className="h-screen overflow-hidden bg-[#000000] text-white font-sans flex flex-col antialiased selection:bg-[#1ed760] selection:text-black"
+      className="h-screen overflow-hidden bg-[#000000] text-white font-sans flex flex-col antialiased selection:bg-white selection:text-black"
       dir={isHe ? 'rtl' : 'ltr'}
     >
       {/* DEVTOOLS SECURITY PROTECTION */}
@@ -1483,7 +1516,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
               <section className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <SlidersHorizontal className="w-4 h-4 text-emerald-400" />
+                    <SlidersHorizontal className="w-4 h-4 text-white" />
                     <h2 className="text-sm sm:text-base font-bold text-white tracking-tight">
                       {isHe ? 'עיון לפי ז׳אנר (זיהוי שמע אוטומטי)' : 'Browse by Audio-Classified Genre'}
                     </h2>
@@ -1493,12 +1526,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     <button
                       onClick={handleBulkClassifyUntagged}
                       disabled={isBulkClassifying}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 border border-white/30 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
                     >
                       {isBulkClassifying ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
                       ) : (
-                        <Wand2 className="w-3.5 h-3.5" />
+                        <Wand2 className="w-3.5 h-3.5 text-white" />
                       )}
                       <span>
                         {isHe
@@ -1510,21 +1543,25 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 </div>
 
                 {bulkClassifyNotice && (
-                  <div className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 text-xs font-semibold">
+                  <div className="px-3.5 py-2 rounded-xl bg-white/10 border border-white/25 text-white text-xs font-semibold">
                     {bulkClassifyNotice}
                   </div>
                 )}
 
                 <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar">
                   <button
-                    onClick={() => setSelectedGenre(null)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border ${
+                    onClick={() => {
+                      setSelectedGenre(null);
+                      trackEvent('select_genre', { genre: 'all' });
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border flex items-center gap-1.5 text-white ${
                       !selectedGenre
-                        ? 'bg-white text-black border-white shadow-md'
-                        : 'bg-white/[0.05] text-white/80 hover:text-white hover:bg-white/[0.12] border-white/10'
+                        ? 'bg-white/20 border-white shadow-md'
+                        : 'bg-white/[0.06] hover:bg-white/[0.14] border-white/15'
                     }`}
                   >
-                    {isHe ? `הכל (${validHomeTracks.length})` : `All (${validHomeTracks.length})`}
+                    <Music className="w-3.5 h-3.5 text-white shrink-0" />
+                    <span>{isHe ? `הכל (${validHomeTracks.length})` : `All (${validHomeTracks.length})`}</span>
                   </button>
                   {CANONICAL_GENRES.filter((g) => (genreCounts[g.id] || 0) > 0).map((g) => {
                     const count = genreCounts[g.id] || 0;
@@ -1532,15 +1569,20 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     return (
                       <button
                         key={g.id}
-                        onClick={() => setSelectedGenre(active ? null : g.id)}
-                        className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border flex items-center gap-1.5 ${
+                        onClick={() => {
+                          const next = active ? null : g.id;
+                          setSelectedGenre(next);
+                          trackEvent('select_genre', { genre: next || 'all' });
+                        }}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer border flex items-center gap-1.5 text-white ${
                           active
-                            ? 'bg-emerald-500 text-black border-emerald-400 shadow-md'
-                            : 'bg-white/[0.05] text-white/85 hover:text-white hover:bg-white/[0.12] border-white/10'
+                            ? 'bg-white/20 border-white shadow-md'
+                            : 'bg-white/[0.06] hover:bg-white/[0.14] border-white/15'
                         }`}
                       >
-                        <span>{isHe ? g.labelHe : g.labelEn}</span>
-                        <span className={`text-[10px] ${active ? 'text-black/70' : 'text-white/50'}`}>
+                        {renderCategoryIcon(g.id, 'w-3.5 h-3.5 text-white shrink-0')}
+                        <span className="text-white">{isHe ? g.labelHe : g.labelEn}</span>
+                        <span className="text-[10px] text-white/75">
                           ({count})
                         </span>
                       </button>
@@ -1939,8 +1981,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   <section key={section.id} className="space-y-4">
                     <div className="flex items-center justify-between">
                       <div>
-                        <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                          {isHe ? section.titleHe : section.titleEn}
+                        <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                          {renderCategoryIcon(section.id, 'w-5 h-5 text-white shrink-0')}
+                          <span>{isHe ? section.titleHe : section.titleEn}</span>
                         </h2>
                         <p className="text-xs text-white/60 mt-0.5 font-normal">
                           {isHe ? section.subtitleHe : section.subtitleEn}
@@ -1948,7 +1991,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       </div>
                       <button
                         onClick={() => setSelectedGenre(section.id)}
-                        className="text-xs font-medium text-white/60 hover:text-white hover:underline cursor-pointer"
+                        className="text-xs font-medium text-white/75 hover:text-white hover:underline cursor-pointer"
                       >
                         {isHe ? `הכל בז׳אנר (${section.tracks.length})` : `Show all (${section.tracks.length})`}
                       </button>
@@ -1999,9 +2042,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             </p>
                           </div>
 
-                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                            <span className="text-emerald-300/80 text-[10px] font-semibold truncate">
-                              {getGenreDisplayLabel(track.genre, isHe)}
+                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/75">
+                            <span className="text-white text-[10px] font-semibold truncate flex items-center gap-1">
+                              {renderCategoryIcon(normalizeGenreId(track.genre), 'w-3 h-3 text-white shrink-0')}
+                              <span>{getGenreDisplayLabel(track.genre, isHe)}</span>
                             </span>
                             <button
                               onClick={(e) => {

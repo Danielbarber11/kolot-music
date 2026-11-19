@@ -53,18 +53,20 @@ function parseLrcTimestamp(ts: string): number {
 export function generateSynchronizedLyrics(
   track: JamendoTrack,
   overrideSegments?: SubtitleSegment[],
-  preferredLang: 'he' | 'en' = 'he'
+  preferredLang: 'he' | 'en' | 'orig' = 'he'
 ): SynchronizedLyrics {
   const segments =
     overrideSegments && overrideSegments.length > 0
       ? overrideSegments
-      : preferredLang === 'en' && track.subtitleSegmentsEn && track.subtitleSegmentsEn.length > 0
-        ? track.subtitleSegmentsEn
-        : preferredLang === 'he' && track.subtitleSegmentsHe && track.subtitleSegmentsHe.length > 0
-          ? track.subtitleSegmentsHe
-          : track.subtitleSegments && track.subtitleSegments.length > 0
-            ? track.subtitleSegments
-            : undefined;
+      : preferredLang === 'orig' && track.subtitleSegmentsOrig && track.subtitleSegmentsOrig.length > 0
+        ? track.subtitleSegmentsOrig
+        : preferredLang === 'en' && track.subtitleSegmentsEn && track.subtitleSegmentsEn.length > 0
+          ? track.subtitleSegmentsEn
+          : preferredLang === 'he' && track.subtitleSegmentsHe && track.subtitleSegmentsHe.length > 0
+            ? track.subtitleSegmentsHe
+            : track.subtitleSegments && track.subtitleSegments.length > 0
+              ? track.subtitleSegments
+              : undefined;
 
   if (segments && segments.length > 0) {
     const lines: SynchronizedLine[] = segments
@@ -107,9 +109,11 @@ export function generateSynchronizedLyrics(
   const artistName = sanitizeSubtitleLettersOnly(track.artistName || 'אמן');
 
   const sourceLyrics =
-    preferredLang === 'en'
-      ? track.lyricsEn || track.lyrics
-      : track.lyricsHe || track.lyrics;
+    preferredLang === 'orig'
+      ? track.lyricsOrig || track.lyrics
+      : preferredLang === 'en'
+        ? track.lyricsEn || track.lyrics
+        : track.lyricsHe || track.lyrics;
 
   let rawLines: string[] = [];
 

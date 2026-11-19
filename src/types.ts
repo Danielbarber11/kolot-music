@@ -143,9 +143,13 @@ export interface JamendoTrack {
   lyrics?: string;
   lyricsHe?: string;
   lyricsEn?: string;
+  lyricsOrig?: string;
   subtitleSegments?: SubtitleSegment[];
   subtitleSegmentsHe?: SubtitleSegment[];
   subtitleSegmentsEn?: SubtitleSegment[];
+  subtitleSegmentsOrig?: SubtitleSegment[];
+  detectedLanguageCode?: string;
+  detectedLanguageLabel?: string;
   hasWhisperSubtitles?: boolean;
   subtitlesDisabled?: boolean;
   artistId?: string;

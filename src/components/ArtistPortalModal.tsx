@@ -430,6 +430,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       subtitleSegments: hasSubSegments ? (nextSegments && nextSegments.length > 0 ? nextSegments : nextSegmentsHe) : undefined,
       subtitleSegmentsHe: hasSubSegments && nextSegmentsHe && nextSegmentsHe.length > 0 ? nextSegmentsHe : undefined,
       subtitleSegmentsEn: hasSubSegments && nextSegmentsEn && nextSegmentsEn.length > 0 ? nextSegmentsEn : undefined,
+      subtitleSegmentsOrig: editIncludeSubtitles ? editingTrack.subtitleSegmentsOrig : undefined,
+      lyricsOrig: editIncludeSubtitles ? editingTrack.lyricsOrig : undefined,
+      detectedLanguageCode: editIncludeSubtitles ? editingTrack.detectedLanguageCode : undefined,
+      detectedLanguageLabel: editIncludeSubtitles ? editingTrack.detectedLanguageLabel : undefined,
       hasWhisperSubtitles: hasSubSegments,
       isAiGenerated: editIsAiGenerated,
     };
@@ -1222,6 +1226,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     const trackDurationSeconds = Math.max(10, Math.round(audioDurationRef.current || 180));
     let progressFloor = 6;
 
+    let finalDraftSegmentsOrig: JamendoTrack['subtitleSegmentsOrig'] = undefined;
+    let finalDraftLyricsOrig = '';
+    let finalDetectedLangCode: string | undefined = undefined;
+    let finalDetectedLangLabel: string | undefined = undefined;
+
     if (!includeSubtitles) {
       stopSilentAutoSubtitles();
       finalDraftSegments = undefined;
@@ -1280,8 +1289,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         finalDraftSegments = autoRes.segments;
         finalDraftSegmentsHe = autoRes.segmentsHe;
         finalDraftSegmentsEn = autoRes.segmentsEn;
+        finalDraftSegmentsOrig = autoRes.segmentsOrig;
         finalDraftLyricsHe = autoRes.lyricsHe;
         finalDraftLyricsEn = autoRes.lyricsEn;
+        finalDraftLyricsOrig = autoRes.lyricsOrig || '';
+        finalDetectedLangCode = autoRes.detectedLanguageCode;
+        finalDetectedLangLabel = autoRes.detectedLanguageLabel;
         sanitizedManualLyrics = autoRes.lyricsHe || autoRes.lyricsEn || '';
       }
     }
@@ -1290,7 +1303,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       includeSubtitles &&
       (!!(finalDraftSegments && finalDraftSegments.length > 0) ||
         !!(finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0) ||
-        !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0));
+        !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0) ||
+        !!(finalDraftSegmentsOrig && finalDraftSegmentsOrig.length > 0));
 
     const newTrack: JamendoTrack = {
       id: trackId,
@@ -1310,9 +1324,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       lyrics: includeSubtitles ? (sanitizedManualLyrics || finalDraftLyricsHe || finalDraftLyricsEn || undefined) : undefined,
       lyricsHe: includeSubtitles ? (finalDraftLyricsHe || sanitizedManualLyrics || undefined) : undefined,
       lyricsEn: includeSubtitles ? (finalDraftLyricsEn || undefined) : undefined,
+      lyricsOrig: includeSubtitles ? (finalDraftLyricsOrig || undefined) : undefined,
       subtitleSegments: hasAnyDraftSubtitles ? (finalDraftSegments && finalDraftSegments.length > 0 ? finalDraftSegments : finalDraftSegmentsHe) : undefined,
       subtitleSegmentsHe: hasAnyDraftSubtitles && finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0 ? finalDraftSegmentsHe : undefined,
       subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
+      subtitleSegmentsOrig: hasAnyDraftSubtitles && finalDraftSegmentsOrig && finalDraftSegmentsOrig.length > 0 ? finalDraftSegmentsOrig : undefined,
+      detectedLanguageCode: includeSubtitles ? finalDetectedLangCode : undefined,
+      detectedLanguageLabel: includeSubtitles ? finalDetectedLangLabel : undefined,
       hasWhisperSubtitles: hasAnyDraftSubtitles,
       ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
       artistBio: currentArtist.bio,
@@ -1453,7 +1471,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
           <div className="w-full max-w-md bg-[#0b0d12] border border-white/15 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fadeIn">
             <div className="w-20 h-20 rounded-3xl bg-neutral-900 border border-white/20 text-white flex items-center justify-center mx-auto shadow-2xl">
-              <User className="w-10 h-10 text-emerald-400" />
+              <User className="w-10 h-10 text-white/60" />
             </div>
 
             <div className="space-y-2">
@@ -2970,7 +2988,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     {isHe ? <ArrowRight className="w-4 h-4 text-white" /> : <ArrowLeft className="w-4 h-4 text-white" />}
                   </button>
                   <h2 className="text-lg sm:text-xl font-normal text-white flex items-center gap-2">
-                    <Disc className="w-5 h-5 text-emerald-400" />
+                    <Disc className="w-5 h-5 text-white" />
                     <span>{isHe ? 'ניהול אלבומים' : 'Album Management'}</span>
                   </h2>
                 </div>
@@ -2991,7 +3009,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 <div className="p-5 sm:p-6 rounded-3xl bg-neutral-950/80 border border-white/10 space-y-4 shadow-xl">
                   <div className="flex items-center justify-between border-b border-white/10 pb-3">
                     <h3 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
-                      <Disc className="w-4 h-4 text-emerald-400" />
+                      <Disc className="w-4 h-4 text-white" />
                       <span>{isHe ? `האלבומים הקיימים שלך (${myAlbums.length})` : `Your Albums (${myAlbums.length})`}</span>
                     </h3>
                     <span className="text-[11px] text-neutral-400">
@@ -3010,7 +3028,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           key={album.id}
                           className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
                             isCurrentlyEditing
-                              ? 'bg-emerald-500/10 border-emerald-400 shadow-lg'
+                              ? 'bg-white/15 border-white shadow-lg'
                               : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10'
                           }`}
                         >
@@ -3026,7 +3044,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               )}
                             </div>
                             <div className="min-w-0">
-                              <h4 className="font-bold text-xs text-white truncate hover:text-emerald-400 transition-colors">
+                              <h4 className="font-bold text-xs text-white truncate hover:text-white/80 transition-colors">
                                 {album.title}
                               </h4>
                               <p className="text-[10px] text-neutral-400">
@@ -3042,7 +3060,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                               title={isHe ? 'ערוך אלבום' : 'Edit'}
                             >
-                              <Pencil className="w-3.5 h-3.5 text-emerald-400" />
+                              <Pencil className="w-3.5 h-3.5 text-white" />
                               <span>{isHe ? 'ערוך' : 'Edit'}</span>
                             </button>
                             <button
@@ -3065,7 +3083,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               <form onSubmit={handleCreateAlbum} className="p-5 sm:p-7 rounded-3xl bg-neutral-950/90 border border-white/15 space-y-5 text-xs shadow-2xl backdrop-blur-2xl">
                 <div className="flex items-center justify-between border-b border-white/10 pb-3">
                   <h3 className="text-sm font-black text-white flex items-center gap-2">
-                    <Disc className="w-4 h-4 text-emerald-400" />
+                    <Disc className="w-4 h-4 text-white" />
                     <span>
                       {editingAlbum
                         ? (isHe ? `עריכת אלבום: ${editingAlbum.title}` : `Edit Album: ${editingAlbum.title}`)
@@ -3089,7 +3107,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     value={newAlbumTitle}
                     onChange={(e) => setNewAlbumTitle(e.target.value)}
                     placeholder={isHe ? 'למשל: אלבום הבכורה 2024' : 'Album Title'}
-                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-normal text-xs sm:text-sm focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
+                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-normal text-xs sm:text-sm focus:outline-none focus:border-white transition-all placeholder-neutral-500"
                   />
                 </div>
 
@@ -3102,7 +3120,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     value={newAlbumCover}
                     onChange={(e) => setNewAlbumCover(e.target.value)}
                     placeholder="https://..."
-                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
+                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-white transition-all placeholder-neutral-500"
                   />
                 </div>
 
@@ -3115,7 +3133,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     value={newAlbumDescription}
                     onChange={(e) => setNewAlbumDescription(e.target.value)}
                     placeholder={isHe ? 'סיפור האלבום והשירים...' : 'Album story...'}
-                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-normal text-xs sm:text-sm focus:outline-none focus:border-emerald-400 transition-all placeholder-neutral-500"
+                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-normal text-xs sm:text-sm focus:outline-none focus:border-white transition-all placeholder-neutral-500"
                   />
                 </div>
 
@@ -3136,7 +3154,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     className="w-full py-3.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-normal text-xs sm:text-sm flex items-center justify-between transition-all cursor-pointer shadow-sm"
                   >
                     <div className="flex items-center gap-2">
-                      <Plus className="w-4 h-4 text-emerald-400" />
+                      <Plus className="w-4 h-4 text-white" />
                       <span>{isHe ? 'בחירת / הוספת שירים לאלבום' : 'Select / Add Songs to Album'}</span>
                     </div>
                     <span className="text-white/70 text-xs font-normal">

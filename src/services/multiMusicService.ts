@@ -224,9 +224,13 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         subtitleSegments: existing.subtitleSegments?.length ? existing.subtitleSegments : t.subtitleSegments,
         subtitleSegmentsHe: existing.subtitleSegmentsHe?.length ? existing.subtitleSegmentsHe : t.subtitleSegmentsHe,
         subtitleSegmentsEn: existing.subtitleSegmentsEn?.length ? existing.subtitleSegmentsEn : t.subtitleSegmentsEn,
+        subtitleSegmentsOrig: existing.subtitleSegmentsOrig?.length ? existing.subtitleSegmentsOrig : t.subtitleSegmentsOrig,
         lyrics: existing.lyrics || t.lyrics,
         lyricsHe: existing.lyricsHe || t.lyricsHe,
         lyricsEn: existing.lyricsEn || t.lyricsEn,
+        lyricsOrig: existing.lyricsOrig || t.lyricsOrig,
+        detectedLanguageCode: existing.detectedLanguageCode || t.detectedLanguageCode,
+        detectedLanguageLabel: existing.detectedLanguageLabel || t.detectedLanguageLabel,
         hasWhisperSubtitles: !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
         viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
@@ -277,13 +281,18 @@ export function syncTrackSubtitlesInMemory(updatedTrack: JamendoTrack): void {
     subtitleSegments: updatedTrack.subtitleSegments ?? t.subtitleSegments,
     subtitleSegmentsHe: updatedTrack.subtitleSegmentsHe ?? t.subtitleSegmentsHe,
     subtitleSegmentsEn: updatedTrack.subtitleSegmentsEn ?? t.subtitleSegmentsEn,
+    subtitleSegmentsOrig: updatedTrack.subtitleSegmentsOrig ?? t.subtitleSegmentsOrig,
     lyrics: updatedTrack.lyrics ?? t.lyrics,
     lyricsHe: updatedTrack.lyricsHe ?? t.lyricsHe,
     lyricsEn: updatedTrack.lyricsEn ?? t.lyricsEn,
+    lyricsOrig: updatedTrack.lyricsOrig ?? t.lyricsOrig,
+    detectedLanguageCode: updatedTrack.detectedLanguageCode ?? t.detectedLanguageCode,
+    detectedLanguageLabel: updatedTrack.detectedLanguageLabel ?? t.detectedLanguageLabel,
     hasWhisperSubtitles: !!(
       updatedTrack.subtitleSegments?.length ||
       updatedTrack.subtitleSegmentsHe?.length ||
-      updatedTrack.subtitleSegmentsEn?.length
+      updatedTrack.subtitleSegmentsEn?.length ||
+      updatedTrack.subtitleSegmentsOrig?.length
     ),
   });
   memorySessionTracks = memorySessionTracks.map((t) => (t.id === updatedTrack.id ? applySubs(t) : t));

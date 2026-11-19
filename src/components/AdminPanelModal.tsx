@@ -10,6 +10,7 @@ import {
   BarChart3,
   HardDrive,
   User,
+  Mail,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, ArtistProfile, Language } from '../types';
@@ -17,6 +18,9 @@ import {
   getTrackReportsFromR2,
   dismissTrackReportInR2,
   deleteArtistAccountInAdmin,
+  ContactMessageRecord,
+  getContactMessagesInAdmin,
+  dismissContactMessageInAdmin,
 } from '../services/authService';
 import {
   getCloudStorageConfig,
@@ -43,9 +47,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 }) => {
   const isHe = lang === 'he';
 
-  const [activeTab, setActiveTab] = useState<'storage' | 'accounts' | 'stats' | 'reports'>('accounts');
+  const [activeTab, setActiveTab] = useState<'storage' | 'accounts' | 'stats' | 'reports' | 'messages'>('accounts');
   const [accountFilter, setAccountFilter] = useState<'all' | 'empty'>('all');
   const [reports, setReports] = useState<TrackReport[]>([]);
+  const [contactMessages, setContactMessages] = useState<ContactMessageRecord[]>([]);
   const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
   const [accountActionError, setAccountActionError] = useState<string | null>(null);
@@ -67,11 +72,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     let active = true;
-    const loadReports = async () => {
-      const r2Reports = await getTrackReportsFromR2().catch(() => []);
-      if (active) setReports(r2Reports);
+    const loadReportsAndMessages = async () => {
+      const [r2Reports, r2Messages] = await Promise.all([
+        getTrackReportsFromR2().catch(() => []),
+        getContactMessagesInAdmin().catch(() => []),
+      ]);
+      if (active) {
+        setReports(r2Reports);
+        setContactMessages(r2Messages);
+      }
     };
-    loadReports().catch(() => {});
+    loadReportsAndMessages().catch(() => {});
     return () => {
       active = false;
     };
@@ -139,6 +150,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     ]);
   };
 
+  const handleDismissContactMessage = async (msgId: string) => {
+    setContactMessages((prev) => prev.filter((m) => m.id !== msgId));
+    await dismissContactMessageInAdmin(msgId).catch(() => false);
+  };
+
   const handleDeleteAccount = async (uid: string) => {
     if (!uid) return;
     if (confirmDeleteUid !== uid) {
@@ -181,12 +197,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
           <div className="p-5 border-b border-white/10 flex items-center justify-between bg-neutral-950/90">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-2xl bg-white/10 text-white border border-white/20">
-                <ShieldAlert className="w-6 h-6 text-emerald-400" />
+                <ShieldAlert className="w-6 h-6 text-white" />
               </div>
               <div>
                 <h3 className="text-base font-normal text-white flex items-center gap-2">
                   <span>{isHe ? 'פאנל מנהל מערכת • Kolot Music' : 'System Admin Panel'}</span>
-                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 text-xs border border-emerald-500/30">
+                  <span className="px-2.5 py-0.5 rounded-full bg-white/15 text-white text-xs border border-white/25">
                     {isHe ? 'אחסון ענן פעיל' : 'Cloud Storage Active'}
                   </span>
                 </h3>
@@ -260,6 +276,19 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
               <ShieldAlert className="w-4 h-4" />
               <span>{isHe ? `דיווחים (${reports.length})` : `Reports (${reports.length})`}</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('messages')}
+              className={`flex-1 py-2.5 px-3 sm:px-4 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap ${
+                activeTab === 'messages'
+                  ? 'bg-white text-black shadow-md'
+                  : 'text-white/75 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              <Mail className="w-4 h-4" />
+              <span>{isHe ? `פניות (${contactMessages.length})` : `Inbox (${contactMessages.length})`}</span>
+            </button>
           </div>
 
           {/* MAIN CONTENT */}
@@ -270,7 +299,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-3">
                   <div>
                     <h4 className="text-sm text-white flex items-center gap-2">
-                      <Users className="w-4 h-4 text-emerald-400" />
+                      <Users className="w-4 h-4 text-white" />
                       <span>{isHe ? 'ניהול ומחיקת חשבונות משתמשים' : 'User Account Management'}</span>
                     </h4>
                     <p className="text-xs text-white/55 mt-0.5">
@@ -361,7 +390,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                                     {isHe ? '0 שירים • מוסתר מהקהל' : '0 songs • Hidden publicly'}
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px]">
+                                  <span className="px-2 py-0.5 rounded-full bg-white/15 border border-white/25 text-white text-[11px]">
                                     {realCount} {isHe ? 'שירים' : 'songs'}
                                   </span>
                                 )}
@@ -415,17 +444,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     ⚠️ שגיאת הגדרת אחסון: {configError}
                   </div>
                 )}
-                <div className="p-5 rounded-3xl bg-neutral-900/90 border border-emerald-500/30 space-y-4 shadow-2xl">
+                <div className="p-5 rounded-3xl bg-neutral-900/90 border border-white/25 space-y-4 shadow-2xl">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        <HardDrive className="w-6 h-6 text-emerald-400" />
+                      <div className="p-3 rounded-2xl bg-white/15 text-white border border-white/25">
+                        <HardDrive className="w-6 h-6 text-white" />
                       </div>
                       <div>
                         <h4 className="text-base text-white flex items-center gap-2">
                           <span>{isHe ? 'שרת אחסון ענן מאובטח' : 'Secure Cloud Storage'}</span>
-                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                          <span className="px-2.5 py-0.5 rounded-full bg-white/15 text-white border border-white/25 text-[10px] flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-white" />
                             <span>{isHe ? 'מחובר ופעיל' : 'Connected'}</span>
                           </span>
                         </h4>
@@ -436,7 +465,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                     </div>
 
                     <div className="text-right">
-                      <span className="text-xs text-emerald-300 block">{isHe ? 'קיבולת אחסון:' : 'Storage Capacity:'}</span>
+                      <span className="text-xs text-white/80 block">{isHe ? 'קיבולת אחסון:' : 'Storage Capacity:'}</span>
                       <span className="text-lg text-white">10 GB</span>
                     </div>
                   </div>
@@ -449,11 +478,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                           ? `אחסון בשימוש: ${realUsedMb} MB מתוך 10,240 MB (${uploadedTracksCount} שירים)`
                           : `Used: ${realUsedMb} MB / 10,240 MB (${uploadedTracksCount} tracks)`}
                       </span>
-                      <span className="text-emerald-300">{usedPercent}%</span>
+                      <span className="text-white">{usedPercent}%</span>
                     </div>
                     <div className="w-full h-3.5 rounded-full bg-black/60 p-0.5 border border-white/10 relative overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-emerald-600 via-teal-500 to-emerald-400 transition-all duration-500"
+                        className="h-full rounded-full bg-white transition-all duration-500"
                         style={{ width: `${Math.max(usedPercent, 1)}%` }}
                       />
                     </div>
@@ -486,8 +515,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
                   <div className="p-5 rounded-2xl bg-neutral-900/90 border border-white/15 space-y-2 shadow-xl">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-emerald-300">{isHe ? 'פרופילי אמנים פעילים באתר' : 'Active Published Artists'}</span>
-                      <Users className="w-5 h-5 text-emerald-400" />
+                      <span className="text-xs text-white/85">{isHe ? 'פרופילי אמנים פעילים באתר' : 'Active Published Artists'}</span>
+                      <Users className="w-5 h-5 text-white" />
                     </div>
                     <div className="text-3xl text-white">{publishedArtistsCount}</div>
                     <p className="text-[11px] text-white/50">{isHe ? 'אמנים שהעלו לפחות שיר אחד' : 'Artists with at least 1 published track'}</p>
@@ -518,7 +547,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
                 {reports.length === 0 ? (
                   <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/10 text-xs text-white/60 space-y-2">
-                    <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+                    <CheckCircle2 className="w-10 h-10 text-white mx-auto" />
                     <p className="text-white">{isHe ? 'אין דיווחים חדשים!' : 'No reported songs at this time!'}</p>
                   </div>
                 ) : (
@@ -545,9 +574,70 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                           <button
                             type="button"
                             onClick={() => handleDismissReport(report.id)}
-                            className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/30 transition-all cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/25 transition-all cursor-pointer"
                           >
                             {isHe ? 'אישור וביטול דיווח' : 'Dismiss'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 5: CONTACT & COMPLAINTS INBOX */}
+            {activeTab === 'messages' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                  <h4 className="text-xs text-white flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-white" />
+                    <span>{isHe ? 'פניות, תלונות ובקשות משתמשים' : 'User Inquiries & Complaints'}</span>
+                  </h4>
+                  <span className="text-xs text-white/60">
+                    {contactMessages.length} {isHe ? 'פניות' : 'messages'}
+                  </span>
+                </div>
+
+                {contactMessages.length === 0 ? (
+                  <div className="p-8 text-center bg-white/5 rounded-2xl border border-white/10 text-xs text-white/60 space-y-2">
+                    <CheckCircle2 className="w-10 h-10 text-white mx-auto" />
+                    <p className="text-white">{isHe ? 'אין פניות חדשות בתיבה!' : 'No unread messages!'}</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {contactMessages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className="p-4 rounded-2xl bg-neutral-900 border border-white/15 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs"
+                      >
+                        <div className="space-y-1.5 min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {(msg.categoryLabel || msg.category) && (
+                              <span className="px-2 py-0.5 rounded-full bg-white text-black font-bold text-[10px]">
+                                {msg.categoryLabel || msg.category}
+                              </span>
+                            )}
+                            <span className="text-white font-semibold text-sm">{msg.subject}</span>
+                          </div>
+                          <p className="text-white/75 font-mono text-[11px]" dir="ltr">
+                            {msg.senderEmail}
+                          </p>
+                          <p className="text-white/90 text-xs whitespace-pre-wrap leading-relaxed bg-black/40 p-3 rounded-xl border border-white/10">
+                            {msg.message}
+                          </p>
+                          <span className="text-[10px] text-white/40 block">
+                            {msg.createdAt?.replace('T', ' ').substring(0, 19)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleDismissContactMessage(msg.id)}
+                            className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/25 transition-all cursor-pointer"
+                          >
+                            {isHe ? 'סמן כטופל ומחק' : 'Mark Resolved'}
                           </button>
                         </div>
                       </div>

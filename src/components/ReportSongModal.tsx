@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { X, ShieldAlert, Check, FileText, AlertTriangle } from 'lucide-react';
+import { X, ShieldAlert, Check, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, Language } from '../types';
-import { saveTrackReportToR2 } from '../services/authService';
+import { saveTrackReportToR2, getCurrentAuthUser, getAuthHeaders } from '../services/authService';
 import { TrackCoverArt } from './TrackCoverArt';
 
 interface ReportSongModalProps {
@@ -64,8 +64,25 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       status: 'pending',
     };
 
-    // Save strictly to Cloudflare R2 backend (zero localStorage PII)
-    await saveTrackReportToR2(report);
+    // Save strictly to Cloudflare R2 backend + notify management contact inbox
+    const currentUser = getCurrentAuthUser();
+    await Promise.allSettled([
+      saveTrackReportToR2(report),
+      fetch('/api/contact', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
+          senderEmail: currentUser?.email || 'kolot.music1@gmail.com',
+          subject: `דיווח על שיר: ${track.name} (${track.artistName})`,
+          message: `סיבת הדיווח: ${reason}\nשיר: ${track.name} (ID: ${track.id})\nאמן: ${track.artistName}${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`,
+        }),
+      }),
+    ]);
 
     setIsSubmitting(false);
     setIsSubmitted(true);
@@ -136,14 +153,14 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
 
           {/* SUCCESS MESSAGE */}
           {isSubmitted ? (
-            <div className="p-8 rounded-3xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-center space-y-3 animate-fadeIn my-auto">
-              <div className="w-16 h-16 rounded-full bg-emerald-500 text-white flex items-center justify-center mx-auto shadow-lg">
+            <div className="p-8 rounded-3xl bg-neutral-100 border border-neutral-300 text-neutral-900 text-center space-y-3 animate-fadeIn my-auto">
+              <div className="w-16 h-16 rounded-full bg-black text-white flex items-center justify-center mx-auto shadow-lg">
                 <Check className="w-8 h-8" />
               </div>
               <h3 className="text-lg font-extrabold">
                 {isHe ? 'הדיווח התקבל בהצלחה!' : 'Report Submitted!'}
               </h3>
-              <p className="text-xs text-emerald-800 max-w-md mx-auto leading-relaxed">
+              <p className="text-xs text-neutral-700 max-w-md mx-auto leading-relaxed">
                 {isHe
                   ? 'תודה רבה על העזרה. הדיווח הועבר לצוות הניהול לבדיקה וטיפול מהיר.'
                   : 'Thank you for helping. Our team will review this track promptly.'}

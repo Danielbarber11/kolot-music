@@ -5,7 +5,6 @@ import {
   AlertCircle,
   RefreshCw,
   Shield,
-  CheckCircle2,
 } from 'lucide-react';
 import { Language } from '../types';
 import { AuthUser, loginWithGoogle } from '../services/authService';
@@ -134,7 +133,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
 
           <div className="pt-2 flex items-center justify-center gap-1.5 text-[11px] text-neutral-400 font-medium">
-            <Shield className="w-3.5 h-3.5 text-emerald-400" />
+            <Shield className="w-3.5 h-3.5 text-white" />
             <span>{isHe ? 'אימות מאובטח ומהיר באמצעות Google Auth' : 'Secure instant authentication via Google Auth'}</span>
           </div>
         </motion.div>

@@ -1021,16 +1021,17 @@ export default {
         };
 
         const structuredPrompt =
-          `תמלל את השירה והמילים המושרות/מדוברות בקובץ השמע לשורות כתוביות קצרות ומסונכרנות היטב לקצב השירה או הדיבור.\n` +
+          `זהה את השפה המרכזית שבה השיר מושר או מדובר בקובץ השמע ותמלל את המילים לשורות כתוביות קצרות ומסונכרנות היטב לקצב.\n` +
           `${songTitle ? `שם השיר: "${songTitle}". ` : ''}` +
           `${artistName ? `שם הזמר/אמן: "${artistName}". ` : ''}` +
-          `עבור כל שורה ספק:\n` +
-          `1. זמן התחלה מדויק (start) וזמן סיום מדויק (end) בפורמט SRT תקני: HH:MM:SS,mmm (לדוגמה: 00:00:08,200).\n` +
-          `2. text: המילים המקוריות שנשמעות בפועל בשפת המקור.\n` +
-          `3. textHe: המילים בעברית (במדויק אם בעברית, או תרגום טבעי לעברית).\n` +
-          `4. textEn: המילים באנגלית (במדויק אם באנגלית, או תרגום טבעי לאנגלית).\n` +
-          `אם הקובץ אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר מערך ריק []. אל תמציא מילים.`;
+          `חוקי חובה:\n` +
+          `1. detectedLanguageCode: קוד שפה קצר (ISO-639-1) של השפה הנשמעת בשיר (he, en, ar, es, fr, ru, yi, it, pt, de, ja וכו').\n` +
+          `2. detectedLanguageLabel: שם השפה לקורא (לדוגמה "עברית", "English", "العربية", "Español", "Français", "Русский", "ייִדיש").\n` +
+          `3. עבור כל שורה ב-segments ספק start ו-end (HH:MM:SS,mmm), text (בשפת המקור בפועל), textHe (בעברית כברירת מחדל), ו-textEn (באנגלית כברירת מחדל).\n` +
+          `אם הקובץ אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר segments ריק []. אל תמציא מילים.`;
 
+        let detectedLanguageCode = '';
+        let detectedLanguageLabel = '';
         let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
         try {
           const gRes = await fetch(
@@ -1044,19 +1045,28 @@ export default {
                   thinkingConfig: { thinkingLevel: 'LOW' },
                   responseMimeType: 'application/json',
                   responseSchema: {
-                    type: 'ARRAY',
-                    description: 'רשימת כתוביות מסודרת כרונולוגית',
-                    items: {
-                      type: 'OBJECT',
-                      properties: {
-                        start: { type: 'STRING', description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
-                        end: { type: 'STRING', description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
-                        text: { type: 'STRING', description: 'הטקסט המושר בשפת המקור' },
-                        textHe: { type: 'STRING', description: 'הטקסט בעברית' },
-                        textEn: { type: 'STRING', description: 'הטקסט באנגלית' },
+                    type: 'OBJECT',
+                    description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
+                    properties: {
+                      detectedLanguageCode: { type: 'STRING', description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
+                      detectedLanguageLabel: { type: 'STRING', description: 'שם שפת המקור בשפתה או בעברית' },
+                      segments: {
+                        type: 'ARRAY',
+                        description: 'רשימת כתוביות מסודרת כרונולוגית',
+                        items: {
+                          type: 'OBJECT',
+                          properties: {
+                            start: { type: 'STRING', description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+                            end: { type: 'STRING', description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+                            text: { type: 'STRING', description: 'הטקסט המושר בשפת המקור' },
+                            textHe: { type: 'STRING', description: 'הטקסט בעברית' },
+                            textEn: { type: 'STRING', description: 'הטקסט באנגלית' },
+                          },
+                          required: ['start', 'end', 'text', 'textHe', 'textEn'],
+                        },
                       },
-                      required: ['start', 'end', 'text', 'textHe', 'textEn'],
                     },
+                    required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
                   },
                 },
               }),
@@ -1067,7 +1077,13 @@ export default {
             const rawJson = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
             if (rawJson) {
               const parsed = JSON.parse(rawJson);
-              if (Array.isArray(parsed)) structuredItems = parsed;
+              if (Array.isArray(parsed)) {
+                structuredItems = parsed;
+              } else if (parsed && Array.isArray(parsed.segments)) {
+                structuredItems = parsed.segments;
+                detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+                detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
+              }
             }
           }
         } catch {}
@@ -1076,6 +1092,7 @@ export default {
           const segments: any[] = [];
           const segmentsHe: any[] = [];
           const segmentsEn: any[] = [];
+          const segmentsOrigRaw: any[] = [];
 
           structuredItems.forEach((item, idx) => {
             const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
@@ -1087,15 +1104,26 @@ export default {
             segments.push({ id: `gem_seg_${idx}`, startTime, endTime, text: mainText });
             segmentsHe.push({ id: `gem_he_${idx}`, startTime, endTime, text: String(item?.textHe || mainText).trim() });
             segmentsEn.push({ id: `gem_en_${idx}`, startTime, endTime, text: String(item?.textEn || mainText).trim() });
+            segmentsOrigRaw.push({ id: `gem_orig_${idx}`, startTime, endTime, text: mainText });
           });
 
           if (segments.length > 0) {
+            const baseLang = detectedLanguageCode.split('-')[0];
+            const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
             return jsonResponse({
               success: true,
               provider: 'gemini-subtitles-srt',
+              detectedLanguageCode: detectedLanguageCode || undefined,
+              detectedLanguageLabel: detectedLanguageLabel || undefined,
               segments,
               segmentsHe,
               segmentsEn,
+              ...(isOrigNonHeEn
+                ? {
+                    segmentsOrig: segmentsOrigRaw,
+                    lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
+                  }
+                : {}),
               lyrics: segments.map((s) => s.text).join('\n'),
               lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
               lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
@@ -1604,7 +1632,10 @@ export default {
         const incomingSegs = Array.isArray(body?.subtitleSegments) ? body.subtitleSegments : [];
         const incomingHe = Array.isArray(body?.subtitleSegmentsHe) ? body.subtitleSegmentsHe : [];
         const incomingEn = Array.isArray(body?.subtitleSegmentsEn) ? body.subtitleSegmentsEn : [];
-        if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0) {
+        const incomingOrig = Array.isArray(body?.subtitleSegmentsOrig) ? body.subtitleSegmentsOrig : [];
+        const incomingOrigCode = String(body?.detectedLanguageCode || '').trim().slice(0, 12);
+        const incomingOrigLabel = String(body?.detectedLanguageLabel || '').trim().slice(0, 48);
+        if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0 && incomingOrig.length === 0) {
           return jsonResponse({ success: false, error: 'Missing subtitles payload' }, 400);
         }
 
@@ -1626,9 +1657,13 @@ export default {
           subtitleSegments: incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn),
           ...(incomingHe.length > 0 ? { subtitleSegmentsHe: incomingHe } : {}),
           ...(incomingEn.length > 0 ? { subtitleSegmentsEn: incomingEn } : {}),
+          ...(incomingOrig.length > 0 ? { subtitleSegmentsOrig: incomingOrig } : {}),
           ...(body?.lyrics ? { lyrics: String(body.lyrics) } : {}),
           ...(body?.lyricsHe ? { lyricsHe: String(body.lyricsHe) } : {}),
           ...(body?.lyricsEn ? { lyricsEn: String(body.lyricsEn) } : {}),
+          ...(body?.lyricsOrig ? { lyricsOrig: String(body.lyricsOrig) } : {}),
+          ...(incomingOrigCode ? { detectedLanguageCode: incomingOrigCode } : {}),
+          ...(incomingOrigLabel ? { detectedLanguageLabel: incomingOrigLabel } : {}),
           hasWhisperSubtitles: true,
           viewsCount: Math.max(Number(existing.viewsCount) || 0, workerOptimisticViewCounts.get(cleanId) || 0),
         };
@@ -1651,9 +1686,13 @@ export default {
                     subtitleSegments: updated.subtitleSegments,
                     ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
                     ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                    ...(updated.subtitleSegmentsOrig ? { subtitleSegmentsOrig: updated.subtitleSegmentsOrig } : {}),
                     ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
                     ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
                     ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                    ...(updated.lyricsOrig ? { lyricsOrig: updated.lyricsOrig } : {}),
+                    ...(updated.detectedLanguageCode ? { detectedLanguageCode: updated.detectedLanguageCode } : {}),
+                    ...(updated.detectedLanguageLabel ? { detectedLanguageLabel: updated.detectedLanguageLabel } : {}),
                     hasWhisperSubtitles: true,
                   };
                 }
@@ -1677,9 +1716,13 @@ export default {
                       subtitleSegments: updated.subtitleSegments,
                       ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
                       ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                      ...(updated.subtitleSegmentsOrig ? { subtitleSegmentsOrig: updated.subtitleSegmentsOrig } : {}),
                       ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
                       ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
                       ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                      ...(updated.lyricsOrig ? { lyricsOrig: updated.lyricsOrig } : {}),
+                      ...(updated.detectedLanguageCode ? { detectedLanguageCode: updated.detectedLanguageCode } : {}),
+                      ...(updated.detectedLanguageLabel ? { detectedLanguageLabel: updated.detectedLanguageLabel } : {}),
                       hasWhisperSubtitles: true,
                     }
                   : t
@@ -1702,6 +1745,7 @@ export default {
         const body: any = await request.json().catch(() => ({}));
         const sess = await extractSessionTop();
         const rawSenderEmail = String(sess?.email || body?.senderEmail || '').trim();
+        const category = String(body?.category || 'general').trim().slice(0, 48);
         const subject = String(body?.subject || '').trim().slice(0, 200);
         const message = String(body?.message || '').trim().slice(0, 5000);
 
@@ -1712,6 +1756,15 @@ export default {
           return jsonResponse({ success: false, error: 'יש למלא נושא ותוכן להודעה' }, 400);
         }
 
+        const categoryLabels: Record<string, string> = {
+          complaint: 'תלונה',
+          request: 'בקשה / הצעה',
+          support: 'תקלה טכנית',
+          copyright: 'זכויות יוצרים',
+          general: 'פנייה כללית',
+        };
+        const categoryLabel = categoryLabels[category] || category || 'פנייה';
+
         const randBytes = new Uint8Array(4);
         crypto.getRandomValues(randBytes);
         const randHex = Array.from(randBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -1720,6 +1773,8 @@ export default {
         const record = {
           id: msgId,
           to: targetRecipient,
+          category,
+          categoryLabel,
           senderEmail: rawSenderEmail,
           senderUid: sess?.uid || undefined,
           subject,
@@ -1728,6 +1783,14 @@ export default {
           status: 'new',
         };
 
+        const fullSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
+        const plainBody =
+          `פנייה חדשה מאתר Kolot Music\n` +
+          `סוג הפנייה: ${categoryLabel}\n` +
+          `מאת: ${rawSenderEmail}\n` +
+          `נושא: ${subject}\n\n` +
+          `${message}`;
+
         let storedInR2 = false;
         try {
           await r2WriteJson(`contact_messages/${msgId}.json`, record);
@@ -1735,8 +1798,9 @@ export default {
         } catch {}
 
         let emailDispatched = false;
+        let emailProvider = '';
         const resendKey = (env.RESEND_API_KEY || '').trim();
-        if (resendKey) {
+        if (resendKey && !emailDispatched) {
           try {
             const resendRes = await fetch('https://api.resend.com/emails', {
               method: 'POST',
@@ -1748,14 +1812,61 @@ export default {
                 from: env.RESEND_FROM_EMAIL || 'Kolot Music <onboarding@resend.dev>',
                 to: [targetRecipient],
                 reply_to: rawSenderEmail,
-                subject: `[Kolot Music] ${subject}`,
-                text: `פנייה חדשה מאתר Kolot Music\n\nמאת: ${rawSenderEmail}\nנושא: ${subject}\n\n${message}`,
+                subject: fullSubject,
+                text: plainBody,
               }),
             });
-            if (resendRes.ok) emailDispatched = true;
+            if (resendRes.ok) {
+              emailDispatched = true;
+              emailProvider = 'resend';
+            }
           } catch {}
         }
 
+        const brevoKey = ((env as any).BREVO_API_KEY || '').trim();
+        if (brevoKey && !emailDispatched) {
+          try {
+            const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+              method: 'POST',
+              headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                sender: { name: 'Kolot Music', email: targetRecipient },
+                to: [{ email: targetRecipient, name: 'Kolot Music' }],
+                replyTo: { email: rawSenderEmail },
+                subject: fullSubject,
+                textContent: plainBody,
+              }),
+            });
+            if (brevoRes.ok) {
+              emailDispatched = true;
+              emailProvider = 'brevo';
+            }
+          } catch {}
+        }
+
+        const web3Key = ((env as any).WEB3FORMS_ACCESS_KEY || '').trim();
+        if (web3Key && !emailDispatched) {
+          try {
+            const wRes = await fetch('https://api.web3forms.com/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({
+                access_key: web3Key,
+                from_name: rawSenderEmail,
+                replyto: rawSenderEmail,
+                subject: fullSubject,
+                message: plainBody,
+              }),
+            });
+            const wData: any = await wRes.json().catch(() => null);
+            if (wRes.ok && wData?.success === true) {
+              emailDispatched = true;
+              emailProvider = 'web3forms';
+            }
+          } catch {}
+        }
+
+        let formSubmitNeedsActivation = false;
         if (!emailDispatched) {
           try {
             const fsRes = await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
@@ -1769,13 +1880,20 @@ export default {
               body: JSON.stringify({
                 name: rawSenderEmail,
                 email: rawSenderEmail,
+                category: categoryLabel,
                 _replyto: rawSenderEmail,
-                _subject: `[Kolot Music] ${subject}`,
-                message,
+                _subject: fullSubject,
+                message: plainBody,
                 _template: 'table',
               }),
             });
-            if (fsRes.ok) emailDispatched = true;
+            const fsData: any = await fsRes.json().catch(() => null);
+            if (fsRes.ok && (fsData?.success === true || fsData?.success === 'true')) {
+              emailDispatched = true;
+              emailProvider = 'formsubmit';
+            } else if (String(fsData?.message || '').toLowerCase().includes('activat')) {
+              formSubmitNeedsActivation = true;
+            }
           } catch {}
         }
 
@@ -1783,9 +1901,50 @@ export default {
           return jsonResponse({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' }, 502);
         }
 
-        return jsonResponse({ success: true, id: msgId, recipient: targetRecipient, emailDispatched, storedInR2 });
+        return jsonResponse({
+          success: true,
+          id: msgId,
+          recipient: targetRecipient,
+          emailDispatched,
+          emailProvider: emailProvider || undefined,
+          formSubmitNeedsActivation,
+          storedInR2,
+          needsClientRelay: !emailDispatched,
+        });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' }, 500);
+      }
+    }
+
+    // 13d. Admin-only Contact Messages Inbox
+    if (pathname === '/api/admin/contact-messages' && request.method === 'GET') {
+      try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const keys = (await r2ListKeys('contact_messages/')).filter((k) => k.endsWith('.json'));
+        const messages = (await Promise.all(keys.map((k) => r2ReadJson(k).catch(() => null))))
+          .filter(Boolean)
+          .sort((a: any, b: any) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
+        return jsonResponse({ success: true, messages });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'טעינת הפניות נכשלה' }, 500);
+      }
+    }
+
+    if (pathname.startsWith('/api/admin/contact-messages/') && request.method === 'DELETE') {
+      try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const cleanId = pathname.replace('/api/admin/contact-messages/', '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false, error: 'Invalid message ID' }, 400);
+        await r2DeleteKey(`contact_messages/${cleanId}.json`);
+        return jsonResponse({ success: true, id: cleanId });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'מחיקת הפנייה נכשלה' }, 500);
       }
     }
 

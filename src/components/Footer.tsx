@@ -19,6 +19,9 @@ import { Language } from '../types';
 import { Logo } from './Logo';
 import { AccessibilityIcon } from './AccessibilityPage';
 import { AuthUser, getCurrentAuthUser, onAuthUserChanged, getAuthHeaders } from '../services/authService';
+import { trackEvent } from '../services/analyticsService';
+
+type ContactCategory = 'complaint' | 'request' | 'support' | 'copyright' | 'general';
 
 interface FooterProps {
   lang: Language;
@@ -47,12 +50,13 @@ export const Footer: React.FC<FooterProps> = ({
 
   // Contact modal state
   const [copiedEmail, setCopiedEmail] = useState(false);
+  const [contactCategory, setContactCategory] = useState<ContactCategory>('complaint');
   const [contactSenderEmail, setContactSenderEmail] = useState('');
   const [contactSubject, setContactSubject] = useState('');
   const [contactMessage, setContactMessage] = useState('');
   const [isSendingContact, setIsSendingContact] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
-  const [messageSentSuccess, setMessageSentSuccess] = useState(false);
+  const [sentNotice, setSentNotice] = useState<{ mode: 'email' | 'activation' | 'inbox'; text: string } | null>(null);
 
   const contactEmail = 'kolot.music1@gmail.com';
 
@@ -106,6 +110,15 @@ export const Footer: React.FC<FooterProps> = ({
 
     setIsSendingContact(true);
     try {
+      const categoryLabelsHe: Record<ContactCategory, string> = {
+        complaint: 'תלונה / דיווח',
+        request: 'בקשה / הצעה',
+        support: 'תקלה טכנית',
+        copyright: 'זכויות יוצרים',
+        general: 'פנייה כללית',
+      };
+      const categoryLabel = categoryLabelsHe[contactCategory];
+
       const res = await fetch('/api/contact', {
         method: 'POST',
         headers: {
@@ -114,6 +127,7 @@ export const Footer: React.FC<FooterProps> = ({
         },
         credentials: 'include',
         body: JSON.stringify({
+          category: contactCategory,
           senderEmail,
           subject,
           message,
@@ -124,15 +138,76 @@ export const Footer: React.FC<FooterProps> = ({
         throw new Error(data?.error || (isHe ? 'שליחת הפנייה נכשלה, נסה שוב' : 'Failed to send message'));
       }
 
-      setMessageSentSuccess(true);
+      let emailDispatched = Boolean(data.emailDispatched);
+      let activationNeeded = Boolean(data.formSubmitNeedsActivation);
+
+      // Browser FormSubmit fallback relay if backend had no mail API key configured
+      if (!emailDispatched && !activationNeeded && data.needsClientRelay) {
+        try {
+          const fsRes = await fetch(`https://formsubmit.co/ajax/${contactEmail}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
+              _replyto: senderEmail,
+              _template: 'table',
+              _captcha: 'false',
+              category: categoryLabel,
+              email: senderEmail,
+              subject,
+              message,
+            }),
+          });
+          const fsJson = await fsRes.json().catch(() => null);
+          if (fsRes.ok && (fsJson?.success === true || fsJson?.success === 'true')) {
+            emailDispatched = true;
+          } else if (typeof fsJson?.message === 'string' && /activat/i.test(fsJson.message)) {
+            activationNeeded = true;
+          }
+        } catch {
+          // Non-fatal: R2 admin inbox already persisted the submission
+        }
+      }
+
+      trackEvent('contact_submit', {
+        category: contactCategory,
+        email_dispatched: emailDispatched,
+      });
+
+      if (emailDispatched) {
+        setSentNotice({
+          mode: 'email',
+          text: isHe
+            ? `פנייתך (${categoryLabel}) נשלחה בהצלחה למייל ${contactEmail} ונשמרה בתיבת ההנהלה!`
+            : `Your message has been delivered to ${contactEmail} and saved cleanly.`,
+        });
+      } else if (activationNeeded) {
+        setSentNotice({
+          mode: 'activation',
+          text: isHe
+            ? `פנייתך נשמרה בתיבת ההנהלה של האתר. מייל אישור חד-פעמי נשלח כעת אל ${contactEmail} להפעלת קבלת הפניות ישירות במייל.`
+            : `Your message was saved to the site inbox. A one-time activation email was sent to ${contactEmail} to enable direct forwarding.`,
+        });
+      } else {
+        setSentNotice({
+          mode: 'inbox',
+          text: isHe
+            ? 'פנייתך התקבלה ונשמרה בתיבת הפניות של הנהלת האתר לבדיקה וטיפול.'
+            : 'Your message has been saved to the site management inbox for review.',
+        });
+      }
+
+      setContactSenderEmail('');
+      setContactSubject('');
+      setContactMessage('');
+      setContactError(null);
       setTimeout(() => {
-        setMessageSentSuccess(false);
+        setSentNotice(null);
         setShowContactModal(false);
-        setContactSenderEmail('');
-        setContactSubject('');
-        setContactMessage('');
-        setContactError(null);
-      }, 2200);
+      }, 3200);
     } catch (err: any) {
       setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
     } finally {
@@ -166,7 +241,7 @@ export const Footer: React.FC<FooterProps> = ({
               </p>
 
               <div className="flex items-center gap-2 text-xs text-white/50 pt-1">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <ShieldCheck className="w-4 h-4 text-white/80" />
                 <span>{isHe ? 'אחסון ענן מאובטח • כניסה מהירה עם Google' : 'Secure Cloud Storage • Google Auth'}</span>
               </div>
             </div>
@@ -185,7 +260,7 @@ export const Footer: React.FC<FooterProps> = ({
                   className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all text-xs font-medium text-white/90 group cursor-pointer"
                 >
                   <div className="flex items-center gap-2.5">
-                    <FileText className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
+                    <FileText className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'תנאי שימוש ומדיניות' : 'Terms of Service'}</span>
                   </div>
                   <span className="text-[10px] text-white/40 group-hover:text-white/70">
@@ -196,12 +271,16 @@ export const Footer: React.FC<FooterProps> = ({
                 {/* 2. CONTACT EMAIL BUTTON */}
                 <button
                   type="button"
-                  onClick={() => setShowContactModal(true)}
+                  onClick={() => {
+                    setSentNotice(null);
+                    setContactError(null);
+                    setShowContactModal(true);
+                  }}
                   className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all text-xs font-medium text-white/90 group cursor-pointer"
                 >
                   <div className="flex items-center gap-2.5">
-                    <Mail className="w-4 h-4 text-teal-400 group-hover:scale-110 transition-transform" />
-                    <span>{isHe ? 'יצירת קשר במייל' : 'Contact Us via Email'}</span>
+                    <Mail className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
+                    <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
                   <span className="text-[10px] text-white/40 group-hover:text-white/70">
                     {contactEmail}
@@ -334,85 +413,134 @@ export const Footer: React.FC<FooterProps> = ({
         </div>
       </footer>
 
-      {/* MODAL 1: CONTACT VIA DIRECT BACKEND EMAIL MODAL */}
+      {/* MODAL 1: CONTACT & COMPLAINTS MODAL (MONOCHROME) */}
       {showContactModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="relative w-full max-w-lg bg-[#0a0f1d] border border-white/20 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 text-right text-white">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
+          dir={isHe ? 'rtl' : 'ltr'}
+        >
+          <div className="relative w-full max-w-lg max-h-[92vh] overflow-y-auto custom-scrollbar bg-[#09090b] border border-white/20 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 text-start text-white">
             <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 text-white flex items-center justify-center shrink-0">
+                  <Mail className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">
+                    {isHe ? 'יצירת קשר ותלונות להנהלה' : 'Contact & Support'}
+                  </h3>
+                  <p className="text-[11px] text-white/55">
+                    {isHe ? 'תלונות, בקשות שירים, תקלות וזכויות יוצרים' : 'Complaints, requests, technical issues & copyright'}
+                  </p>
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={() => setShowContactModal(false)}
-                className="p-1.5 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/70 hover:text-white transition-colors cursor-pointer"
+                aria-label={isHe ? 'סגור' : 'Close'}
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
-              <div className="flex items-center gap-2.5">
-                <h3 className="text-lg font-bold">{isHe ? 'יצירת קשר עם ההנהלה' : 'Contact Us'}</h3>
-                <div className="w-8 h-8 rounded-xl bg-teal-500/20 text-teal-400 flex items-center justify-center">
-                  <Mail className="w-4 h-4" />
-                </div>
-              </div>
             </div>
 
             <div className="space-y-4">
               {/* 1. SITE EMAIL ADDRESS */}
               <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] text-white/50 block">
+                    {isHe ? 'כתובת המייל של האתר:' : 'Site Email:'}
+                  </span>
+                  <div className="font-mono text-sm text-white truncate" dir="ltr">
+                    {contactEmail}
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={handleCopyEmail}
-                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 border border-white/15"
                 >
                   {copiedEmail ? (
                     <>
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">{isHe ? 'הועתק!' : 'Copied!'}</span>
+                      <Check className="w-3.5 h-3.5 text-white" />
+                      <span className="text-white">{isHe ? 'הועתק!' : 'Copied!'}</span>
                     </>
                   ) : (
                     <>
-                      <Copy className="w-3.5 h-3.5" />
+                      <Copy className="w-3.5 h-3.5 text-white" />
                       <span>{isHe ? 'העתק מייל' : 'Copy'}</span>
                     </>
                   )}
                 </button>
-                <div className="min-w-0 flex-1 text-left">
-                  <span className="text-[10px] text-white/50 block text-right">
-                    {isHe ? 'כתובת המייל של האתר:' : 'Site Email:'}
-                  </span>
-                  <div className="font-mono text-sm text-teal-300 truncate" dir="ltr">
-                    {contactEmail}
-                  </div>
-                </div>
               </div>
 
-              {messageSentSuccess ? (
-                <div className="p-5 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-center space-y-2">
-                  <Check className="w-7 h-7 text-emerald-400 mx-auto" />
-                  <p className="text-sm font-semibold text-white">
-                    {isHe
-                      ? `פנייתך נשלחה ישירות אל ${contactEmail}!`
-                      : `Your message has been sent directly to ${contactEmail}!`}
+              {sentNotice ? (
+                <div className="p-6 rounded-2xl bg-white/[0.07] border border-white/25 text-center space-y-2.5">
+                  <div className="w-11 h-11 rounded-full bg-white text-black flex items-center justify-center mx-auto shadow-lg">
+                    <Check className="w-6 h-6" />
+                  </div>
+                  <p className="text-sm font-bold text-white">
+                    {isHe ? 'הפנייה נקלטה במערכת' : 'Submission Received'}
+                  </p>
+                  <p className="text-xs text-white/80 leading-relaxed max-w-sm mx-auto">
+                    {sentNotice.text}
                   </p>
                 </div>
               ) : (
                 <form onSubmit={handleSendEmailMessage} className="space-y-3.5">
-                  {/* 2. SENDER EMAIL ADDRESS (ACCOUNT EMAIL IF SIGNED IN, OR REQUIRED REAL EMAIL INPUT) */}
+                  {/* INQUIRY TYPE SELECTOR */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-white/75 block font-medium">
+                      {isHe ? 'סוג הפנייה:' : 'Inquiry Type:'}
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                      {(
+                        [
+                          { id: 'complaint', labelHe: 'תלונה / דיווח', labelEn: 'Complaint' },
+                          { id: 'request', labelHe: 'בקשה / הצעה', labelEn: 'Request' },
+                          { id: 'support', labelHe: 'תקלה טכנית', labelEn: 'Bug / Support' },
+                          { id: 'copyright', labelHe: 'זכויות יוצרים', labelEn: 'Copyright' },
+                          { id: 'general', labelHe: 'פנייה כללית', labelEn: 'General' },
+                        ] as { id: ContactCategory; labelHe: string; labelEn: string }[]
+                      ).map((cat) => {
+                        const active = contactCategory === cat.id;
+                        return (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setContactCategory(cat.id)}
+                            className={`px-2.5 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                              active
+                                ? 'bg-white text-black border-white shadow-sm'
+                                : 'bg-white/[0.04] text-white/80 hover:bg-white/[0.1] border-white/10'
+                            }`}
+                          >
+                            {isHe ? cat.labelHe : cat.labelEn}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 2. SENDER EMAIL ADDRESS */}
                   <div className="space-y-1">
-                    <label className="text-xs text-white/70 block">
+                    <label className="text-xs text-white/75 block font-medium">
                       {authUser?.email
                         ? isHe
-                          ? 'המייל שלך (מהחשבון המחובר):'
-                          : 'Your Email (from signed-in account):'
+                          ? 'המייל שלך לחזרה (מהחשבון המחובר):'
+                          : 'Your Reply Email (from signed-in account):'
                         : isHe
-                          ? 'כתובת המייל האמיתית שלך *:'
+                          ? 'כתובת המייל שלך לחזרה *:'
                           : 'Your Real Email Address *:'}
                     </label>
                     {authUser?.email ? (
                       <div
                         dir="ltr"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/35 text-sm text-white/95 font-mono text-left flex items-center justify-between gap-2"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/25 text-sm text-white font-mono text-left flex items-center justify-between gap-2"
                       >
                         <span className="truncate">{authUser.email}</span>
-                        <span className="text-[10px] font-sans text-emerald-400 shrink-0">
+                        <span className="text-[10px] font-sans text-white/75 shrink-0">
                           {isHe ? 'חשבון מחובר' : 'Verified'}
                         </span>
                       </div>
@@ -424,38 +552,42 @@ export const Footer: React.FC<FooterProps> = ({
                         placeholder="name@example.com"
                         value={contactSenderEmail}
                         onChange={(e) => setContactSenderEmail(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/10 focus:border-teal-400 focus:outline-none text-sm text-white placeholder-white/30 text-left font-mono"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35 text-left font-mono"
                       />
                     )}
                   </div>
 
                   {/* 3. SUBJECT */}
                   <div className="space-y-1">
-                    <label className="text-xs text-white/70 block">
-                      {isHe ? 'נושא הפנייה:' : 'Subject:'}
+                    <label className="text-xs text-white/75 block font-medium">
+                      {isHe ? 'נושא הפנייה *:' : 'Subject *:'}
                     </label>
                     <input
                       type="text"
                       required
-                      placeholder={isHe ? 'לדוגמה: שאלה לגבי העלאת שיר או משוב' : 'Subject...'}
+                      placeholder={
+                        isHe
+                          ? 'לדוגמה: תלונה על שיר / בקשה להוספת פיצ׳ר / תקלה'
+                          : 'Subject...'
+                      }
                       value={contactSubject}
                       onChange={(e) => setContactSubject(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/10 focus:border-teal-400 focus:outline-none text-sm text-white placeholder-white/30 text-right"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35"
                     />
                   </div>
 
                   {/* 4. MESSAGE CONTENT */}
                   <div className="space-y-1">
-                    <label className="text-xs text-white/70 block">
-                      {isHe ? 'תוכן ההודעה:' : 'Message:'}
+                    <label className="text-xs text-white/75 block font-medium">
+                      {isHe ? 'פירוט התלונה או הבקשה *:' : 'Message *:'}
                     </label>
                     <textarea
                       required
                       rows={4}
-                      placeholder={isHe ? 'כתוב את תוכן הודעתך כאן...' : 'Your message...'}
+                      placeholder={isHe ? 'כתוב כאן את פרטי הפנייה שלך בצורה ברורה...' : 'Your message...'}
                       value={contactMessage}
                       onChange={(e) => setContactMessage(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/10 focus:border-teal-400 focus:outline-none text-sm text-white placeholder-white/30 text-right resize-none"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35 resize-none"
                     />
                   </div>
 
@@ -470,21 +602,21 @@ export const Footer: React.FC<FooterProps> = ({
                     <button
                       type="submit"
                       disabled={isSendingContact}
-                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 disabled:opacity-60 text-black font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25 transition-all cursor-pointer"
+                      className="w-full py-3 rounded-xl bg-white hover:bg-neutral-200 disabled:opacity-60 text-black font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer"
                     >
                       {isSendingContact ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
-                        <Send className="w-3.5 h-3.5" />
+                        <Send className="w-4 h-4" />
                       )}
                       <span>
                         {isSendingContact
                           ? isHe
-                            ? 'שולח פנייה...'
+                            ? 'שולח פנייה למייל ההנהלה...'
                             : 'Sending...'
                           : isHe
-                            ? 'שלח'
-                            : 'Send'}
+                            ? 'שלח פנייה להנהלה'
+                            : 'Send to Management'}
                       </span>
                     </button>
                   </div>
@@ -512,7 +644,7 @@ export const Footer: React.FC<FooterProps> = ({
               </button>
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold">{isHe ? 'התקנת אפליקציה' : 'Install App'}</h3>
-                <Smartphone className="w-5 h-5 text-emerald-400" />
+                <Smartphone className="w-5 h-5 text-white" />
               </div>
             </div>
 
@@ -526,7 +658,7 @@ export const Footer: React.FC<FooterProps> = ({
               <ol className="space-y-3 text-xs text-white/80 pr-4 list-decimal">
                 <li className="leading-relaxed">
                   <span>{isHe ? 'לחץ על כפתור השיתוף ' : 'Tap the Share icon '}</span>
-                  <Share2 className="w-3.5 h-3.5 inline mx-1 text-teal-400" />
+                  <Share2 className="w-3.5 h-3.5 inline mx-1 text-white" />
                   <span>{isHe ? 'בתחתית סרגל הדפדפן (Safari).' : 'in the Safari toolbar.'}</span>
                 </li>
                 <li className="leading-relaxed">
@@ -569,7 +701,7 @@ export const Footer: React.FC<FooterProps> = ({
               <button
                 type="button"
                 onClick={() => setShowIOSInstallGuide(false)}
-                className="w-full py-2.5 rounded-xl bg-emerald-500 text-black font-semibold text-xs hover:bg-emerald-400 transition-colors cursor-pointer"
+                className="w-full py-2.5 rounded-xl bg-white text-black font-semibold text-xs hover:bg-neutral-200 transition-colors cursor-pointer"
               >
                 {isHe ? 'הבנתי' : 'Got it'}
               </button>
