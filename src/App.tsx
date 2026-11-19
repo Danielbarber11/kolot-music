@@ -11,7 +11,7 @@ import {
   getCachedAlbums,
   incrementTrackViewInMemory,
 } from './services/multiMusicService';
-import { getStreamingMediaUrl, incrementTrackViewsInCloud } from './services/cloudStorageService';
+import { getStreamingMediaUrl, incrementTrackViewsInCloud, fetchSingleTrackFromCloud } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
 import { AccessibilityPage } from './components/AccessibilityPage';
 import {
@@ -29,6 +29,30 @@ import {
 } from './services/favoritesService';
 import { prewarmTrackColor } from './services/colorService';
 import { trackPageView, trackSongPlay } from './services/analyticsService';
+
+function getSongIdFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const id = new URLSearchParams(window.location.search).get('song');
+    return id && id.trim() ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncSongQueryParam(trackId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (trackId) {
+      url.searchParams.set('song', trackId);
+    } else {
+      url.searchParams.delete('song');
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(null, '', nextUrl);
+  } catch {}
+}
 
 function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> {
   const uniqueUrls = Array.from(
@@ -68,6 +92,7 @@ export default function App() {
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [allAlbums, setAllAlbums] = useState<Album[]>(() => getCachedAlbums());
+  const pendingDeepLinkRef = React.useRef<string | null>(getSongIdFromUrl());
 
   const [a11ySettings, setA11ySettings] = useState<AccessibilitySettings>(() => {
     const loaded = loadAccessibilitySettings();
@@ -105,7 +130,7 @@ export default function App() {
       setLikedSongIds(user?.uid ? getUserFavorites(user.uid) : []);
     });
     const handleFavoritesSync = () => {
-      setLikedSongIds((prev) => {
+      setLikedSongIds(() => {
         if (!authUser?.uid) return [];
         return getUserFavorites(authUser.uid);
       });
@@ -117,11 +142,61 @@ export default function App() {
     };
   }, [authUser?.uid]);
 
+  const handleEnterTrack = (track: JamendoTrack) => {
+    const existingTrack = allTracks.find((t) => t.id === track.id);
+    const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
+    const nextViews = currentViews + 1;
+    const updatedTrack: JamendoTrack = {
+      ...(existingTrack || track),
+      ...track,
+      viewsCount: nextViews,
+    };
+
+    incrementTrackViewInMemory(track.id);
+    setAllTracks((prev) =>
+      prev.some((t) => t.id === track.id)
+        ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
+        : prev
+    );
+    incrementTrackViewsInCloud(track);
+    trackSongPlay(track);
+    syncSongQueryParam(track.id);
+    setActivePlayerTrack(updatedTrack);
+  };
+
+  const handleExitTrack = () => {
+    syncSongQueryParam(null);
+    setActivePlayerTrack(null);
+  };
+
   // Coordinate single-roundtrip /api/bootstrap + color prewarming + top cover & avatar image decode BEFORE dismissing SplashScreen
-  // so initial tracks, cards, avatars, and covers appear together immediately without an empty flash or snap.
+  // Also open shared ?song=TRACK_ID links immediately once loaded.
   useEffect(() => {
     trackPageView('/', 'Kolot Music');
     let active = true;
+
+    const openRequestedSong = async (tracksPool: JamendoTrack[]) => {
+      const requestedId = pendingDeepLinkRef.current;
+      if (!requestedId || !active) return;
+      pendingDeepLinkRef.current = null;
+      let targetTrack = tracksPool.find((t) => t.id === requestedId) || null;
+      if (!targetTrack) {
+        targetTrack = await fetchSingleTrackFromCloud(requestedId).catch(() => null);
+      }
+      if (targetTrack && active) {
+        const nextViews = (Number(targetTrack.viewsCount) || 0) + 1;
+        const hydrated = { ...targetTrack, viewsCount: nextViews };
+        incrementTrackViewInMemory(targetTrack.id);
+        setAllTracks((prev) =>
+          prev.some((t) => t.id === targetTrack!.id)
+            ? prev.map((t) => (t.id === targetTrack!.id ? hydrated : t))
+            : [hydrated, ...prev]
+        );
+        incrementTrackViewsInCloud(targetTrack);
+        trackSongPlay(targetTrack);
+        setActivePlayerTrack(hydrated);
+      }
+    };
 
     const preloadDataAndTopCovers = async () => {
       try {
@@ -130,6 +205,10 @@ export default function App() {
         setAllTracks(boot.tracks);
         setAllArtists(boot.profiles);
         setAllAlbums(boot.albums);
+
+        if (pendingDeepLinkRef.current) {
+          void openRequestedSong(boot.tracks);
+        }
 
         boot.tracks.slice(0, 12).forEach((t) => prewarmTrackColor(t));
 
@@ -150,8 +229,20 @@ export default function App() {
       if (active) setIsInitializing(false);
     });
 
+    const handlePopState = () => {
+      const songFromUrl = getSongIdFromUrl();
+      if (!songFromUrl) {
+        setActivePlayerTrack(null);
+        return;
+      }
+      pendingDeepLinkRef.current = songFromUrl;
+      void openRequestedSong(getInstantSongPool());
+    };
+    window.addEventListener('popstate', handlePopState);
+
     return () => {
       active = false;
+      window.removeEventListener('popstate', handlePopState);
     };
   }, []);
 
@@ -164,27 +255,6 @@ export default function App() {
     if (res.allowed) {
       setLikedSongIds(res.likedIds);
     }
-  };
-
-  const handleEnterTrack = (track: JamendoTrack) => {
-    const existingTrack = allTracks.find((t) => t.id === track.id);
-    const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
-    const nextViews = currentViews + 1;
-    const updatedTrack: JamendoTrack = {
-      ...(existingTrack || track),
-      ...track,
-      viewsCount: nextViews,
-    };
-
-    incrementTrackViewInMemory(track.id);
-    setAllTracks((prev) =>
-      prev.some((t) => t.id === track.id)
-        ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
-        : prev
-    );
-    incrementTrackViewsInCloud(track);
-    trackSongPlay(track);
-    setActivePlayerTrack(updatedTrack);
   };
 
   const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings);
@@ -206,7 +276,7 @@ export default function App() {
             initialAlbums={allAlbums}
             onTracksSync={setAllTracks}
             onArtistsSync={setAllArtists}
-            onNavigateHome={() => setActivePlayerTrack(null)}
+            onNavigateHome={handleExitTrack}
             onPlayTrack={handleEnterTrack}
             onOpenAccessibility={() => setIsAccessibilityOpen(true)}
             activeAccessibilityCount={activeAccessibilityCount}
@@ -218,8 +288,8 @@ export default function App() {
               <SongPlayerPage
                 key={activePlayerTrack.id}
                 track={activePlayerTrack}
-                onBack={() => setActivePlayerTrack(null)}
-                onFilterByArtist={() => setActivePlayerTrack(null)}
+                onBack={handleExitTrack}
+                onFilterByArtist={handleExitTrack}
                 isLiked={likedSongIds.includes(activePlayerTrack.id)}
                 onToggleLike={handleToggleLikeSong}
                 onRequireAuth={() => {

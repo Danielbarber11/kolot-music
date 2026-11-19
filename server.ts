@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import tls from 'tls';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -767,6 +768,25 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
               optimisticTrackViewCounts.get(trackId) || 0
             );
             incoming.viewsCount = preservedViews;
+            const incomingHasSubs = Boolean(
+              (Array.isArray(incoming.subtitleSegments) && incoming.subtitleSegments.length > 0) ||
+              (Array.isArray(incoming.subtitleSegmentsHe) && incoming.subtitleSegmentsHe.length > 0) ||
+              (Array.isArray(incoming.subtitleSegmentsEn) && incoming.subtitleSegmentsEn.length > 0) ||
+              (Array.isArray(incoming.subtitleSegmentsOrig) && incoming.subtitleSegmentsOrig.length > 0)
+            );
+            if (!incomingHasSubs && incoming.subtitlesDisabled !== true) {
+              if (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) incoming.subtitleSegments = existing.subtitleSegments;
+              if (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) incoming.subtitleSegmentsHe = existing.subtitleSegmentsHe;
+              if (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0) incoming.subtitleSegmentsEn = existing.subtitleSegmentsEn;
+              if (Array.isArray(existing.subtitleSegmentsOrig) && existing.subtitleSegmentsOrig.length > 0) incoming.subtitleSegmentsOrig = existing.subtitleSegmentsOrig;
+              if (!incoming.lyrics && existing.lyrics) incoming.lyrics = existing.lyrics;
+              if (!incoming.lyricsHe && existing.lyricsHe) incoming.lyricsHe = existing.lyricsHe;
+              if (!incoming.lyricsEn && existing.lyricsEn) incoming.lyricsEn = existing.lyricsEn;
+              if (!incoming.lyricsOrig && existing.lyricsOrig) incoming.lyricsOrig = existing.lyricsOrig;
+              if (!incoming.detectedLanguageCode && existing.detectedLanguageCode) incoming.detectedLanguageCode = existing.detectedLanguageCode;
+              if (!incoming.detectedLanguageLabel && existing.detectedLanguageLabel) incoming.detectedLanguageLabel = existing.detectedLanguageLabel;
+              if (existing.hasWhisperSubtitles) incoming.hasWhisperSubtitles = true;
+            }
             body = Buffer.from(JSON.stringify(incoming, null, 2), 'utf-8');
           }
         }
@@ -880,6 +900,40 @@ app.get('/api/storage/list', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: `Failed to list files from storage: ${err?.message || 'Unknown error'}`,
+    });
+  }
+});
+
+// 2a. Single Track Lookup - 100% Pure Cloudflare R2 (for deep links & live subtitle hydration)
+app.get('/api/storage/track/:id', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const cleanId = decodeURIComponent(String(req.params.id || '')).replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) {
+      return res.status(400).json({ success: false, error: 'Missing track id' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `tracks/${cleanId}.json` })).catch(() => null);
+    if (!obj?.Body) {
+      return res.status(404).json({ success: false, error: 'Track not found' });
+    }
+    const parsed = JSON.parse(await obj.Body.transformToString('utf-8'));
+    if (!parsed || typeof parsed !== 'object') {
+      return res.status(404).json({ success: false, error: 'Track not found' });
+    }
+    const { uploadedByEmail: _omitEmail, ...cleanTrack } = parsed;
+    const mergedViews = Math.max(
+      Number(cleanTrack.viewsCount) || 0,
+      optimisticTrackViewCounts.get(cleanId) || 0
+    );
+    return res.json({
+      success: true,
+      track: { ...cleanTrack, viewsCount: mergedViews },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load track',
     });
   }
 });
@@ -3031,38 +3085,93 @@ app.post('/api/contact', async (req, res) => {
       } catch {}
     }
 
-    // 4. FormSubmit AJAX Relay (strictly verify JSON response .success === true / "true")
-    let formSubmitNeedsActivation = false;
-    if (!emailDispatched) {
-      try {
-        const appOrigin = resolveSafeAppOrigin(req);
-        const fsRes = await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            Referer: `${appOrigin}/`,
-            Origin: appOrigin,
-          },
-          body: JSON.stringify({
-            name: record.senderName || rawSenderEmail,
-            email: rawSenderEmail,
-            category: categoryLabel,
-            _replyto: rawSenderEmail,
-            _subject: fullSubject,
-            message: plainBody,
-            _template: 'table',
-          }),
-          signal: AbortSignal.timeout(8000),
+    const sendViaGmailSmtp = async (): Promise<boolean> => {
+      const smtpPass = sanitizeKey(process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS);
+      const smtpUser = sanitizeKey(process.env.SMTP_USER) || targetRecipient;
+      if (!smtpPass || !smtpUser) return false;
+
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          try {
+            socket.destroy();
+          } catch {}
+          resolve(ok);
+        };
+
+        const timer = setTimeout(() => finish(false), 6000);
+        let stage = 0;
+        let buffer = '';
+
+        const b64Subject = `=?UTF-8?B?${Buffer.from(fullSubject, 'utf-8').toString('base64')}?=`;
+        const b64Body = Buffer.from(plainBody, 'utf-8').toString('base64');
+        const mimePayload =
+          `From: Kolot Music <${smtpUser}>\r\n` +
+          `To: <${targetRecipient}>\r\n` +
+          `Reply-To: <${rawSenderEmail}>\r\n` +
+          `Subject: ${b64Subject}\r\n` +
+          `MIME-Version: 1.0\r\n` +
+          `Content-Type: text/plain; charset=UTF-8\r\n` +
+          `Content-Transfer-Encoding: base64\r\n` +
+          `\r\n` +
+          `${b64Body}\r\n.`;
+
+        const socket = tls.connect(465, 'smtp.gmail.com', { servername: 'smtp.gmail.com' }, () => {});
+
+        socket.on('error', () => {
+          clearTimeout(timer);
+          finish(false);
         });
-        const fsData: any = await fsRes.json().catch(() => null);
-        if (fsRes.ok && (fsData?.success === true || fsData?.success === 'true')) {
-          emailDispatched = true;
-          emailProvider = 'formsubmit';
-        } else if (String(fsData?.message || '').toLowerCase().includes('activat')) {
-          formSubmitNeedsActivation = true;
-        }
-      } catch {}
+
+        socket.on('data', (chunk) => {
+          buffer += chunk.toString('utf-8');
+          const lines = buffer.split('\r\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line || (line.length >= 4 && line[3] === '-')) continue;
+            const code = parseInt(line.slice(0, 3), 10);
+            if (stage === 0 && code === 220) {
+              stage = 1;
+              socket.write('EHLO kolotmusic.app\r\n');
+            } else if (stage === 1 && code === 250) {
+              stage = 2;
+              const authToken = Buffer.from(`\u0000${smtpUser}\u0000${smtpPass}`, 'utf-8').toString('base64');
+              socket.write(`AUTH PLAIN ${authToken}\r\n`);
+            } else if (stage === 2 && code === 235) {
+              stage = 3;
+              socket.write(`MAIL FROM:<${smtpUser}>\r\n`);
+            } else if (stage === 3 && code === 250) {
+              stage = 4;
+              socket.write(`RCPT TO:<${targetRecipient}>\r\n`);
+            } else if (stage === 4 && (code === 250 || code === 251)) {
+              stage = 5;
+              socket.write('DATA\r\n');
+            } else if (stage === 5 && code === 354) {
+              stage = 6;
+              socket.write(`${mimePayload}\r\n`);
+            } else if (stage === 6 && code === 250) {
+              stage = 7;
+              socket.write('QUIT\r\n');
+              clearTimeout(timer);
+              finish(true);
+            } else if (code >= 400) {
+              clearTimeout(timer);
+              finish(false);
+            }
+          }
+        });
+      });
+    };
+
+    // 4. Direct Gmail SMTP Relay if GMAIL_APP_PASSWORD / SMTP_PASS is set
+    if (!emailDispatched && sanitizeKey(process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS)) {
+      const smtpOk = await sendViaGmailSmtp();
+      if (smtpOk) {
+        emailDispatched = true;
+        emailProvider = 'gmail-smtp';
+      }
     }
 
     if (!storedInR2 && !emailDispatched) {
@@ -3075,9 +3184,7 @@ app.post('/api/contact', async (req, res) => {
       recipient: targetRecipient,
       emailDispatched,
       emailProvider: emailProvider || undefined,
-      formSubmitNeedsActivation,
       storedInR2,
-      needsClientRelay: !emailDispatched,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' });

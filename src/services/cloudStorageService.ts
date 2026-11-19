@@ -473,6 +473,25 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
   return Array.from(trackMap.values());
 }
 
+export async function fetchSingleTrackFromCloud(trackId: string): Promise<JamendoTrack | null> {
+  const cleanId = String(trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+  if (!cleanId) return null;
+  try {
+    const res = await fetch(`/api/storage/track/${encodeURIComponent(cleanId)}`, {
+      headers: getR2AuthHeaders(),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const data = await safeJson(res, 'טעינת שיר');
+    if (data?.success && data.track && isCloudPlayableTrack(data.track)) {
+      return data.track as JamendoTrack;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteTrackFromCloudStorage(trackId: string): Promise<boolean> {
   try {
     // Delete track metadata JSON

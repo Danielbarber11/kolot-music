@@ -61,7 +61,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/90 backdrop-blur-2xl overflow-y-auto custom-scrollbar"
+        className="fixed inset-0 z-[170] flex items-center justify-center p-3 sm:p-6 bg-black/95 backdrop-blur-2xl overflow-y-auto custom-scrollbar"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         <motion.div
@@ -69,7 +69,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
           transition={{ duration: 0.25, ease: 'easeOut' }}
-          className="relative w-full max-w-4xl bg-[#121212]/95 border border-white/15 rounded-3xl shadow-[0_25px_60px_rgba(0,0,0,0.9)] overflow-hidden flex flex-col my-auto"
+          className="relative w-full max-w-4xl bg-[#0c0c0e] border border-white/20 rounded-3xl shadow-[0_25px_60px_rgba(0,0,0,0.95)] overflow-hidden flex flex-col my-auto"
         >
           {/* TOP BAR / CLOSE BUTTON */}
           <div className="p-4 sm:p-6 pb-0 flex items-center justify-between shrink-0 z-10">

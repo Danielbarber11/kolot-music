@@ -585,6 +585,25 @@ export default {
                 Number(incoming.viewsCount) || 0,
                 workerOptimisticViewCounts.get(trackId) || 0
               );
+              const incomingHasSubs = Boolean(
+                (Array.isArray(incoming.subtitleSegments) && incoming.subtitleSegments.length > 0) ||
+                (Array.isArray(incoming.subtitleSegmentsHe) && incoming.subtitleSegmentsHe.length > 0) ||
+                (Array.isArray(incoming.subtitleSegmentsEn) && incoming.subtitleSegmentsEn.length > 0) ||
+                (Array.isArray(incoming.subtitleSegmentsOrig) && incoming.subtitleSegmentsOrig.length > 0)
+              );
+              if (!incomingHasSubs && incoming.subtitlesDisabled !== true) {
+                if (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) incoming.subtitleSegments = existing.subtitleSegments;
+                if (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) incoming.subtitleSegmentsHe = existing.subtitleSegmentsHe;
+                if (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0) incoming.subtitleSegmentsEn = existing.subtitleSegmentsEn;
+                if (Array.isArray(existing.subtitleSegmentsOrig) && existing.subtitleSegmentsOrig.length > 0) incoming.subtitleSegmentsOrig = existing.subtitleSegmentsOrig;
+                if (!incoming.lyrics && existing.lyrics) incoming.lyrics = existing.lyrics;
+                if (!incoming.lyricsHe && existing.lyricsHe) incoming.lyricsHe = existing.lyricsHe;
+                if (!incoming.lyricsEn && existing.lyricsEn) incoming.lyricsEn = existing.lyricsEn;
+                if (!incoming.lyricsOrig && existing.lyricsOrig) incoming.lyricsOrig = existing.lyricsOrig;
+                if (!incoming.detectedLanguageCode && existing.detectedLanguageCode) incoming.detectedLanguageCode = existing.detectedLanguageCode;
+                if (!incoming.detectedLanguageLabel && existing.detectedLanguageLabel) incoming.detectedLanguageLabel = existing.detectedLanguageLabel;
+                if (existing.hasWhisperSubtitles) incoming.hasWhisperSubtitles = true;
+              }
               bodyBytes = encoder.encode(JSON.stringify(incoming, null, 2));
             }
           }
@@ -664,6 +683,40 @@ export default {
         return jsonResponse({ success: true, bucket: creds.bucket, files: filesList });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'List failed' }, 500);
+      }
+    }
+
+    // 3a. Single Track Lookup directly from R2 (deep links & live subtitle hydration)
+    if (pathname.startsWith('/api/storage/track/') && request.method === 'GET') {
+      try {
+        const rawParam = pathname.slice('/api/storage/track/'.length);
+        const cleanId = decodeURIComponent(rawParam).replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) {
+          return jsonResponse({ success: false, error: 'Missing track id' }, 400);
+        }
+        let parsed: any = null;
+        const key = `tracks/${cleanId}.json`;
+        if (env.R2_BUCKET) {
+          const obj = await env.R2_BUCKET.get(key);
+          parsed = obj ? JSON.parse(await obj.text()) : null;
+        } else {
+          const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
+          parsed = r.ok ? await r.json().catch(() => null) : null;
+        }
+        if (!parsed || typeof parsed !== 'object') {
+          return jsonResponse({ success: false, error: 'Track not found' }, 404);
+        }
+        const { uploadedByEmail: _omitEmail, ...cleanTrack } = parsed;
+        const mergedViews = Math.max(
+          Number(cleanTrack.viewsCount) || 0,
+          workerOptimisticViewCounts.get(cleanId) || 0
+        );
+        return jsonResponse({
+          success: true,
+          track: { ...cleanTrack, viewsCount: mergedViews },
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Track lookup failed' }, 500);
       }
     }
 
@@ -1815,6 +1868,7 @@ export default {
                 subject: fullSubject,
                 text: plainBody,
               }),
+              signal: AbortSignal.timeout(4500),
             });
             if (resendRes.ok) {
               emailDispatched = true;
@@ -1836,6 +1890,7 @@ export default {
                 subject: fullSubject,
                 textContent: plainBody,
               }),
+              signal: AbortSignal.timeout(4500),
             });
             if (brevoRes.ok) {
               emailDispatched = true;
@@ -1857,42 +1912,12 @@ export default {
                 subject: fullSubject,
                 message: plainBody,
               }),
+              signal: AbortSignal.timeout(4500),
             });
             const wData: any = await wRes.json().catch(() => null);
             if (wRes.ok && wData?.success === true) {
               emailDispatched = true;
               emailProvider = 'web3forms';
-            }
-          } catch {}
-        }
-
-        let formSubmitNeedsActivation = false;
-        if (!emailDispatched) {
-          try {
-            const fsRes = await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-                Referer: `${url.origin}/`,
-                Origin: url.origin,
-              },
-              body: JSON.stringify({
-                name: rawSenderEmail,
-                email: rawSenderEmail,
-                category: categoryLabel,
-                _replyto: rawSenderEmail,
-                _subject: fullSubject,
-                message: plainBody,
-                _template: 'table',
-              }),
-            });
-            const fsData: any = await fsRes.json().catch(() => null);
-            if (fsRes.ok && (fsData?.success === true || fsData?.success === 'true')) {
-              emailDispatched = true;
-              emailProvider = 'formsubmit';
-            } else if (String(fsData?.message || '').toLowerCase().includes('activat')) {
-              formSubmitNeedsActivation = true;
             }
           } catch {}
         }
@@ -1907,9 +1932,7 @@ export default {
           recipient: targetRecipient,
           emailDispatched,
           emailProvider: emailProvider || undefined,
-          formSubmitNeedsActivation,
           storedInR2,
-          needsClientRelay: !emailDispatched,
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' }, 500);

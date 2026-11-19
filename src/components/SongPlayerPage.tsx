@@ -15,6 +15,8 @@ import {
   ChevronDown,
   ChevronUp,
   Captions,
+  Check,
+  Copy,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment } from '../types';
@@ -30,7 +32,8 @@ import {
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveGeneratedSubtitlesToCloud } from '../services/cloudStorageService';
+import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveGeneratedSubtitlesToCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
+import { trackEvent } from '../services/analyticsService';
 import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
 import { generateSubtitlesWithGeminiMethod } from '../services/onDeviceWhisperService';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
@@ -162,6 +165,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 }) => {
   const isHe = lang === 'he';
 
+  const playerScrollRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -169,6 +173,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [duration, setDuration] = useState(track.duration || 180);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<{ url: string; copied: boolean } | null>(null);
   const [favoriteAuthNotice, setFavoriteAuthNotice] = useState(false);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
@@ -212,6 +217,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [detectedLangLabel, setDetectedLangLabel] = useState<string | undefined>(track.detectedLanguageLabel);
 
   useEffect(() => {
+    if (playerScrollRef.current) {
+      playerScrollRef.current.scrollTop = 0;
+    }
+    setShareFeedback(null);
+    setCopiedLink(false);
+
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
     const hasEn = !!track.subtitleSegmentsEn?.length;
     setWhisperSegmentsHe(track.subtitleSegmentsHe || track.subtitleSegments);
@@ -222,6 +233,43 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setWhisperLyricsOrig(track.lyricsOrig);
     setDetectedLangLabel(track.detectedLanguageLabel);
     setSubtitleLang(!hasHe && hasEn ? 'en' : 'he');
+
+    if (!track.id) return;
+    let cancelled = false;
+    fetchSingleTrackFromCloud(track.id)
+      .then((freshTrack) => {
+        if (cancelled || !freshTrack || freshTrack.id !== track.id) return;
+        const freshHe = freshTrack.subtitleSegmentsHe || freshTrack.subtitleSegments;
+        const freshEn = freshTrack.subtitleSegmentsEn;
+        const freshOrig = freshTrack.subtitleSegmentsOrig;
+        const freshHasSubs = !!(
+          freshHe?.length ||
+          freshEn?.length ||
+          freshOrig?.length ||
+          freshTrack.lyricsHe?.trim() ||
+          freshTrack.lyricsEn?.trim() ||
+          freshTrack.lyricsOrig?.trim() ||
+          freshTrack.lyrics?.trim()
+        );
+        if (freshHasSubs) {
+          syncTrackSubtitlesInMemory(freshTrack);
+          setWhisperSegmentsHe(freshHe);
+          setWhisperSegmentsEn(freshEn);
+          setWhisperSegmentsOrig(freshOrig);
+          setWhisperLyricsHe(freshTrack.lyricsHe || freshTrack.lyrics);
+          setWhisperLyricsEn(freshTrack.lyricsEn);
+          setWhisperLyricsOrig(freshTrack.lyricsOrig);
+          setDetectedLangLabel(freshTrack.detectedLanguageLabel);
+          if (!freshHe?.length && freshEn?.length) {
+            setSubtitleLang('en');
+          }
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     track.id,
     track.subtitleSegments,
@@ -320,14 +368,18 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     const alreadyHasSubtitles = !!(
       whisperSegmentsHe?.length ||
       whisperSegmentsEn?.length ||
+      whisperSegmentsOrig?.length ||
       whisperLyricsHe?.trim() ||
       whisperLyricsEn?.trim() ||
+      whisperLyricsOrig?.trim() ||
       track.subtitleSegments?.length ||
       track.subtitleSegmentsHe?.length ||
       track.subtitleSegmentsEn?.length ||
+      track.subtitleSegmentsOrig?.length ||
       track.lyrics?.trim() ||
       track.lyricsHe?.trim() ||
-      track.lyricsEn?.trim()
+      track.lyricsEn?.trim() ||
+      track.lyricsOrig?.trim()
     );
     if (alreadyHasSubtitles || attemptedEmptyTrackIds.has(track.id)) return;
 
@@ -471,27 +523,68 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
 
-  const handleCopyTrackLink = async () => {
+  const buildTrackShareUrl = (): string => {
+    const shareUrl = new URL(window.location.origin + window.location.pathname);
+    shareUrl.searchParams.set('song', track.id);
+    return shareUrl.toString();
+  };
+
+  const copyTextSafely = async (text: string): Promise<boolean> => {
     try {
-      const shareUrl = new URL(window.location.href);
-      shareUrl.searchParams.set('song', track.id);
-      const urlString = shareUrl.toString();
-
-      if (navigator.share) {
-        try {
-          await navigator.share({
-            title: `${track.name} - ${track.artistName}`,
-            text: `האזן לשיר "${track.name}" מאת ${track.artistName} ב-Kolot Music`,
-            url: urlString,
-          });
-          return;
-        } catch {}
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
       }
-
-      await navigator.clipboard.writeText(urlString);
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2500);
+    } catch {}
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return ok;
     } catch {
+      return false;
+    }
+  };
+
+  const handleCopyTrackLink = async () => {
+    const urlString = buildTrackShareUrl();
+    trackEvent('share_song', {
+      track_id: track.id,
+      track_name: track.name,
+      artist_name: track.artistName,
+    });
+
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `${track.name} - ${track.artistName}`,
+          text: isHe
+            ? `האזן לשיר "${track.name}" מאת ${track.artistName} ב-Kolot Music`
+            : `Listen to "${track.name}" by ${track.artistName} on Kolot Music`,
+          url: urlString,
+        });
+        setCopiedLink(true);
+        setShareFeedback({ url: urlString, copied: true });
+        setTimeout(() => setCopiedLink(false), 2500);
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          return;
+        }
+      }
+    }
+
+    const copied = await copyTextSafely(urlString);
+    setShareFeedback({ url: urlString, copied });
+    if (copied) {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     }
@@ -516,7 +609,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   };
 
   useEffect(() => {
-    if (track.id) {
+    if (track.id && track.bgColor !== activeBgColor) {
       track.bgColor = activeBgColor;
       updateTrackColorInCloud(track.id, activeBgColor, track).catch(() => {});
     }
@@ -544,11 +637,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   return (
     <motion.div
+      ref={playerScrollRef}
       initial={{ opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.985 }}
       transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-[100] w-screen h-screen overflow-y-auto text-white flex flex-col custom-scrollbar m-0 p-0 border-0"
+      className="fixed inset-0 z-[100] w-screen h-screen bg-[#09090b] overflow-y-auto text-white flex flex-col custom-scrollbar m-0 p-0 border-0"
       style={dynamicBgStyle}
     >
       {/* Immersive Dynamic Artwork Background - FIXED so it continues seamlessly when scrolling down */}
@@ -610,9 +704,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </button>
       </div>
 
-      {/* SCREEN 1: PLAYER MAIN CONTROLS */}
-      <div className="relative z-10 min-h-screen flex flex-col items-center justify-between px-4 pt-16 pb-8 max-w-md mx-auto w-full">
-        <div className="h-2 flex-shrink-0" />
+      {/* SCREEN 1: COMPACT PLAYER MAIN CONTROLS */}
+      <div className="relative z-10 flex flex-col items-center px-4 pt-16 pb-4 gap-4 sm:gap-5 max-w-md mx-auto w-full">
 
         {/* 1. COVER ARTWORK IMAGE */}
         <div
@@ -807,106 +900,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </div>
       </div>
 
-      {/* SCREEN 2: DETAILS & REPORT BUTTON */}
-      <div className="relative z-10 max-w-xl mx-auto w-full px-4 pt-4 pb-20 space-y-6">
-        <div className="p-6 rounded-3xl bg-white/10 backdrop-blur-2xl border border-white/15 space-y-4 shadow-xl">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Music2 className="w-4 h-4 text-white" />
-              <span>{isHe ? 'פרטי היצירה והזמר' : 'Track & Artist Details'}</span>
-            </h3>
-
-            <div className="flex items-center gap-2">
-              {/* AI BADGE POSITIONED RIGHT NEXT TO REPORT BUTTON */}
-              {track.isAiGenerated && (
-                <span
-                  className="px-2.5 py-1 rounded-full bg-purple-500/25 text-purple-200 border border-purple-400/50 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-1 shadow-md shrink-0 select-none"
-                  title={isHe ? 'שיר שנוצר בבינה מלאכותית' : 'AI Generated Song'}
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-purple-200" />
-                  <span>AI</span>
-                </span>
-              )}
-
-              {/* REPORT BUTTON (🚩) */}
-              <button
-                onClick={() => setIsReportModalOpen(true)}
-                className="px-3 py-1.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
-                title={isHe ? 'דווח על שיר זה' : 'Report Song'}
-              >
-                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-                <span>{isHe ? 'דווח' : 'Report'}</span>
-              </button>
-
-              <button
-                onClick={handleCopyTrackLink}
-                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 border border-white/20 transition-all cursor-pointer"
-                title={isHe ? 'שתף קישור לשיר' : 'Share Song Link'}
-              >
-                <Share2 className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שם השיר:' : 'Track Title:'}</span>
-              <span className="font-bold text-white text-sm truncate block">{track.name}</span>
-            </div>
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר / אמן מבצע:' : 'Artist / Singer:'}</span>
-              <button
-                type="button"
-                onClick={handleOpenArtistProfile}
-                className="font-bold text-white hover:text-white/80 text-sm truncate block text-start cursor-pointer underline decoration-dotted"
-              >
-                {track.artistName}
-              </button>
-            </div>
-
-            {track.featuredArtist && (
-              <div>
-                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר אורח:' : 'Featured Artist:'}</span>
-                <span className="font-bold text-white/90 text-xs truncate block">{track.featuredArtist}</span>
-              </div>
-            )}
-
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'אלבום / אוסף:' : 'Album:'}</span>
-              <span className="font-bold text-white/90 truncate block">{track.albumName || (isHe ? 'סינגל' : 'Single')}</span>
-            </div>
-
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סגנון מוזיקלי:' : 'Genre:'}</span>
-              <span className="font-bold text-white/90">{track.genre || (isHe ? 'ללא סגנון' : 'General')}</span>
-            </div>
-
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שנת הוצאה:' : 'Release Year:'}</span>
-              <span className="font-bold text-white/90">{track.publishedDate || new Date().getFullYear().toString()}</span>
-            </div>
-
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'צפיות:' : 'Views:'}</span>
-              <span className="font-bold text-white/90 tabular-nums">{(track.viewsCount ?? 0).toLocaleString()}</span>
-            </div>
-
-            {track.writers && (
-              <div className="col-span-2 sm:col-span-3 pt-1 border-t border-white/10">
-                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'כותבים ומלחינים:' : 'Writers & Composers:'}</span>
-                <span className="font-bold text-white/90 text-xs truncate block">{track.writers}</span>
-              </div>
-            )}
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
-              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES OR LYRICS) */}
+      {/* SCREEN 2: SUBTITLES CARD FIRST + TRACK DETAILS & SHARE */}
+      <div className="relative z-10 max-w-xl mx-auto w-full px-4 pt-2 pb-20 space-y-5">
+        {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES SAVED IN STORAGE) */}
         {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
-          <div className="p-4 sm:p-5 rounded-3xl bg-neutral-950/80 backdrop-blur-2xl border border-white/15 space-y-3 shadow-2xl transition-all">
+          <div className="p-4 sm:p-5 rounded-3xl bg-[#09090b] border border-white/20 space-y-3 shadow-2xl transition-all">
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
@@ -922,8 +920,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                       <span>{isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}</span>
                     </h3>
                     {!isLyricsExpanded && (
-                      <p className="text-xs text-white/70 truncate max-w-[220px] sm:max-w-[300px] pt-0.5">
-                        {syncedLyrics.previewText || (isHe ? 'לחץ להצגה' : 'Click to view')}
+                      <p className="text-xs text-white/80 truncate max-w-[220px] sm:max-w-[320px] pt-0.5">
+                        {(activeLineIndex >= 0 && syncedLyrics.lines[activeLineIndex]
+                          ? syncedLyrics.lines[activeLineIndex].words.map((w) => w.text).join(' ')
+                          : syncedLyrics.previewText) || (isHe ? 'לחץ להצגה' : 'Click to view')}
                       </p>
                     )}
                   </div>
@@ -1001,7 +1001,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.22 }}
-                  className="pt-3 border-t border-white/10 space-y-3"
+                  className="overflow-hidden pt-3 border-t border-white/10 space-y-3"
                 >
                   <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
                     {syncedLyrics.lines.map((line, lIdx) => {
@@ -1057,6 +1057,131 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </AnimatePresence>
           </div>
         )}
+
+        <div className="p-5 sm:p-6 rounded-3xl bg-[#09090b]/95 border border-white/20 space-y-4 shadow-xl">
+          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Music2 className="w-4 h-4 text-white" />
+              <span>{isHe ? 'פרטי היצירה והזמר' : 'Track & Artist Details'}</span>
+            </h3>
+
+            <div className="flex items-center gap-2">
+              {/* AI BADGE POSITIONED RIGHT NEXT TO REPORT BUTTON */}
+              {track.isAiGenerated && (
+                <span
+                  className="px-2.5 py-1 rounded-full bg-purple-500/25 text-purple-200 border border-purple-400/50 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-1 shadow-md shrink-0 select-none"
+                  title={isHe ? 'שיר שנוצר בבינה מלאכותית' : 'AI Generated Song'}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+                  <span>AI</span>
+                </span>
+              )}
+
+              {/* REPORT BUTTON (🚩) */}
+              <button
+                onClick={() => setIsReportModalOpen(true)}
+                className="px-3 py-1.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                title={isHe ? 'דווח על שיר זה' : 'Report Song'}
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                <span>{isHe ? 'דווח' : 'Report'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCopyTrackLink}
+                className="px-3 py-1.5 rounded-full bg-white text-black hover:bg-neutral-200 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow"
+                title={isHe ? 'שתף קישור לשיר' : 'Share Song Link'}
+              >
+                {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+                <span>{copiedLink ? (isHe ? 'הועתק' : 'Copied') : (isHe ? 'שתף' : 'Share')}</span>
+              </button>
+            </div>
+          </div>
+
+          {shareFeedback && !shareFeedback.copied && (
+            <div className="p-3 rounded-2xl bg-white/[0.05] border border-white/20 flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                dir="ltr"
+                value={shareFeedback.url}
+                onFocus={(e) => e.currentTarget.select()}
+                className="flex-1 bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const ok = await copyTextSafely(shareFeedback.url);
+                  if (ok) {
+                    setShareFeedback({ url: shareFeedback.url, copied: true });
+                    setCopiedLink(true);
+                    setTimeout(() => setCopiedLink(false), 2500);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-white text-black font-bold text-xs flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{isHe ? 'העתק' : 'Copy'}</span>
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שם השיר:' : 'Track Title:'}</span>
+              <span className="font-bold text-white text-sm truncate block">{track.name}</span>
+            </div>
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר / אמן מבצע:' : 'Artist / Singer:'}</span>
+              <button
+                type="button"
+                onClick={handleOpenArtistProfile}
+                className="font-bold text-white hover:text-white/80 text-sm truncate block text-start cursor-pointer underline decoration-dotted"
+              >
+                {track.artistName}
+              </button>
+            </div>
+
+            {track.featuredArtist && (
+              <div>
+                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'זמר אורח:' : 'Featured Artist:'}</span>
+                <span className="font-bold text-white/90 text-xs truncate block">{track.featuredArtist}</span>
+              </div>
+            )}
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'אלבום / אוסף:' : 'Album:'}</span>
+              <span className="font-bold text-white/90 truncate block">{track.albumName || (isHe ? 'סינגל' : 'Single')}</span>
+            </div>
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סגנון מוזיקלי:' : 'Genre:'}</span>
+              <span className="font-bold text-white/90">{track.genre || (isHe ? 'ללא סגנון' : 'General')}</span>
+            </div>
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שנת הוצאה:' : 'Release Year:'}</span>
+              <span className="font-bold text-white/90">{track.publishedDate || new Date().getFullYear().toString()}</span>
+            </div>
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'צפיות:' : 'Views:'}</span>
+              <span className="font-bold text-white/90 tabular-nums">{(track.viewsCount ?? 0).toLocaleString()}</span>
+            </div>
+
+            {track.writers && (
+              <div className="col-span-2 sm:col-span-3 pt-1 border-t border-white/10">
+                <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'כותבים ומלחינים:' : 'Writers & Composers:'}</span>
+                <span className="font-bold text-white/90 text-xs truncate block">{track.writers}</span>
+              </div>
+            )}
+            <div>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
+              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* SHARE FEEDBACK TOAST */}

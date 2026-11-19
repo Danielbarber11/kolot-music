@@ -180,6 +180,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [activeTab, setActiveTab] = useState<'all' | 'favorites'>('all');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const mainFeedRef = useRef<HTMLElement>(null);
   const [isBulkClassifying, setIsBulkClassifying] = useState(false);
   const [bulkClassifyNotice, setBulkClassifyNotice] = useState<string | null>(null);
 
@@ -517,6 +518,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    if (mainFeedRef.current) {
+      mainFeedRef.current.scrollTop = 0;
+    }
+  }, [activeTab, selectedGenre, artistFilter, searchQuery]);
 
   const displayedTracks = React.useMemo(() => {
     let list = allTracks.filter(isValidTrackWithOwner);
@@ -1057,7 +1064,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
       {/* MAIN LAYOUT — SINGLE CLEAN SCROLLABLE CONTAINER */}
       <div className="flex-1 flex overflow-hidden px-3 sm:px-6 pb-2 gap-2">
         {/* FLUID MAIN CONTENT AREA — Pristine 100% pitch black surface without gray cards */}
-        <main className="flex-1 bg-black border-none overflow-y-auto custom-scrollbar flex flex-col pb-24 sm:pb-0">
+        <main
+          ref={mainFeedRef}
+          className="flex-1 bg-black border-none overflow-y-auto custom-scrollbar flex flex-col pb-24 sm:pb-0"
+        >
           {/* WEAK / OFFLINE INTERNET HEALTH NOTICE */}
           {(networkHealth.status === 'offline' || (networkHealth.status === 'weak' && !dismissedWeakNetBanner)) && (
             <div className="px-4 sm:px-6 pt-3">
@@ -1196,7 +1206,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           {/* MAIN VERTICAL FEED */}
           {isFilteredOrSearching ? (
             /* Flat Grid for Filter/Search Results */
-            <div className="p-4 sm:p-6 flex-1">
+            <div key="filtered-feed" className="p-4 sm:p-6 flex-1 bg-black">
               {activeTab === 'favorites' && !authUser ? (
                 <div className="text-center py-20 space-y-4 max-w-md mx-auto bg-white/[0.03] border border-white/10 rounded-3xl p-8">
                   <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto text-white border border-white/15">
@@ -1341,7 +1351,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             </div>
           ) : (
             /* DEFAULT HOME SECTIONS: HERO SPOTLIGHT -> QUICK MIXES -> ROW 1 (LEADING SONGS) -> ROW 2 (POPULAR ALBUMS) -> ROW 3 (POPULAR ARTISTS) -> CURATED ROWS */
-            <div className="p-4 sm:p-6 space-y-10 flex-1">
+            <div key="home-feed" className="p-4 sm:p-6 space-y-10 flex-1 bg-black">
               {/* DESKTOP LUXURY HERO SPOTLIGHT BANNER */}
               {(() => {
                 const featuredTrack = leadingTracks[featuredTrackIndex % leadingTracks.length] || leadingTracks[0];

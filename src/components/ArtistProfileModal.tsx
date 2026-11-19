@@ -53,6 +53,14 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   currentTrack,
   onRemoveTrack,
 }) => {
+  const profileScrollRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen && profileScrollRef.current) {
+      profileScrollRef.current.scrollTop = 0;
+    }
+  }, [isOpen, artistName, artistUid]);
+
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
@@ -258,6 +266,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   return (
     <motion.div
+      ref={profileScrollRef}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}

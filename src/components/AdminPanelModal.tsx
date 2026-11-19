@@ -55,6 +55,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
   const [accountActionError, setAccountActionError] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
+  const adminScrollRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (adminScrollRef.current) {
+      adminScrollRef.current.scrollTop = 0;
+    }
+  }, [activeTab, isOpen]);
 
   const [cloudConfig] = useState(getCloudStorageConfig);
 
@@ -184,14 +191,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-[140] flex items-center justify-center p-3 sm:p-6 bg-black/90 backdrop-blur-3xl animate-fadeIn"
+        className="fixed inset-0 z-[150] flex items-center justify-center p-3 sm:p-6 bg-black/95 backdrop-blur-3xl animate-fadeIn"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.94, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.94, y: 20 }}
-          className="relative w-full max-w-4xl bg-[#0b0f19] border border-white/20 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
+          className="relative w-full max-w-4xl bg-[#09090b] border border-white/20 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-white"
         >
           {/* ADMIN HEADER */}
           <div className="p-5 border-b border-white/10 flex items-center justify-between bg-neutral-950/90">
@@ -292,7 +299,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
           </div>
 
           {/* MAIN CONTENT */}
-          <div className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-6 custom-scrollbar">
+          <div
+            ref={adminScrollRef}
+            className="p-5 sm:p-6 overflow-y-auto flex-1 space-y-6 custom-scrollbar bg-[#09090b]"
+          >
+            <div key={activeTab} className="space-y-6 bg-[#09090b]">
             {/* TAB 1: ACCOUNT MANAGEMENT & DELETION */}
             {activeTab === 'accounts' && (
               <div className="space-y-4">
@@ -646,6 +657,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                 )}
               </div>
             )}
+            </div>
           </div>
         </motion.div>
       </div>

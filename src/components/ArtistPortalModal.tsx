@@ -112,6 +112,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const isHe = lang === 'he';
 
   const [activeTab, setActiveTab] = useState<'profile' | 'manual_upload' | 'account_settings' | 'albums'>(initialTab);
+  const portalScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (portalScrollRef.current) {
+      portalScrollRef.current.scrollTop = 0;
+    }
+  }, [activeTab, isOpen]);
 
   const initialAuthUser = getCurrentAuthUser();
   const initialCachedProfile = initialAuthUser
@@ -435,6 +442,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       detectedLanguageCode: editIncludeSubtitles ? editingTrack.detectedLanguageCode : undefined,
       detectedLanguageLabel: editIncludeSubtitles ? editingTrack.detectedLanguageLabel : undefined,
       hasWhisperSubtitles: hasSubSegments,
+      subtitlesDisabled: !editIncludeSubtitles,
       isAiGenerated: editIsAiGenerated,
     };
 
@@ -1526,11 +1534,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   return (
     <AnimatePresence>
       <motion.div
+        ref={portalScrollRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
-        className={`fixed inset-0 z-[120] w-screen h-screen ${
+        className={`fixed inset-0 z-[140] w-screen h-screen ${
           activeTab === 'manual_upload' || activeTab === 'albums' ? 'bg-black' : 'bg-[#070b14]'
         } overflow-y-auto text-white custom-scrollbar flex flex-col`}
         dir={isHe ? 'rtl' : 'ltr'}
@@ -1575,7 +1584,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         {/* 1. PUBLIC ARTIST PROFILE SCREEN - STEADY DARK HEADER, ZERO COLOR FLASHES */}
         {activeTab === 'profile' && (
-          <div className="w-full flex-1 flex flex-col bg-[#08090d]">
+          <div key="portal-tab-profile" className="w-full flex-1 flex flex-col bg-[#08090d]">
             <div
               className="relative w-full overflow-hidden border-b border-white/10 bg-[#08090d]"
               style={{
@@ -2257,7 +2266,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         {/* 2. FULL-SCREEN MONOCHROME BLACK & WHITE ADD SONG SCREEN */}
         {activeTab === 'manual_upload' && (
-          <div className="w-full min-h-screen bg-black text-white px-4 sm:px-8 py-6 sm:py-10 flex flex-col items-center">
+          <div key="portal-tab-upload" className="w-full min-h-screen bg-black text-white px-4 sm:px-8 py-6 sm:py-10 flex flex-col items-center">
             <div className="w-full max-w-2xl space-y-5 animate-fadeIn">
               {/* TOP HEADER */}
               <div className="flex items-center justify-between gap-3 pb-4 border-b border-white/15">
@@ -2972,7 +2981,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         {/* 3. FULL-SCREEN ALBUMS MANAGEMENT TAB (BG-BLACK) */}
         {activeTab === 'albums' && (
-          <div className="w-full flex-1 flex flex-col bg-black text-white min-h-screen pt-20 pb-24 px-4 sm:px-8">
+          <div key="portal-tab-albums" className="w-full flex-1 flex flex-col bg-black text-white min-h-screen pt-20 pb-24 px-4 sm:px-8">
             <div className="max-w-3xl mx-auto w-full space-y-6">
               {/* Top Title & Back to Profile */}
               <div className="flex items-center justify-between border-b border-white/10 pb-4">
@@ -3234,7 +3243,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.98 }}
                   transition={{ duration: 0.2 }}
-                  className="fixed inset-0 z-[160] bg-black text-white flex flex-col overflow-hidden"
+                  className="fixed inset-0 z-[175] bg-black text-white flex flex-col overflow-hidden"
                   dir={isHe ? 'rtl' : 'ltr'}
                 >
                   {/* Selector Top Bar */}
@@ -3349,7 +3358,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         {/* 4. RECREATED STUDIO ACCOUNT & PROFILE SETTINGS VIEW */}
         {activeTab === 'account_settings' && (
-          <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
+          <div key="portal-tab-settings" className="w-full min-h-screen bg-[#070b14]">
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
             {/* Editorial Header */}
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/10 pb-5">
               <div className="space-y-1.5">
@@ -3658,6 +3668,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </button>
               </div>
             </form>
+            </div>
           </div>
         )}
 

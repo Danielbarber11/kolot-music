@@ -56,7 +56,11 @@ export const Footer: React.FC<FooterProps> = ({
   const [contactMessage, setContactMessage] = useState('');
   const [isSendingContact, setIsSendingContact] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
-  const [sentNotice, setSentNotice] = useState<{ mode: 'email' | 'activation' | 'inbox'; text: string } | null>(null);
+  const [sentNotice, setSentNotice] = useState<{
+    mode: 'email' | 'inbox';
+    text: string;
+    mailtoHref?: string;
+  } | null>(null);
 
   const contactEmail = 'kolot.music1@gmail.com';
 
@@ -109,6 +113,9 @@ export const Footer: React.FC<FooterProps> = ({
     }
 
     setIsSendingContact(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
     try {
       const categoryLabelsHe: Record<ContactCategory, string> = {
         complaint: 'תלונה / דיווח',
@@ -126,6 +133,7 @@ export const Footer: React.FC<FooterProps> = ({
           ...getAuthHeaders(),
         },
         credentials: 'include',
+        signal: controller.signal,
         body: JSON.stringify({
           category: contactCategory,
           senderEmail,
@@ -138,79 +146,40 @@ export const Footer: React.FC<FooterProps> = ({
         throw new Error(data?.error || (isHe ? 'שליחת הפנייה נכשלה, נסה שוב' : 'Failed to send message'));
       }
 
-      let emailDispatched = Boolean(data.emailDispatched);
-      let activationNeeded = Boolean(data.formSubmitNeedsActivation);
-
-      // Browser FormSubmit fallback relay if backend had no mail API key configured
-      if (!emailDispatched && !activationNeeded && data.needsClientRelay) {
-        try {
-          const fsRes = await fetch(`https://formsubmit.co/ajax/${contactEmail}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-            body: JSON.stringify({
-              _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
-              _replyto: senderEmail,
-              _template: 'table',
-              _captcha: 'false',
-              category: categoryLabel,
-              email: senderEmail,
-              subject,
-              message,
-            }),
-          });
-          const fsJson = await fsRes.json().catch(() => null);
-          if (fsRes.ok && (fsJson?.success === true || fsJson?.success === 'true')) {
-            emailDispatched = true;
-          } else if (typeof fsJson?.message === 'string' && /activat/i.test(fsJson.message)) {
-            activationNeeded = true;
-          }
-        } catch {
-          // Non-fatal: R2 admin inbox already persisted the submission
-        }
-      }
+      const emailDispatched = Boolean(data.emailDispatched);
 
       trackEvent('contact_submit', {
         category: contactCategory,
         email_dispatched: emailDispatched,
       });
 
-      if (emailDispatched) {
-        setSentNotice({
-          mode: 'email',
-          text: isHe
-            ? `פנייתך (${categoryLabel}) נשלחה בהצלחה למייל ${contactEmail} ונשמרה בתיבת ההנהלה!`
-            : `Your message has been delivered to ${contactEmail} and saved cleanly.`,
-        });
-      } else if (activationNeeded) {
-        setSentNotice({
-          mode: 'activation',
-          text: isHe
-            ? `פנייתך נשמרה בתיבת ההנהלה של האתר. מייל אישור חד-פעמי נשלח כעת אל ${contactEmail} להפעלת קבלת הפניות ישירות במייל.`
-            : `Your message was saved to the site inbox. A one-time activation email was sent to ${contactEmail} to enable direct forwarding.`,
-        });
-      } else {
-        setSentNotice({
-          mode: 'inbox',
-          text: isHe
-            ? 'פנייתך התקבלה ונשמרה בתיבת הפניות של הנהלת האתר לבדיקה וטיפול.'
-            : 'Your message has been saved to the site management inbox for review.',
-        });
-      }
+      setSentNotice({
+        mode: emailDispatched ? 'email' : 'inbox',
+        text: emailDispatched
+          ? (isHe
+              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה ישירות אל ${contactEmail} ונשמרה באחסון ובתיבת ההנהלה של האתר.`
+              : `Your message has been delivered to ${contactEmail} and saved cleanly to site storage.`)
+          : (isHe
+              ? 'פנייתך נשלחה ונשמרה בהצלחה באחסון האתר ובתיבת ההנהלה לבדיקה.'
+              : 'Your message has been saved to site storage and the management inbox.'),
+      });
 
       setContactSenderEmail('');
       setContactSubject('');
       setContactMessage('');
       setContactError(null);
-      setTimeout(() => {
-        setSentNotice(null);
-        setShowContactModal(false);
-      }, 3200);
     } catch (err: any) {
-      setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
+      if (err?.name === 'AbortError') {
+        setContactError(
+          isHe
+            ? 'השרת התעכב בתגובה. אנא נסה שוב או שלח ישירות לכתובת kolot.music1@gmail.com'
+            : 'Request timed out. Please try again or email kolot.music1@gmail.com directly.'
+        );
+      } else {
+        setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
+      }
     } finally {
+      clearTimeout(timeoutId);
       setIsSendingContact(false);
     }
   };
@@ -398,7 +367,12 @@ export const Footer: React.FC<FooterProps> = ({
               <span>•</span>
               <button
                 type="button"
-                onClick={() => setShowContactModal(true)}
+                onClick={() => {
+                  setSentNotice(null);
+                  setContactError(null);
+                  setIsSendingContact(false);
+                  setShowContactModal(true);
+                }}
                 className="hover:text-white transition-colors cursor-pointer"
               >
                 {isHe ? 'יצירת קשר' : 'Contact'}
@@ -416,7 +390,7 @@ export const Footer: React.FC<FooterProps> = ({
       {/* MODAL 1: CONTACT & COMPLAINTS MODAL (MONOCHROME) */}
       {showContactModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
+          className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
           dir={isHe ? 'rtl' : 'ltr'}
         >
           <div className="relative w-full max-w-lg max-h-[92vh] overflow-y-auto custom-scrollbar bg-[#09090b] border border-white/20 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 text-start text-white">
@@ -476,7 +450,7 @@ export const Footer: React.FC<FooterProps> = ({
               </div>
 
               {sentNotice ? (
-                <div className="p-6 rounded-2xl bg-white/[0.07] border border-white/25 text-center space-y-2.5">
+                <div className="p-6 rounded-2xl bg-white/[0.07] border border-white/25 text-center space-y-3.5">
                   <div className="w-11 h-11 rounded-full bg-white text-black flex items-center justify-center mx-auto shadow-lg">
                     <Check className="w-6 h-6" />
                   </div>
@@ -486,6 +460,18 @@ export const Footer: React.FC<FooterProps> = ({
                   <p className="text-xs text-white/80 leading-relaxed max-w-sm mx-auto">
                     {sentNotice.text}
                   </p>
+                  <div className="pt-2 flex items-center justify-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSentNotice(null);
+                        setShowContactModal(false);
+                      }}
+                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-white hover:bg-neutral-200 text-black font-bold text-xs transition-colors cursor-pointer"
+                    >
+                      {isHe ? 'סגור' : 'Close'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <form onSubmit={handleSendEmailMessage} className="space-y-3.5">
@@ -632,8 +618,8 @@ export const Footer: React.FC<FooterProps> = ({
 
       {/* MODAL 3: DEVICE-AWARE PWA INSTALL GUIDE MODAL */}
       {showIOSInstallGuide && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="relative w-full max-w-md bg-[#0a0f1d] border border-white/20 rounded-3xl p-6 shadow-2xl space-y-4 text-right text-white">
+        <div className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
+          <div className="relative w-full max-w-md bg-[#09090b] border border-white/20 rounded-3xl p-6 shadow-2xl space-y-4 text-right text-white">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <button
                 type="button"
