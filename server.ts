@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { 
   S3Client, 
   PutObjectCommand, 
@@ -759,6 +759,16 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
           if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
             return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' });
           }
+          if (incoming && typeof incoming === 'object') {
+            const trackId = rawPath.replace(/^tracks\//, '').replace(/\.json$/, '');
+            const preservedViews = Math.max(
+              Number(existing.viewsCount) || 0,
+              Number(incoming.viewsCount) || 0,
+              optimisticTrackViewCounts.get(trackId) || 0
+            );
+            incoming.viewsCount = preservedViews;
+            body = Buffer.from(JSON.stringify(incoming, null, 2), 'utf-8');
+          }
         }
       } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
         const existing = await readJsonR2(rawPath);
@@ -900,7 +910,10 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
 
     if (Array.isArray(indexData)) {
       indexData.forEach((t: any) => {
-        if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+        if (t?.id && t?.name && t?.audioUrl) {
+          const opt = optimisticTrackViewCounts.get(t.id) || 0;
+          trackMap.set(t.id, opt > (Number(t.viewsCount) || 0) ? { ...t, viewsCount: opt } : t);
+        }
       });
     }
 
@@ -916,7 +929,13 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
         const items = await Promise.all(slice.map((k) => readJsonKey(k)));
         items.forEach((t: any) => {
           if (t?.id && t?.name && t?.audioUrl) {
-            trackMap.set(t.id, t);
+            const prev = trackMap.get(t.id);
+            const mergedViews = Math.max(
+              Number(prev?.viewsCount) || 0,
+              Number(t.viewsCount) || 0,
+              optimisticTrackViewCounts.get(t.id) || 0
+            );
+            trackMap.set(t.id, { ...t, viewsCount: mergedViews });
           }
         });
       }
@@ -1224,7 +1243,7 @@ app.get('/api/proxy-image', async (req, res) => {
 
 // 4c. Whisper AI Subtitles & Audio Transcription Endpoint
 function parseTimestampToSeconds(ts: string): number {
-  const parts = ts.trim().split(':').map((p) => parseFloat(p));
+  const parts = ts.trim().replace(/,/g, '.').split(':').map((p) => parseFloat(p));
   if (parts.some((n) => Number.isNaN(n))) return 0;
   if (parts.length === 3) {
     return parts[0] * 3600 + parts[1] * 60 + parts[2];
@@ -1537,7 +1556,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       }
     }
 
-    // 2. Primary Server-Side Audio Transcription via @google/genai (gemini-3.5-transcribe)
+    // 2. Primary Server-Side Audio Transcription via Gemini Structured JSON SRT (gemini-4-hydrogen -> gemini-3.5-transcribe fallback)
     if (!ai) {
       return res.status(503).json({
         success: false,
@@ -1553,49 +1572,128 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       },
     };
 
-    const transcribeInstruction =
-      `Transcribe all sung lyrics and spoken vocals from this song audio word-for-word in the exact language spoken or sung (e.g. Hebrew, English, etc.). ` +
-      `${songTitle ? `Song title context: "${songTitle}". ` : ''}` +
-      `${artistName ? `Artist context: "${artistName}". ` : ''}` +
-      `Format EVERY lyric line with its exact start and end timestamp like:\n` +
-      `[00:08 - 00:13] First lyric line\n` +
-      `[00:13 - 00:18] Second lyric line\n` +
-      `If the audio has no vocals at all (purely instrumental), output ONLY: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track (No vocals)'}. ` +
-      `Do not invent lyrics that are not heard in the audio.`;
+    const structuredPrompt =
+      `תמלל את השירה והמילים המושרות/מדוברות בקובץ השמע לשורות כתוביות קצרות ומסונכרנות היטב לקצב השירה או הדיבור.\n` +
+      `${songTitle ? `שם השיר: "${songTitle}". ` : ''}` +
+      `${artistName ? `שם הזמר/אמן: "${artistName}". ` : ''}` +
+      `עבור כל שורה ספק:\n` +
+      `1. זמן התחלה מדויק (start) וזמן סיום מדויק (end) בפורמט SRT תקני: HH:MM:SS,mmm (לדוגמה: 00:00:08,200).\n` +
+      `2. text: המילים המקוריות שנשמעות בפועל בשפת המקור (עברית/אנגלית/שפה אחרת).\n` +
+      `3. textHe: המילים בעברית (אם השירה בעברית כתוב במדויק בעברית; אם באנגלית או שפה אחרת, תרגם לעברית טבעית).\n` +
+      `4. textEn: המילים באנגלית (אם השירה באנגלית כתוב במדויק באנגלית; אם בעברית או שפה אחרת, תרגם לאנגלית טבעית).\n` +
+      `אם הקובץ אינסטרומנטלי לחלוטין ללא שום שירה או דיבור, החזר מערך ריק []. אל תמציא מילים או הערות.`;
 
-    let transcribedText = '';
-    const modelsToTry = ['gemini-3.5-transcribe', 'gemini-4-hydrogen'];
-    for (const modelName of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: {
-            parts: [audioPart, { text: transcribeInstruction }],
+    let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: {
+          parts: [{ text: structuredPrompt }, audioPart],
+        },
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            description: 'רשימת כתוביות מסודרת כרונולוגית',
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                start: { type: Type.STRING, description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+                end: { type: Type.STRING, description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+                text: { type: Type.STRING, description: 'הטקסט המושר בשפת המקור' },
+                textHe: { type: Type.STRING, description: 'הטקסט בעברית' },
+                textEn: { type: Type.STRING, description: 'הטקסט באנגלית' },
+              },
+              required: ['start', 'end', 'text', 'textHe', 'textEn'],
+            },
           },
-        });
-        const candidate = (response.text || '').trim();
-        if (candidate) {
-          transcribedText = candidate;
-          break;
+        },
+      });
+      const rawJson = (response.text || '').trim();
+      if (rawJson) {
+        const parsed = JSON.parse(rawJson);
+        if (Array.isArray(parsed)) {
+          structuredItems = parsed;
         }
-      } catch (modelErr: any) {
-        console.warn(`[Transcribe] ${modelName} fallback:`, modelErr?.message || modelErr);
+      }
+    } catch (structErr: any) {
+      console.warn('[Transcribe] gemini-4-hydrogen structured fallback to gemini-3.5-transcribe:', structErr?.message || structErr);
+    }
+
+    if (structuredItems.length > 0) {
+      const segments: TranscribedSegment[] = [];
+      const segmentsHe: TranscribedSegment[] = [];
+      const segmentsEn: TranscribedSegment[] = [];
+
+      structuredItems.forEach((item, idx) => {
+        const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
+        if (!mainText || /^(?:\[?(?:instrumental|music|קטע אינסטרומנטלי)\]?)$/i.test(mainText)) return;
+        const startTime = Math.max(0, Number(parseTimestampToSeconds(String(item?.start || '00:00:00,000')).toFixed(2)));
+        const rawEnd = Number(parseTimestampToSeconds(String(item?.end || '')).toFixed(2));
+        const endTime = rawEnd > startTime ? rawEnd : Number((startTime + 3.5).toFixed(2));
+
+        segments.push({ id: `gem_seg_${idx}`, startTime, endTime, text: mainText });
+        segmentsHe.push({
+          id: `gem_he_${idx}`,
+          startTime,
+          endTime,
+          text: String(item?.textHe || mainText).trim(),
+        });
+        segmentsEn.push({
+          id: `gem_en_${idx}`,
+          startTime,
+          endTime,
+          text: String(item?.textEn || mainText).trim(),
+        });
+      });
+
+      if (segments.length > 0) {
+        return res.json({
+          success: true,
+          provider: 'gemini-subtitles-srt',
+          segments,
+          segmentsHe,
+          segmentsEn,
+          lyrics: segments.map((s) => s.text).join('\n'),
+          lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
+          lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
+        });
       }
     }
 
-    if (!transcribedText) {
-      return res.status(500).json({
-        success: false,
-        error: 'המערכת לא הצליחה לזהות מילים בקובץ השמע.',
+    // 3. Fallback via gemini-3.5-transcribe if structured JSON returned empty
+    let transcribedText = '';
+    try {
+      const transcribeInstruction =
+        `Transcribe all sung lyrics and spoken vocals from this song audio word-for-word in the exact language spoken or sung. ` +
+        `${songTitle ? `Song title context: "${songTitle}". ` : ''}` +
+        `${artistName ? `Artist context: "${artistName}". ` : ''}` +
+        `Format EVERY lyric line with its exact start and end timestamp like:\n` +
+        `[00:08 - 00:13] First lyric line\n` +
+        `If the audio has no vocals at all (purely instrumental), output NOTHING. Do not invent lyrics.`;
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-transcribe',
+        contents: { parts: [audioPart, { text: transcribeInstruction }] },
       });
+      transcribedText = (response.text || '').trim();
+    } catch (modelErr: any) {
+      console.warn('[Transcribe] gemini-3.5-transcribe fallback notice:', modelErr?.message || modelErr);
     }
 
     const segments = buildSegmentsFromTimedText(transcribedText, duration);
-    const lyrics = segments.map((s) => s.text).join('\n');
+    if (segments.length === 0) {
+      return res.json({
+        success: false,
+        segments: [],
+        error: 'לא זוהו מילים בקובץ השמע.',
+      });
+    }
 
+    const lyrics = segments.map((s) => s.text).join('\n');
     return res.json({
       success: true,
-      provider: 'whisper-gemini-transcribe',
+      provider: 'gemini-3.5-transcribe',
       segments,
       lyrics,
     });
@@ -2523,66 +2621,326 @@ app.post('/api/storage/track-play', async (req, res) => {
   }
 });
 
-// 4i-2. Persistent Track Views Counter (starts at 0, increments per entry)
+// 4i-2. High-Load Coalesced & Persistent Track Views Counter (starts at 0, safe under burst load)
+const pendingTrackViewDeltas = new Map<string, number>();
+const inFlightTrackViewFlushes = new Set<string>();
+const optimisticTrackViewCounts = new Map<string, number>();
+let tracksIndexWriteChain: Promise<void> = Promise.resolve();
+
+async function flushTrackViewsToR2(cleanId: string, r2Ctx: { client: S3Client; bucket: string }) {
+  if (inFlightTrackViewFlushes.has(cleanId)) return;
+  inFlightTrackViewFlushes.add(cleanId);
+  try {
+    const { client, bucket } = r2Ctx;
+    while ((pendingTrackViewDeltas.get(cleanId) || 0) > 0) {
+      const delta = pendingTrackViewDeltas.get(cleanId) || 0;
+      pendingTrackViewDeltas.delete(cleanId);
+      if (delta <= 0) break;
+
+      let committed = false;
+      const key = `tracks/${cleanId}.json`;
+      try {
+        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        if (obj.Body) {
+          const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
+          const base = Number(trackData.viewsCount) || 0;
+          const viewsCount = base + delta;
+          const updated = { ...trackData, viewsCount };
+          await client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: key,
+              Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+              ContentType: 'application/json',
+            })
+          );
+          optimisticTrackViewCounts.set(cleanId, Math.max(optimisticTrackViewCounts.get(cleanId) || 0, viewsCount));
+          committed = true;
+        }
+      } catch {
+        // Fallback to tracks_index.json serialized via tracksIndexWriteChain
+      }
+
+      if (!committed) {
+        await (tracksIndexWriteChain = tracksIndexWriteChain
+          .then(async () => {
+            try {
+              const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+              if (idxObj.Body) {
+                const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+                if (Array.isArray(idxData)) {
+                  let found = false;
+                  let nextViews = delta;
+                  const nextArr = idxData.map((t: any) => {
+                    if (t?.id === cleanId) {
+                      found = true;
+                      nextViews = (Number(t.viewsCount) || 0) + delta;
+                      return { ...t, viewsCount: nextViews };
+                    }
+                    return t;
+                  });
+                  if (found) {
+                    await client.send(
+                      new PutObjectCommand({
+                        Bucket: bucket,
+                        Key: 'tracks_index.json',
+                        Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                        ContentType: 'application/json',
+                      })
+                    );
+                    optimisticTrackViewCounts.set(cleanId, Math.max(optimisticTrackViewCounts.get(cleanId) || 0, nextViews));
+                    committed = true;
+                  }
+                }
+              }
+            } catch {}
+          })
+          .catch(() => {}));
+      }
+
+      if (!committed) {
+        // Restore un-flushed delta if storage temporarily failed, and exit loop to avoid spin
+        pendingTrackViewDeltas.set(cleanId, (pendingTrackViewDeltas.get(cleanId) || 0) + delta);
+        break;
+      }
+    }
+  } finally {
+    inFlightTrackViewFlushes.delete(cleanId);
+  }
+}
+
 app.post('/api/storage/track-view', async (req, res) => {
   try {
     const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
     if (!cleanId) return res.status(400).json({ success: false });
+
+    pendingTrackViewDeltas.set(cleanId, (pendingTrackViewDeltas.get(cleanId) || 0) + 1);
+    const nextOptimistic = (optimisticTrackViewCounts.get(cleanId) || 0) + 1;
+    optimisticTrackViewCounts.set(cleanId, nextOptimistic);
+
+    const r2Ctx = await getR2Context(req);
+    void flushTrackViewsToR2(cleanId, r2Ctx);
+
+    return res.json({ success: true, viewsCount: nextOptimistic });
+  } catch {
+    return res.json({ success: false, viewsCount: 1 });
+  }
+});
+
+// 4i-2b. Listener Background Subtitles Persist Route (reads/merges safely in R2 without clobbering views/metadata)
+app.post('/api/storage/track-subtitles', async (req, res) => {
+  try {
+    const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false, error: 'Missing trackId' });
+
+    const incomingSegs = Array.isArray(req.body?.subtitleSegments) ? req.body.subtitleSegments : [];
+    const incomingHe = Array.isArray(req.body?.subtitleSegmentsHe) ? req.body.subtitleSegmentsHe : [];
+    const incomingEn = Array.isArray(req.body?.subtitleSegmentsEn) ? req.body.subtitleSegmentsEn : [];
+    if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0) {
+      return res.status(400).json({ success: false, error: 'Missing subtitles payload' });
+    }
+
     const { client, bucket } = await getR2Context(req);
     const key = `tracks/${cleanId}.json`;
+    let existing: any = null;
     try {
       const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
       if (obj.Body) {
-        const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
-        const viewsCount = (Number(trackData.viewsCount) || 0) + 1;
-        const updated = { ...trackData, viewsCount };
-        await client.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
-            ContentType: 'application/json',
-          })
-        );
-        return res.json({ success: true, viewsCount });
-      }
-    } catch {
-      // Fallback to tracks_index.json if standalone track json doesn't exist
-    }
-
-    try {
-      const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
-      if (idxObj.Body) {
-        const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
-        if (Array.isArray(idxData)) {
-          let nextViews = 1;
-          let found = false;
-          const nextArr = idxData.map((t: any) => {
-            if (t?.id === cleanId) {
-              found = true;
-              nextViews = (Number(t.viewsCount) || 0) + 1;
-              return { ...t, viewsCount: nextViews };
-            }
-            return t;
-          });
-          if (found) {
-            await client.send(
-              new PutObjectCommand({
-                Bucket: bucket,
-                Key: 'tracks_index.json',
-                Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
-                ContentType: 'application/json',
-              })
-            );
-            return res.json({ success: true, viewsCount: nextViews });
-          }
-        }
+        existing = JSON.parse(await obj.Body.transformToString('utf-8'));
       }
     } catch {}
 
-    return res.json({ success: false, viewsCount: 1 });
-  } catch {
-    return res.json({ success: false, viewsCount: 1 });
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Track not found in storage' });
+    }
+
+    if (existing.subtitlesDisabled === true) {
+      return res.json({ success: false, disabled: true });
+    }
+
+    if (
+      (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) ||
+      (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) ||
+      (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0)
+    ) {
+      return res.json({ success: true, alreadyExists: true, track: existing });
+    }
+
+    const updated = {
+      ...existing,
+      subtitleSegments: incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn),
+      ...(incomingHe.length > 0 ? { subtitleSegmentsHe: incomingHe } : {}),
+      ...(incomingEn.length > 0 ? { subtitleSegmentsEn: incomingEn } : {}),
+      ...(req.body?.lyrics ? { lyrics: String(req.body.lyrics) } : {}),
+      ...(req.body?.lyricsHe ? { lyricsHe: String(req.body.lyricsHe) } : {}),
+      ...(req.body?.lyricsEn ? { lyricsEn: String(req.body.lyricsEn) } : {}),
+      hasWhisperSubtitles: true,
+      viewsCount: Math.max(Number(existing.viewsCount) || 0, optimisticTrackViewCounts.get(cleanId) || 0),
+    };
+
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+        ContentType: 'application/json',
+      })
+    );
+
+    await (tracksIndexWriteChain = tracksIndexWriteChain
+      .then(async () => {
+        try {
+          const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+          if (idxObj.Body) {
+            const idxArr = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+            if (Array.isArray(idxArr)) {
+              let changed = false;
+              const nextArr = idxArr.map((t: any) => {
+                if (t?.id === cleanId) {
+                  changed = true;
+                  return {
+                    ...t,
+                    subtitleSegments: updated.subtitleSegments,
+                    ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
+                    ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                    ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
+                    ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
+                    ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                    hasWhisperSubtitles: true,
+                  };
+                }
+                return t;
+              });
+              if (changed) {
+                await client.send(
+                  new PutObjectCommand({
+                    Bucket: bucket,
+                    Key: 'tracks_index.json',
+                    Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                    ContentType: 'application/json',
+                  })
+                );
+              }
+            }
+          }
+        } catch {}
+      })
+      .catch(() => {}));
+
+    // Read persisted track back from R2 so caller renders strictly from storage
+    let persisted = updated;
+    try {
+      const checkObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      if (checkObj.Body) {
+        persisted = JSON.parse(await checkObj.Body.transformToString('utf-8'));
+      }
+    } catch {}
+
+    return res.json({ success: true, track: persisted });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to persist subtitles' });
+  }
+});
+
+// 4i-3. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches directly to kolot.music1@gmail.com)
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsedSession = extractSessionFromRequest(req, sessionSecret);
+    const rawSenderEmail = String(parsedSession?.session?.email || req.body?.senderEmail || '').trim();
+    const subject = String(req.body?.subject || '').trim().slice(0, 200);
+    const message = String(req.body?.message || '').trim().slice(0, 5000);
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(rawSenderEmail)) {
+      return res.status(400).json({ success: false, error: 'יש להזין כתובת מייל אמיתית ותקינה' });
+    }
+    if (!subject || !message) {
+      return res.status(400).json({ success: false, error: 'יש למלא נושא ותוכן להודעה' });
+    }
+
+    const msgId = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const targetRecipient = 'kolot.music1@gmail.com';
+    const record = {
+      id: msgId,
+      to: targetRecipient,
+      senderEmail: rawSenderEmail,
+      senderUid: parsedSession?.session?.uid || undefined,
+      senderName: parsedSession?.session?.displayName || undefined,
+      subject,
+      message,
+      createdAt: new Date().toISOString(),
+      status: 'new',
+    };
+
+    let storedInR2 = false;
+    try {
+      const { client, bucket } = await getR2Context(req);
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: `contact_messages/${msgId}.json`,
+          Body: Buffer.from(JSON.stringify(record, null, 2), 'utf-8'),
+          ContentType: 'application/json',
+        })
+      );
+      storedInR2 = true;
+    } catch {}
+
+    let emailDispatched = false;
+    const resendKey = sanitizeKey(process.env.RESEND_API_KEY);
+    if (resendKey) {
+      try {
+        const resendRes = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM_EMAIL || 'Kolot Music <onboarding@resend.dev>',
+            to: [targetRecipient],
+            reply_to: rawSenderEmail,
+            subject: `[Kolot Music] ${subject}`,
+            text: `פנייה חדשה מאתר Kolot Music\n\nמאת: ${rawSenderEmail}${record.senderName ? ` (${record.senderName})` : ''}\nנושא: ${subject}\n\n${message}`,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (resendRes.ok) emailDispatched = true;
+      } catch {}
+    }
+
+    if (!emailDispatched) {
+      try {
+        const appOrigin = resolveSafeAppOrigin(req);
+        const fsRes = await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Referer: `${appOrigin}/`,
+            Origin: appOrigin,
+          },
+          body: JSON.stringify({
+            name: record.senderName || rawSenderEmail,
+            email: rawSenderEmail,
+            _replyto: rawSenderEmail,
+            _subject: `[Kolot Music] ${subject}`,
+            message,
+            _template: 'table',
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (fsRes.ok) emailDispatched = true;
+      } catch {}
+    }
+
+    if (!storedInR2 && !emailDispatched) {
+      return res.status(502).json({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' });
+    }
+
+    return res.json({ success: true, id: msgId, recipient: targetRecipient, emailDispatched, storedInR2 });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' });
   }
 });
 
@@ -2613,7 +2971,11 @@ app.get('/api/bootstrap', async (req, res) => {
       indexData.forEach((t: any) => {
         if (t?.id && t?.name && t?.audioUrl) {
           const { uploadedByEmail: _omit, ...cleanTrack } = t;
-          trackMap.set(cleanTrack.id, cleanTrack);
+          const opt = optimisticTrackViewCounts.get(cleanTrack.id) || 0;
+          trackMap.set(
+            cleanTrack.id,
+            opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack
+          );
         }
       });
     }
@@ -2631,7 +2993,13 @@ app.get('/api/bootstrap', async (req, res) => {
     loadedTracks.forEach((t: any) => {
       if (t?.id && t?.name && t?.audioUrl) {
         const { uploadedByEmail: _omit, ...cleanTrack } = t;
-        trackMap.set(cleanTrack.id, cleanTrack);
+        const prev = trackMap.get(cleanTrack.id);
+        const mergedViews = Math.max(
+          Number(prev?.viewsCount) || 0,
+          Number(cleanTrack.viewsCount) || 0,
+          optimisticTrackViewCounts.get(cleanTrack.id) || 0
+        );
+        trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
       }
     });
 
@@ -3137,6 +3505,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
     const isAdmin = verifiedEmail === 'danielbarber1246@gmail.com';
     const sessionPayload = {
       uid,
+      email: verifiedEmail || undefined,
       displayName,
       photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
       googlePhotoUrl: googlePhotoUrl || undefined,
@@ -3158,6 +3527,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
       sessionToken,
       user: {
         uid,
+        email: sessionPayload.email,
         displayName,
         photoURL: sessionPayload.photoURL,
         googlePhotoUrl: sessionPayload.googlePhotoUrl,
@@ -3197,6 +3567,7 @@ app.get('/api/auth/me', async (req, res) => {
     sessionToken: parsed.token,
     user: {
       uid: session.uid,
+      email: session.email || undefined,
       displayName: liveName || session.displayName,
       photoURL: liveAvatar || session.googlePhotoUrl || undefined,
       googlePhotoUrl: session.googlePhotoUrl || undefined,

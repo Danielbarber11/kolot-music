@@ -1,23 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FileText,
   Mail,
   Smartphone,
   Copy,
   Check,
-  ExternalLink,
   ShieldCheck,
   Heart,
-  Music2,
   Send,
   X,
-  Share2,
   Sparkles,
+  Loader2,
+  AlertCircle,
+  Share2,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
 import { Logo } from './Logo';
 import { AccessibilityIcon } from './AccessibilityPage';
+import { AuthUser, getCurrentAuthUser, onAuthUserChanged, getAuthHeaders } from '../services/authService';
 
 interface FooterProps {
   lang: Language;
@@ -33,20 +34,27 @@ export const Footer: React.FC<FooterProps> = ({
   onOpenAccessibility,
 }) => {
   const isHe = lang === 'he';
-  const { isInstalled, isInstallable, isIOS, install } = usePWAInstall();
+  const { isInstalled, isInstallable, isIOS, isAndroid, install } = usePWAInstall();
 
   // Internal Modals state
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
   const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
 
+  // Auth state for sender email pre-fill when signed in
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => getCurrentAuthUser());
+  useEffect(() => onAuthUserChanged(setAuthUser), []);
+
   // Contact modal state
   const [copiedEmail, setCopiedEmail] = useState(false);
-  const [contactMessage, setContactMessage] = useState('');
+  const [contactSenderEmail, setContactSenderEmail] = useState('');
   const [contactSubject, setContactSubject] = useState('');
+  const [contactMessage, setContactMessage] = useState('');
+  const [isSendingContact, setIsSendingContact] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
   const [messageSentSuccess, setMessageSentSuccess] = useState(false);
 
-  const contactEmail = 'danielbarber1246@gmail.com';
+  const contactEmail = 'kolot.music1@gmail.com';
 
   const handleCopyEmail = () => {
     try {
@@ -59,15 +67,11 @@ export const Footer: React.FC<FooterProps> = ({
   };
 
   const handleInstallClick = async () => {
-    if (isIOS) {
-      setShowIOSInstallGuide(true);
-      return;
+    if (isInstallable) {
+      const success = await install();
+      if (success) return;
     }
-    const success = await install();
-    if (!success && !isInstallable) {
-      // If prompt is not directly available on this browser, show guidance
-      setShowIOSInstallGuide(true);
-    }
+    setShowIOSInstallGuide(true);
   };
 
   const handleOpenTerms = () => {
@@ -78,19 +82,62 @@ export const Footer: React.FC<FooterProps> = ({
     }
   };
 
-  const handleSendEmailMessage = (e: React.FormEvent) => {
+  const handleSendEmailMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    const mailtoUrl = `mailto:${contactEmail}?subject=${encodeURIComponent(
-      contactSubject || 'פנייה מתוך אתר Kolot Music'
-    )}&body=${encodeURIComponent(contactMessage)}`;
-    window.location.href = mailtoUrl;
-    setMessageSentSuccess(true);
-    setTimeout(() => {
-      setMessageSentSuccess(false);
-      setShowContactModal(false);
-      setContactMessage('');
-      setContactSubject('');
-    }, 2000);
+    setContactError(null);
+
+    const accountEmail = (authUser?.email || '').trim();
+    const senderEmail = (accountEmail || contactSenderEmail).trim();
+    const subject = contactSubject.trim();
+    const message = contactMessage.trim();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(senderEmail)) {
+      setContactError(
+        isHe ? 'יש להזין כתובת מייל אמיתית ותקינה' : 'Please enter a valid email address'
+      );
+      return;
+    }
+    if (!subject || !message) {
+      setContactError(
+        isHe ? 'נא למלא נושא ותוכן הודעה' : 'Please fill in both subject and message'
+      );
+      return;
+    }
+
+    setIsSendingContact(true);
+    try {
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          senderEmail,
+          subject,
+          message,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || (isHe ? 'שליחת הפנייה נכשלה, נסה שוב' : 'Failed to send message'));
+      }
+
+      setMessageSentSuccess(true);
+      setTimeout(() => {
+        setMessageSentSuccess(false);
+        setShowContactModal(false);
+        setContactSenderEmail('');
+        setContactSubject('');
+        setContactMessage('');
+        setContactError(null);
+      }, 2200);
+    } catch (err: any) {
+      setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
+    } finally {
+      setIsSendingContact(false);
+    }
   };
 
   return (
@@ -197,9 +244,9 @@ export const Footer: React.FC<FooterProps> = ({
               </div>
             </div>
 
-            {/* PWA INSTALL CARD (HIDDEN IF ALREADY INSTALLED OR NOT INSTALLABLE ON THIS BROWSER) */}
+            {/* PWA INSTALL CARD (ALWAYS SHOWN WHEN NOT INSTALLED ON THIS DEVICE) */}
             <div className="md:col-span-3 text-right">
-              {isInstalled || (!isInstallable && !isIOS) ? (
+              {isInstalled ? (
                 <div className="h-full p-4 rounded-2xl bg-white/[0.02] border border-white/10 flex flex-col justify-center items-center text-center space-y-2">
                   <div className="w-9 h-9 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white">
                     <Check className="w-4 h-4" />
@@ -220,14 +267,14 @@ export const Footer: React.FC<FooterProps> = ({
                       <Smartphone className="w-4 h-4" />
                     </div>
                     <span className="text-xs font-bold text-white">
-                      {isHe ? 'התקנה בגישה מהירה' : 'Install App'}
+                      {isHe ? 'התקנת אפליקציה' : 'Install App'}
                     </span>
                   </div>
 
                   <p className="text-[11px] text-white/70 leading-relaxed font-normal">
                     {isHe
-                      ? 'הוסף את Kolot למסך הבית שלך ופתח את הנגן והשירים כמו אפליקציה עצמאית, ללא סרגלי דפדפן.'
-                      : 'Add Kolot to your home screen to launch full-screen like a native app.'}
+                      ? 'התקן את אפליקציית Kolot במכשיר שלך לגישה מהירה מהמסך הראשי, ללא סרגלי דפדפן.'
+                      : 'Install Kolot on your device for instant app access without browser bars.'}
                   </p>
 
                   <button
@@ -236,7 +283,7 @@ export const Footer: React.FC<FooterProps> = ({
                     className="w-full py-2.5 px-3 rounded-xl bg-white hover:bg-neutral-200 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all active:scale-[0.98] cursor-pointer"
                   >
                     <Smartphone className="w-4 h-4 text-black" />
-                    <span>{isHe ? 'הוסף למסך הבית' : 'Add to Home Screen'}</span>
+                    <span>{isHe ? 'התקנת אפליקציה' : 'Install App'}</span>
                   </button>
                 </div>
               )}
@@ -287,7 +334,7 @@ export const Footer: React.FC<FooterProps> = ({
         </div>
       </footer>
 
-      {/* MODAL 1: CONTACT VIA EMAIL MODAL */}
+      {/* MODAL 1: CONTACT VIA DIRECT BACKEND EMAIL MODAL */}
       {showContactModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="relative w-full max-w-lg bg-[#0a0f1d] border border-white/20 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 text-right text-white">
@@ -308,11 +355,12 @@ export const Footer: React.FC<FooterProps> = ({
             </div>
 
             <div className="space-y-4">
+              {/* 1. SITE EMAIL ADDRESS */}
               <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-3">
                 <button
                   type="button"
                   onClick={handleCopyEmail}
-                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
                 >
                   {copiedEmail ? (
                     <>
@@ -326,20 +374,62 @@ export const Footer: React.FC<FooterProps> = ({
                     </>
                   )}
                 </button>
-                <div className="text-left font-mono text-sm text-teal-300 truncate">
-                  {contactEmail}
+                <div className="min-w-0 flex-1 text-left">
+                  <span className="text-[10px] text-white/50 block text-right">
+                    {isHe ? 'כתובת המייל של האתר:' : 'Site Email:'}
+                  </span>
+                  <div className="font-mono text-sm text-teal-300 truncate" dir="ltr">
+                    {contactEmail}
+                  </div>
                 </div>
               </div>
 
               {messageSentSuccess ? (
-                <div className="p-4 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-center space-y-2">
+                <div className="p-5 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-center space-y-2">
                   <Check className="w-7 h-7 text-emerald-400 mx-auto" />
                   <p className="text-sm font-semibold text-white">
-                    {isHe ? 'הודעתך מוכנה לשליחה בתוכנת המייל שלך!' : 'Opening email client...'}
+                    {isHe
+                      ? `פנייתך נשלחה ישירות אל ${contactEmail}!`
+                      : `Your message has been sent directly to ${contactEmail}!`}
                   </p>
                 </div>
               ) : (
                 <form onSubmit={handleSendEmailMessage} className="space-y-3.5">
+                  {/* 2. SENDER EMAIL ADDRESS (ACCOUNT EMAIL IF SIGNED IN, OR REQUIRED REAL EMAIL INPUT) */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-white/70 block">
+                      {authUser?.email
+                        ? isHe
+                          ? 'המייל שלך (מהחשבון המחובר):'
+                          : 'Your Email (from signed-in account):'
+                        : isHe
+                          ? 'כתובת המייל האמיתית שלך *:'
+                          : 'Your Real Email Address *:'}
+                    </label>
+                    {authUser?.email ? (
+                      <div
+                        dir="ltr"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-emerald-500/35 text-sm text-white/95 font-mono text-left flex items-center justify-between gap-2"
+                      >
+                        <span className="truncate">{authUser.email}</span>
+                        <span className="text-[10px] font-sans text-emerald-400 shrink-0">
+                          {isHe ? 'חשבון מחובר' : 'Verified'}
+                        </span>
+                      </div>
+                    ) : (
+                      <input
+                        type="email"
+                        required
+                        dir="ltr"
+                        placeholder="name@example.com"
+                        value={contactSenderEmail}
+                        onChange={(e) => setContactSenderEmail(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/10 focus:border-teal-400 focus:outline-none text-sm text-white placeholder-white/30 text-left font-mono"
+                      />
+                    )}
+                  </div>
+
+                  {/* 3. SUBJECT */}
                   <div className="space-y-1">
                     <label className="text-xs text-white/70 block">
                       {isHe ? 'נושא הפנייה:' : 'Subject:'}
@@ -354,6 +444,7 @@ export const Footer: React.FC<FooterProps> = ({
                     />
                   </div>
 
+                  {/* 4. MESSAGE CONTENT */}
                   <div className="space-y-1">
                     <label className="text-xs text-white/70 block">
                       {isHe ? 'תוכן ההודעה:' : 'Message:'}
@@ -368,21 +459,33 @@ export const Footer: React.FC<FooterProps> = ({
                     />
                   </div>
 
-                  <div className="pt-2 flex items-center justify-between gap-3">
-                    <a
-                      href={`mailto:${contactEmail}`}
-                      className="text-xs text-teal-400 hover:text-teal-300 flex items-center gap-1 underline underline-offset-4"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>{isHe ? 'פתיחה ישירה בתוכנת מייל' : 'Open email client directly'}</span>
-                    </a>
+                  {contactError && (
+                    <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-200 text-xs flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{contactError}</span>
+                    </div>
+                  )}
 
+                  <div className="pt-2 flex items-center justify-end gap-3">
                     <button
                       type="submit"
-                      className="px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-black font-semibold text-xs flex items-center gap-2 shadow-lg shadow-teal-500/25 transition-all cursor-pointer"
+                      disabled={isSendingContact}
+                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 disabled:opacity-60 text-black font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25 transition-all cursor-pointer"
                     >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>{isHe ? 'שלח פנייה' : 'Send Message'}</span>
+                      {isSendingContact ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {isSendingContact
+                          ? isHe
+                            ? 'שולח פנייה...'
+                            : 'Sending...'
+                          : isHe
+                            ? 'שלח'
+                            : 'Send'}
+                      </span>
                     </button>
                   </div>
                 </form>
@@ -395,7 +498,7 @@ export const Footer: React.FC<FooterProps> = ({
       {/* MODAL 2: TERMS OF SERVICE MODAL */}
       <TermsReaderModal isOpen={showTermsModal} onClose={() => setShowTermsModal(false)} lang={lang} />
 
-      {/* MODAL 3: IOS PWA INSTALL GUIDE MODAL */}
+      {/* MODAL 3: DEVICE-AWARE PWA INSTALL GUIDE MODAL */}
       {showIOSInstallGuide && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="relative w-full max-w-md bg-[#0a0f1d] border border-white/20 rounded-3xl p-6 shadow-2xl space-y-4 text-right text-white">
@@ -408,44 +511,67 @@ export const Footer: React.FC<FooterProps> = ({
                 <X className="w-5 h-5" />
               </button>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold">{isHe ? 'הוספה למסך הבית' : 'Add to Home Screen'}</h3>
+                <h3 className="text-base font-bold">{isHe ? 'התקנת אפליקציה' : 'Install App'}</h3>
                 <Smartphone className="w-5 h-5 text-emerald-400" />
               </div>
             </div>
 
             <p className="text-xs text-white/80 leading-relaxed font-normal">
               {isHe
-                ? 'כדי להוסיף את Kolot Music למסך הבית שלך כאפליקציה:'
-                : 'To install Kolot Music as an app on your device:'}
+                ? 'כדי להתקין את Kolot Music כאפליקציה עצמאית במכשיר זה:'
+                : 'To install Kolot Music as a standalone app on this device:'}
             </p>
 
-            <ol className="space-y-3 text-xs text-white/80 pr-4 list-decimal">
-              <li className="leading-relaxed">
-                <span>{isHe ? 'לחץ על כפתור השיתוף ' : 'Tap the Share icon '}</span>
-                <Share2 className="w-3.5 h-3.5 inline mx-1 text-teal-400" />
-                <span>{isHe ? 'בתחתית סרגל הדפדפן (Safari/Chrome).' : 'in your browser menu.'}</span>
-              </li>
-              <li className="leading-relaxed">
-                <span>{isHe ? 'גלול מטה ובחר ' : 'Scroll down and select '}</span>
-                <strong className="text-white">"{isHe ? 'הוסף למסך הבית' : 'Add to Home Screen'}"</strong>.
-              </li>
-              <li className="leading-relaxed">
-                <span>{isHe ? 'אשר בלחיצה על "הוסף" בפינה העליונה.' : 'Tap "Add" in the top corner.'}</span>
-              </li>
-            </ol>
+            {isIOS ? (
+              <ol className="space-y-3 text-xs text-white/80 pr-4 list-decimal">
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'לחץ על כפתור השיתוף ' : 'Tap the Share icon '}</span>
+                  <Share2 className="w-3.5 h-3.5 inline mx-1 text-teal-400" />
+                  <span>{isHe ? 'בתחתית סרגל הדפדפן (Safari).' : 'in the Safari toolbar.'}</span>
+                </li>
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'גלול מטה ובחר ' : 'Scroll down and select '}</span>
+                  <strong className="text-white">"{isHe ? 'הוסף למסך הבית' : 'Add to Home Screen'}"</strong>.
+                </li>
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'אשר בלחיצה על "הוסף" בפינה העליונה.' : 'Tap "Add" in the top corner.'}</span>
+                </li>
+              </ol>
+            ) : isAndroid ? (
+              <ol className="space-y-3 text-xs text-white/80 pr-4 list-decimal">
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'לחץ על תפריט 3 הנקודות (⋮) בפינת הדפדפן (Chrome / Samsung).' : 'Tap the 3-dot menu (⋮) in your browser corner.'}</span>
+                </li>
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'בחר ' : 'Select '}</span>
+                  <strong className="text-white">"{isHe ? 'התקן אפליקציה' : 'Install App'}"</strong>
+                  <span>{isHe ? ' או ' : ' or '}</span>
+                  <strong className="text-white">"{isHe ? 'הוסף למסך הבית' : 'Add to Home Screen'}"</strong>.
+                </li>
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'אשר את ההתקנה ליצירת אייקון אפליקציה במסך הבית.' : 'Confirm installation to add the app icon.'}</span>
+                </li>
+              </ol>
+            ) : (
+              <ol className="space-y-3 text-xs text-white/80 pr-4 list-decimal">
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'לחץ על אייקון ההתקנה בצד שורת הכתובת בדפדפן (Chrome / Edge), או פתח את תפריט הדפדפן.' : 'Click the Install icon in the browser address bar or open the browser menu.'}</span>
+                </li>
+                <li className="leading-relaxed">
+                  <span>{isHe ? 'בחר ' : 'Select '}</span>
+                  <strong className="text-white">"{isHe ? 'התקן את Kolot Music' : 'Install Kolot Music'}"</strong>
+                  <span>{isHe ? ' (או "הוסף למסך הבית").' : '.'}</span>
+                </li>
+              </ol>
+            )}
 
             <div className="pt-2">
               <button
                 type="button"
-                onClick={() => {
-                  try {
-                    localStorage.setItem('kolot_pwa_installed', 'true');
-                  } catch {}
-                  setShowIOSInstallGuide(false);
-                }}
+                onClick={() => setShowIOSInstallGuide(false)}
                 className="w-full py-2.5 rounded-xl bg-emerald-500 text-black font-semibold text-xs hover:bg-emerald-400 transition-colors cursor-pointer"
               >
-                {isHe ? 'הוספתי בהצלחה!' : 'Done!'}
+                {isHe ? 'הבנתי' : 'Got it'}
               </button>
             </div>
           </div>
@@ -508,7 +634,7 @@ export const TermsReaderModal: React.FC<{
           <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
             <h4 className="font-semibold text-white text-sm">4. הסרת תכנים ויצירת קשר</h4>
             <p>
-              הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-white font-mono">danielbarber1246@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
+              הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-white font-mono">kolot.music1@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
             </p>
           </section>
         </div>

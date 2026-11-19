@@ -250,6 +250,51 @@ export function incrementTrackViewInMemory(trackId: string): number {
   return nextViews;
 }
 
+export function syncTrackViewFromServer(trackId: string, serverViewsCount: number): void {
+  if (!trackId || !Number.isFinite(serverViewsCount) || serverViewsCount <= 0) return;
+  memorySessionTracks = memorySessionTracks.map((t) =>
+    t.id === trackId
+      ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViewsCount) }
+      : t
+  );
+  try {
+    const cached = getCachedCloudTracks();
+    if (cached.some((t) => t.id === trackId)) {
+      const updated = cached.map((t) =>
+        t.id === trackId
+          ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViewsCount) }
+          : t
+      );
+      saveCachedCloudTracks(updated);
+    }
+  } catch {}
+}
+
+export function syncTrackSubtitlesInMemory(updatedTrack: JamendoTrack): void {
+  if (!updatedTrack?.id) return;
+  const applySubs = (t: JamendoTrack): JamendoTrack => ({
+    ...t,
+    subtitleSegments: updatedTrack.subtitleSegments ?? t.subtitleSegments,
+    subtitleSegmentsHe: updatedTrack.subtitleSegmentsHe ?? t.subtitleSegmentsHe,
+    subtitleSegmentsEn: updatedTrack.subtitleSegmentsEn ?? t.subtitleSegmentsEn,
+    lyrics: updatedTrack.lyrics ?? t.lyrics,
+    lyricsHe: updatedTrack.lyricsHe ?? t.lyricsHe,
+    lyricsEn: updatedTrack.lyricsEn ?? t.lyricsEn,
+    hasWhisperSubtitles: !!(
+      updatedTrack.subtitleSegments?.length ||
+      updatedTrack.subtitleSegmentsHe?.length ||
+      updatedTrack.subtitleSegmentsEn?.length
+    ),
+  });
+  memorySessionTracks = memorySessionTracks.map((t) => (t.id === updatedTrack.id ? applySubs(t) : t));
+  try {
+    const cached = getCachedCloudTracks();
+    if (cached.some((t) => t.id === updatedTrack.id)) {
+      saveCachedCloudTracks(cached.map((t) => (t.id === updatedTrack.id ? applySubs(t) : t)));
+    }
+  } catch {}
+}
+
 export function getSavedRepoTracks(): JamendoTrack[] {
   return getCachedCloudTracks();
 }

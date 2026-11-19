@@ -4,6 +4,7 @@
 export interface WorkerR2Object {
   key: string;
   size: number;
+  httpEtag?: string;
   uploaded?: Date;
   httpMetadata?: { contentType?: string };
   arrayBuffer(): Promise<ArrayBuffer>;
@@ -32,6 +33,8 @@ export interface Env {
   R2_PUBLIC_URL?: string;
   GEMINI_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
   Client_ID?: string;
   CLIENT_ID?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -40,6 +43,10 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string;
   APP_URL?: string;
 }
+
+const workerPendingViewDeltas = new Map<string, number>();
+const workerInFlightViewFlushes = new Set<string>();
+const workerOptimisticViewCounts = new Map<string, number>();
 
 function sanitizeEndpoint(raw?: string): string {
   if (!raw) return '';
@@ -315,7 +322,7 @@ function buildSegmentsFromText(rawText: string, trackDuration: number) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: { waitUntil(promise: Promise<any>): void }): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
@@ -401,7 +408,7 @@ export default {
       }
     };
 
-    const verifyRawSessionTokenTop = async (token: string, secret: string): Promise<{ uid: string; isAdmin?: boolean } | null> => {
+    const verifyRawSessionTokenTop = async (token: string, secret: string): Promise<{ uid: string; email?: string; isAdmin?: boolean } | null> => {
       try {
         if (!token) return null;
         const parts = token.split('.');
@@ -424,7 +431,7 @@ export default {
       }
     };
 
-    const extractSessionTop = async (): Promise<{ uid: string; isAdmin?: boolean } | null> => {
+    const extractSessionTop = async (): Promise<{ uid: string; email?: string; isAdmin?: boolean } | null> => {
       try {
         const secret = resolveSessionSecretTop();
         const authHdr = (request.headers.get('authorization') || '').trim();
@@ -571,6 +578,15 @@ export default {
             if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
               return jsonResponse({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' }, 403);
             }
+            if (incoming && typeof incoming === 'object') {
+              const trackId = rawPath.replace(/^tracks\//, '').replace(/\.json$/, '');
+              incoming.viewsCount = Math.max(
+                Number(existing.viewsCount) || 0,
+                Number(incoming.viewsCount) || 0,
+                workerOptimisticViewCounts.get(trackId) || 0
+              );
+              bodyBytes = encoder.encode(JSON.stringify(incoming, null, 2));
+            }
           }
         } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
           const existing = await readR2JsonTop(rawPath);
@@ -671,7 +687,10 @@ export default {
         const indexData = await readJsonKey('tracks_index.json');
         if (Array.isArray(indexData)) {
           indexData.forEach((t: any) => {
-            if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+            if (t?.id && t?.name && t?.audioUrl) {
+              const opt = workerOptimisticViewCounts.get(t.id) || 0;
+              trackMap.set(t.id, opt > (Number(t.viewsCount) || 0) ? { ...t, viewsCount: opt } : t);
+            }
           });
         }
 
@@ -695,7 +714,15 @@ export default {
           const slice = keys.slice(i, i + 25);
           const items = await Promise.all(slice.map((k) => readJsonKey(k)));
           items.forEach((t: any) => {
-            if (t?.id && t?.name && t?.audioUrl) trackMap.set(t.id, t);
+            if (t?.id && t?.name && t?.audioUrl) {
+              const prev = trackMap.get(t.id);
+              const mergedViews = Math.max(
+                Number(prev?.viewsCount) || 0,
+                Number(t.viewsCount) || 0,
+                workerOptimisticViewCounts.get(t.id) || 0
+              );
+              trackMap.set(t.id, { ...t, viewsCount: mergedViews });
+            }
           });
         }
 
@@ -985,40 +1012,124 @@ export default {
         }
 
         const b64 = uint8ToBase64(audioBytes);
+        const parseSrtTs = (raw: string) => {
+          const parts = raw.trim().replace(/,/g, '.').split(':').map((p) => parseFloat(p));
+          if (parts.some((n) => Number.isNaN(n))) return 0;
+          if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+          if (parts.length === 2) return parts[0] * 60 + parts[1];
+          return parts[0] || 0;
+        };
+
+        const structuredPrompt =
+          `תמלל את השירה והמילים המושרות/מדוברות בקובץ השמע לשורות כתוביות קצרות ומסונכרנות היטב לקצב השירה או הדיבור.\n` +
+          `${songTitle ? `שם השיר: "${songTitle}". ` : ''}` +
+          `${artistName ? `שם הזמר/אמן: "${artistName}". ` : ''}` +
+          `עבור כל שורה ספק:\n` +
+          `1. זמן התחלה מדויק (start) וזמן סיום מדויק (end) בפורמט SRT תקני: HH:MM:SS,mmm (לדוגמה: 00:00:08,200).\n` +
+          `2. text: המילים המקוריות שנשמעות בפועל בשפת המקור.\n` +
+          `3. textHe: המילים בעברית (במדויק אם בעברית, או תרגום טבעי לעברית).\n` +
+          `4. textEn: המילים באנגלית (במדויק אם באנגלית, או תרגום טבעי לאנגלית).\n` +
+          `אם הקובץ אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר מערך ריק []. אל תמציא מילים.`;
+
+        let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
+        try {
+          const gRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+              body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: structuredPrompt }, { inlineData: { mimeType, data: b64 } }] }],
+                generationConfig: {
+                  thinkingConfig: { thinkingLevel: 'LOW' },
+                  responseMimeType: 'application/json',
+                  responseSchema: {
+                    type: 'ARRAY',
+                    description: 'רשימת כתוביות מסודרת כרונולוגית',
+                    items: {
+                      type: 'OBJECT',
+                      properties: {
+                        start: { type: 'STRING', description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+                        end: { type: 'STRING', description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+                        text: { type: 'STRING', description: 'הטקסט המושר בשפת המקור' },
+                        textHe: { type: 'STRING', description: 'הטקסט בעברית' },
+                        textEn: { type: 'STRING', description: 'הטקסט באנגלית' },
+                      },
+                      required: ['start', 'end', 'text', 'textHe', 'textEn'],
+                    },
+                  },
+                },
+              }),
+            }
+          );
+          if (gRes.ok) {
+            const gJson: any = await gRes.json();
+            const rawJson = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+            if (rawJson) {
+              const parsed = JSON.parse(rawJson);
+              if (Array.isArray(parsed)) structuredItems = parsed;
+            }
+          }
+        } catch {}
+
+        if (structuredItems.length > 0) {
+          const segments: any[] = [];
+          const segmentsHe: any[] = [];
+          const segmentsEn: any[] = [];
+
+          structuredItems.forEach((item, idx) => {
+            const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
+            if (!mainText || /^(?:\[?(?:instrumental|music|קטע אינסטרומנטלי)\]?)$/i.test(mainText)) return;
+            const startTime = Math.max(0, Number(parseSrtTs(String(item?.start || '00:00:00,000')).toFixed(2)));
+            const rawEnd = Number(parseSrtTs(String(item?.end || '')).toFixed(2));
+            const endTime = rawEnd > startTime ? rawEnd : Number((startTime + 3.5).toFixed(2));
+
+            segments.push({ id: `gem_seg_${idx}`, startTime, endTime, text: mainText });
+            segmentsHe.push({ id: `gem_he_${idx}`, startTime, endTime, text: String(item?.textHe || mainText).trim() });
+            segmentsEn.push({ id: `gem_en_${idx}`, startTime, endTime, text: String(item?.textEn || mainText).trim() });
+          });
+
+          if (segments.length > 0) {
+            return jsonResponse({
+              success: true,
+              provider: 'gemini-subtitles-srt',
+              segments,
+              segmentsHe,
+              segmentsEn,
+              lyrics: segments.map((s) => s.text).join('\n'),
+              lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
+              lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
+            });
+          }
+        }
+
         const promptText =
           `Transcribe all sung lyrics word-for-word in the exact language sung. ` +
           `${songTitle ? `Song: "${songTitle}". ` : ''}${artistName ? `Artist: "${artistName}". ` : ''}` +
-          `Format every line as [MM:SS - MM:SS] Lyric text. ` +
-          `If purely instrumental output only: [00:00 - 00:05] ${language === 'he' ? 'קטע אינסטרומנטלי (ללא מילים)' : 'Instrumental track'}.`;
+          `Format every line as [MM:SS - MM:SS] Lyric text. If purely instrumental output NOTHING.`;
 
         let textOut = '';
-        for (const modelName of ['gemini-3.5-transcribe', 'gemini-4-hydrogen']) {
-          try {
-            const geminiRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-                body: JSON.stringify({
-                  contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
-                }),
-              }
-            );
-            if (!geminiRes.ok) continue;
-            const gJson: any = await geminiRes.json();
-            const candidate = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-            if (candidate) {
-              textOut = candidate;
-              break;
+        try {
+          const geminiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
+              }),
             }
-          } catch {
-            // Try next fallback model
+          );
+          if (geminiRes.ok) {
+            const gJson: any = await geminiRes.json();
+            textOut = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
           }
-        }
+        } catch {}
+
         const segments = buildSegmentsFromText(textOut, duration);
         return jsonResponse({
           success: segments.length > 0,
-          provider: 'whisper-gemini-transcribe',
+          provider: 'gemini-3.5-transcribe',
           segments,
           lyrics: segments.map((s) => s.text).join('\n'),
         });
@@ -1347,39 +1458,334 @@ export default {
       }
     }
 
-    // 13b. Persistent Track Views Counter (starts at 0, increments per entry)
+    // 13b. High-Load Coalesced & ETag-CAS Persistent Track Views Counter (starts at 0, increments per entry)
     if (pathname === '/api/storage/track-view' && request.method === 'POST') {
       try {
         const body: any = await request.json();
         const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
         if (!cleanId) return jsonResponse({ success: false }, 400);
-        const key = `tracks/${cleanId}.json`;
-        const trackData = await r2ReadJson(key);
-        if (trackData) {
-          const viewsCount = (Number(trackData.viewsCount) || 0) + 1;
-          await r2WriteJson(key, { ...trackData, viewsCount });
-          return jsonResponse({ success: true, viewsCount });
-        }
-        const idxData = await r2ReadJson('tracks_index.json');
-        if (Array.isArray(idxData)) {
-          let nextViews = 1;
-          let found = false;
-          const nextArr = idxData.map((t: any) => {
-            if (t?.id === cleanId) {
-              found = true;
-              nextViews = (Number(t.viewsCount) || 0) + 1;
-              return { ...t, viewsCount: nextViews };
+
+        workerPendingViewDeltas.set(cleanId, (workerPendingViewDeltas.get(cleanId) || 0) + 1);
+        const nextOptimistic = (workerOptimisticViewCounts.get(cleanId) || 0) + 1;
+        workerOptimisticViewCounts.set(cleanId, nextOptimistic);
+
+        const flushWorkerTrackViews = async () => {
+          if (workerInFlightViewFlushes.has(cleanId)) return;
+          workerInFlightViewFlushes.add(cleanId);
+          try {
+            while ((workerPendingViewDeltas.get(cleanId) || 0) > 0) {
+              const delta = workerPendingViewDeltas.get(cleanId) || 0;
+              workerPendingViewDeltas.delete(cleanId);
+              if (delta <= 0) break;
+
+              let committed = false;
+              const key = `tracks/${cleanId}.json`;
+
+              if (env.R2_BUCKET) {
+                for (let attempt = 0; attempt < 6; attempt++) {
+                  const obj = await env.R2_BUCKET.get(key);
+                  if (!obj) break;
+                  const trackData = JSON.parse(await obj.text());
+                  const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
+                  const bytes = encoder.encode(JSON.stringify({ ...trackData, viewsCount }, null, 2));
+                  const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+                  if (obj.httpEtag) putOpts.onlyIf = { etagMatches: obj.httpEtag };
+                  const putRes = await env.R2_BUCKET.put(key, bytes, putOpts);
+                  if (putRes !== null) {
+                    workerOptimisticViewCounts.set(
+                      cleanId,
+                      Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
+                    );
+                    committed = true;
+                    break;
+                  }
+                  await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+                }
+              } else {
+                const trackData = await r2ReadJson(key);
+                if (trackData) {
+                  const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
+                  await r2WriteJson(key, { ...trackData, viewsCount });
+                  workerOptimisticViewCounts.set(
+                    cleanId,
+                    Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
+                  );
+                  committed = true;
+                }
+              }
+
+              if (!committed) {
+                if (env.R2_BUCKET) {
+                  for (let attempt = 0; attempt < 6; attempt++) {
+                    const idxObj = await env.R2_BUCKET.get('tracks_index.json');
+                    if (!idxObj) break;
+                    const idxData = JSON.parse(await idxObj.text());
+                    if (!Array.isArray(idxData)) break;
+                    let found = false;
+                    let nextViews = delta;
+                    const nextArr = idxData.map((t: any) => {
+                      if (t?.id === cleanId) {
+                        found = true;
+                        nextViews = (Number(t.viewsCount) || 0) + delta;
+                        return { ...t, viewsCount: nextViews };
+                      }
+                      return t;
+                    });
+                    if (!found) break;
+                    const bytes = encoder.encode(JSON.stringify(nextArr, null, 2));
+                    const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+                    if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+                    const putRes = await env.R2_BUCKET.put('tracks_index.json', bytes, putOpts);
+                    if (putRes !== null) {
+                      workerOptimisticViewCounts.set(
+                        cleanId,
+                        Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
+                      );
+                      committed = true;
+                      break;
+                    }
+                    await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+                  }
+                } else {
+                  const idxData = await r2ReadJson('tracks_index.json');
+                  if (Array.isArray(idxData)) {
+                    let nextViews = delta;
+                    let found = false;
+                    const nextArr = idxData.map((t: any) => {
+                      if (t?.id === cleanId) {
+                        found = true;
+                        nextViews = (Number(t.viewsCount) || 0) + delta;
+                        return { ...t, viewsCount: nextViews };
+                      }
+                      return t;
+                    });
+                    if (found) {
+                      await r2WriteJson('tracks_index.json', nextArr);
+                      workerOptimisticViewCounts.set(
+                        cleanId,
+                        Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
+                      );
+                      committed = true;
+                    }
+                  }
+                }
+              }
+
+              if (!committed) {
+                workerPendingViewDeltas.set(cleanId, (workerPendingViewDeltas.get(cleanId) || 0) + delta);
+                break;
+              }
             }
-            return t;
-          });
-          if (found) {
-            await r2WriteJson('tracks_index.json', nextArr);
-            return jsonResponse({ success: true, viewsCount: nextViews });
+          } finally {
+            workerInFlightViewFlushes.delete(cleanId);
           }
+        };
+
+        const flushPromise = flushWorkerTrackViews();
+        if (ctx?.waitUntil) {
+          ctx.waitUntil(flushPromise);
+        } else {
+          await flushPromise;
         }
-        return jsonResponse({ success: false, viewsCount: 1 });
+
+        return jsonResponse({ success: true, viewsCount: workerOptimisticViewCounts.get(cleanId) || nextOptimistic });
       } catch {
         return jsonResponse({ success: false, viewsCount: 1 });
+      }
+    }
+
+    // 13c. Listener Background Subtitles Persist Route
+    if (pathname === '/api/storage/track-subtitles' && request.method === 'POST') {
+      try {
+        const body: any = await request.json();
+        const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false, error: 'Missing trackId' }, 400);
+
+        const incomingSegs = Array.isArray(body?.subtitleSegments) ? body.subtitleSegments : [];
+        const incomingHe = Array.isArray(body?.subtitleSegmentsHe) ? body.subtitleSegmentsHe : [];
+        const incomingEn = Array.isArray(body?.subtitleSegmentsEn) ? body.subtitleSegmentsEn : [];
+        if (incomingSegs.length === 0 && incomingHe.length === 0 && incomingEn.length === 0) {
+          return jsonResponse({ success: false, error: 'Missing subtitles payload' }, 400);
+        }
+
+        const key = `tracks/${cleanId}.json`;
+        const existing = await r2ReadJson(key);
+        if (!existing) return jsonResponse({ success: false, error: 'Track not found' }, 404);
+        if (existing.subtitlesDisabled === true) return jsonResponse({ success: false, disabled: true });
+
+        if (
+          (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) ||
+          (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) ||
+          (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0)
+        ) {
+          return jsonResponse({ success: true, alreadyExists: true, track: existing });
+        }
+
+        const updated = {
+          ...existing,
+          subtitleSegments: incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn),
+          ...(incomingHe.length > 0 ? { subtitleSegmentsHe: incomingHe } : {}),
+          ...(incomingEn.length > 0 ? { subtitleSegmentsEn: incomingEn } : {}),
+          ...(body?.lyrics ? { lyrics: String(body.lyrics) } : {}),
+          ...(body?.lyricsHe ? { lyricsHe: String(body.lyricsHe) } : {}),
+          ...(body?.lyricsEn ? { lyricsEn: String(body.lyricsEn) } : {}),
+          hasWhisperSubtitles: true,
+          viewsCount: Math.max(Number(existing.viewsCount) || 0, workerOptimisticViewCounts.get(cleanId) || 0),
+        };
+
+        await r2WriteJson(key, updated);
+
+        try {
+          if (env.R2_BUCKET) {
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const idxObj = await env.R2_BUCKET.get('tracks_index.json');
+              if (!idxObj) break;
+              const idxArr = JSON.parse(await idxObj.text());
+              if (!Array.isArray(idxArr)) break;
+              let changed = false;
+              const nextArr = idxArr.map((t: any) => {
+                if (t?.id === cleanId) {
+                  changed = true;
+                  return {
+                    ...t,
+                    subtitleSegments: updated.subtitleSegments,
+                    ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
+                    ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                    ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
+                    ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
+                    ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                    hasWhisperSubtitles: true,
+                  };
+                }
+                return t;
+              });
+              if (!changed) break;
+              const bytes = encoder.encode(JSON.stringify(nextArr, null, 2));
+              const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+              if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+              const putRes = await env.R2_BUCKET.put('tracks_index.json', bytes, putOpts);
+              if (putRes !== null) break;
+              await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 45)));
+            }
+          } else {
+            const idxArr = await r2ReadJson('tracks_index.json');
+            if (Array.isArray(idxArr)) {
+              const nextArr = idxArr.map((t: any) =>
+                t?.id === cleanId
+                  ? {
+                      ...t,
+                      subtitleSegments: updated.subtitleSegments,
+                      ...(updated.subtitleSegmentsHe ? { subtitleSegmentsHe: updated.subtitleSegmentsHe } : {}),
+                      ...(updated.subtitleSegmentsEn ? { subtitleSegmentsEn: updated.subtitleSegmentsEn } : {}),
+                      ...(updated.lyrics ? { lyrics: updated.lyrics } : {}),
+                      ...(updated.lyricsHe ? { lyricsHe: updated.lyricsHe } : {}),
+                      ...(updated.lyricsEn ? { lyricsEn: updated.lyricsEn } : {}),
+                      hasWhisperSubtitles: true,
+                    }
+                  : t
+              );
+              await r2WriteJson('tracks_index.json', nextArr);
+            }
+          }
+        } catch {}
+
+        const persisted = (await r2ReadJson(key)) || updated;
+        return jsonResponse({ success: true, track: persisted });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Subtitle persist error' }, 500);
+      }
+    }
+
+    // 13c. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches directly to kolot.music1@gmail.com)
+    if (pathname === '/api/contact' && request.method === 'POST') {
+      try {
+        const body: any = await request.json().catch(() => ({}));
+        const sess = await extractSessionTop();
+        const rawSenderEmail = String(sess?.email || body?.senderEmail || '').trim();
+        const subject = String(body?.subject || '').trim().slice(0, 200);
+        const message = String(body?.message || '').trim().slice(0, 5000);
+
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(rawSenderEmail)) {
+          return jsonResponse({ success: false, error: 'יש להזין כתובת מייל אמיתית ותקינה' }, 400);
+        }
+        if (!subject || !message) {
+          return jsonResponse({ success: false, error: 'יש למלא נושא ותוכן להודעה' }, 400);
+        }
+
+        const randBytes = new Uint8Array(4);
+        crypto.getRandomValues(randBytes);
+        const randHex = Array.from(randBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+        const msgId = `msg_${Date.now()}_${randHex}`;
+        const targetRecipient = 'kolot.music1@gmail.com';
+        const record = {
+          id: msgId,
+          to: targetRecipient,
+          senderEmail: rawSenderEmail,
+          senderUid: sess?.uid || undefined,
+          subject,
+          message,
+          createdAt: new Date().toISOString(),
+          status: 'new',
+        };
+
+        let storedInR2 = false;
+        try {
+          await r2WriteJson(`contact_messages/${msgId}.json`, record);
+          storedInR2 = true;
+        } catch {}
+
+        let emailDispatched = false;
+        const resendKey = (env.RESEND_API_KEY || '').trim();
+        if (resendKey) {
+          try {
+            const resendRes = await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${resendKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                from: env.RESEND_FROM_EMAIL || 'Kolot Music <onboarding@resend.dev>',
+                to: [targetRecipient],
+                reply_to: rawSenderEmail,
+                subject: `[Kolot Music] ${subject}`,
+                text: `פנייה חדשה מאתר Kolot Music\n\nמאת: ${rawSenderEmail}\nנושא: ${subject}\n\n${message}`,
+              }),
+            });
+            if (resendRes.ok) emailDispatched = true;
+          } catch {}
+        }
+
+        if (!emailDispatched) {
+          try {
+            const fsRes = await fetch(`https://formsubmit.co/ajax/${targetRecipient}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                Referer: `${url.origin}/`,
+                Origin: url.origin,
+              },
+              body: JSON.stringify({
+                name: rawSenderEmail,
+                email: rawSenderEmail,
+                _replyto: rawSenderEmail,
+                _subject: `[Kolot Music] ${subject}`,
+                message,
+                _template: 'table',
+              }),
+            });
+            if (fsRes.ok) emailDispatched = true;
+          } catch {}
+        }
+
+        if (!storedInR2 && !emailDispatched) {
+          return jsonResponse({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' }, 502);
+        }
+
+        return jsonResponse({ success: true, id: msgId, recipient: targetRecipient, emailDispatched, storedInR2 });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' }, 500);
       }
     }
 
@@ -1398,7 +1804,11 @@ export default {
           indexData.forEach((t: any) => {
             if (t?.id && t?.name && t?.audioUrl) {
               const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              trackMap.set(cleanTrack.id, cleanTrack);
+              const opt = workerOptimisticViewCounts.get(cleanTrack.id) || 0;
+              trackMap.set(
+                cleanTrack.id,
+                opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack
+              );
             }
           });
         }
@@ -1416,7 +1826,13 @@ export default {
         loadedTracks.forEach((t: any) => {
           if (t?.id && t?.name && t?.audioUrl) {
             const { uploadedByEmail: _omit, ...cleanTrack } = t;
-            trackMap.set(cleanTrack.id, cleanTrack);
+            const prev = trackMap.get(cleanTrack.id);
+            const mergedViews = Math.max(
+              Number(prev?.viewsCount) || 0,
+              Number(cleanTrack.viewsCount) || 0,
+              workerOptimisticViewCounts.get(cleanTrack.id) || 0
+            );
+            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
           }
         });
 
@@ -1860,6 +2276,7 @@ export default {
         const isAdmin = verifiedEmail === 'danielbarber1246@gmail.com';
         const sessionPayload = {
           uid,
+          email: verifiedEmail || undefined,
           displayName,
           photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
           googlePhotoUrl: googlePhotoUrl || undefined,
@@ -1875,6 +2292,7 @@ export default {
             sessionToken,
             user: {
               uid,
+              email: sessionPayload.email,
               displayName,
               photoURL: sessionPayload.photoURL,
               googlePhotoUrl: sessionPayload.googlePhotoUrl,
@@ -1912,6 +2330,7 @@ export default {
         sessionToken: parsed.token,
         user: {
           uid: session.uid,
+          email: session.email || undefined,
           displayName: liveName || session.displayName,
           photoURL: liveAvatar || session.googlePhotoUrl || undefined,
           googlePhotoUrl: session.googlePhotoUrl || undefined,

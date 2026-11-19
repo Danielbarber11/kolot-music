@@ -646,9 +646,343 @@ async function hasWebGpuQuick(): Promise<boolean> {
   }
 }
 
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxRetries = 3,
+  signal?: AbortSignal
+): Promise<Response> {
+  let delay = 1000;
+  let lastErr: any;
+  for (let i = 0; i < maxRetries; i++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    try {
+      const response = await fetch(url, { ...init, signal });
+      if (response.ok) return response;
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+        return response;
+      }
+      lastErr = new Error(`HTTP ${response.status}`);
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || signal?.aborted) throw err;
+      lastErr = err;
+    }
+    if (i < maxRetries - 1) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, delay);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+      delay *= 2;
+    }
+  }
+  throw lastErr || new Error('Transcription request failed');
+}
+
+/**
+ * Extracts compact 16kHz Mono 16-bit PCM WAV track via AudioContext + OfflineAudioContext
+ * for ultra-fast Gemini structured transcription (mirrors user HTML extractFastAudioBase64).
+ */
+export async function extractFastAudioWavBlob(
+  source: File | Blob | string,
+  maxSeconds = 400,
+  signal?: AbortSignal
+): Promise<{ blob: Blob; duration: number } | null> {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
+  let decodeCtx: AudioContext | null = null;
+  try {
+    let arrayBuffer: ArrayBuffer;
+    if (typeof source === 'string') {
+      const res = await fetch(source, { signal });
+      if (!res.ok) return null;
+      arrayBuffer = await res.arrayBuffer();
+    } else {
+      arrayBuffer = await source.arrayBuffer();
+    }
+
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return null;
+
+    decodeCtx = new AudioCtx();
+    const decodedBuffer: AudioBuffer = await new Promise((resolve, reject) => {
+      try {
+        const p = decodeCtx!.decodeAudioData(arrayBuffer, resolve, reject);
+        if (p && typeof (p as Promise<AudioBuffer>).then === 'function') {
+          (p as Promise<AudioBuffer>).then(resolve, reject);
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    const fullDuration = decodedBuffer.duration || 180;
+    const renderDuration = maxSeconds > 0 ? Math.min(fullDuration, maxSeconds) : fullDuration;
+    const targetRate = 16000;
+    const targetLength = Math.max(targetRate, Math.ceil(renderDuration * targetRate));
+
+    let samples: Float32Array;
+    const OfflineCtx = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    if (OfflineCtx) {
+      const offlineCtx = new OfflineCtx(1, targetLength, targetRate);
+      const bufferSource = offlineCtx.createBufferSource();
+      bufferSource.buffer = decodedBuffer;
+      bufferSource.connect(offlineCtx.destination);
+      bufferSource.start(0, 0, renderDuration);
+      const rendered = await offlineCtx.startRendering();
+      samples = rendered.getChannelData(0);
+    } else {
+      samples = fallbackDownsampleDecodedTo16k(decodedBuffer, renderDuration);
+    }
+
+    return {
+      blob: encodePcm16kToWavBlob(samples),
+      duration: fullDuration,
+    };
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || signal?.aborted) throw err;
+    return null;
+  } finally {
+    decodeCtx?.close().catch(() => {});
+  }
+}
+
+export interface GeminiSubtitlesResult {
+  success: boolean;
+  aborted?: boolean;
+  segments: SubtitleSegment[];
+  segmentsHe: SubtitleSegment[];
+  segmentsEn: SubtitleSegment[];
+  lyrics: string;
+  lyricsHe: string;
+  lyricsEn: string;
+  provider?: string;
+  error?: string;
+}
+
+/**
+ * Primary Gemini Structured SRT subtitle generator:
+ * Compresses audio to compact 16kHz Mono WAV in browser (when decodable),
+ * calls /api/ai/transcribe with exponential backoff, and sanitizes bilingual SRT cues.
+ */
+export async function generateSubtitlesWithGeminiMethod(options: {
+  audioFile?: File | Blob | null;
+  audioUrl?: string;
+  duration?: number;
+  songTitle?: string;
+  artistName?: string;
+  language?: 'he' | 'en';
+  subtitleLanguageHint?: 'auto' | 'he' | 'en';
+  signal?: AbortSignal;
+}): Promise<GeminiSubtitlesResult> {
+  const emptyFail = (error?: string, aborted = false): GeminiSubtitlesResult => ({
+    success: false,
+    aborted,
+    segments: [],
+    segmentsHe: [],
+    segmentsEn: [],
+    lyrics: '',
+    lyricsHe: '',
+    lyricsEn: '',
+    error,
+  });
+
+  if (options.signal?.aborted) {
+    return emptyFail('יצירת הכתוביות בוטלה', true);
+  }
+
+  try {
+    const source = options.audioFile || options.audioUrl;
+    if (!source) {
+      return emptyFail('לא סופק מקור שמע');
+    }
+
+    const controller = new AbortController();
+    const hardTimeout = setTimeout(() => controller.abort(), 52000);
+    const onParentAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', onParentAbort, { once: true });
+
+    let serverRes: Response;
+    try {
+      const extracted = await extractFastAudioWavBlob(source, 400, controller.signal).catch(() => null);
+      if (options.signal?.aborted) {
+        return emptyFail('יצירת הכתוביות בוטלה', true);
+      }
+
+      const detectedDuration = Math.max(10, Math.round(extracted?.duration || options.duration || 180));
+      const langParam = options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he';
+
+      if (extracted?.blob && extracted.blob.size <= 14.5 * 1024 * 1024) {
+        const fd = new FormData();
+        fd.append('file', extracted.blob, 'track-16k.wav');
+        fd.append('language', langParam);
+        if (options.songTitle) fd.append('songTitle', options.songTitle);
+        if (options.artistName) fd.append('artistName', options.artistName);
+        fd.append('duration', String(detectedDuration));
+
+        serverRes = await fetchWithRetry(
+          '/api/ai/transcribe',
+          { method: 'POST', body: fd, credentials: 'include' },
+          3,
+          controller.signal
+        );
+      } else if (options.audioFile) {
+        const fd = new FormData();
+        const cappedFile =
+          options.audioFile.size > 14 * 1024 * 1024
+            ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
+            : options.audioFile;
+        fd.append('file', cappedFile, options.audioFile instanceof File ? options.audioFile.name : 'track.mp3');
+        fd.append('language', langParam);
+        if (options.songTitle) fd.append('songTitle', options.songTitle);
+        if (options.artistName) fd.append('artistName', options.artistName);
+        fd.append('duration', String(detectedDuration));
+
+        serverRes = await fetchWithRetry(
+          '/api/ai/transcribe',
+          { method: 'POST', body: fd, credentials: 'include' },
+          3,
+          controller.signal
+        );
+      } else {
+        serverRes = await fetchWithRetry(
+          '/api/ai/transcribe',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              audioUrl: options.audioUrl,
+              language: langParam,
+              songTitle: options.songTitle || '',
+              artistName: options.artistName || '',
+              duration: detectedDuration,
+            }),
+          },
+          3,
+          controller.signal
+        );
+      }
+    } finally {
+      clearTimeout(hardTimeout);
+      options.signal?.removeEventListener('abort', onParentAbort);
+    }
+
+    if (options.signal?.aborted) {
+      return emptyFail('יצירת הכתוביות בוטלה', true);
+    }
+
+    if (!serverRes.ok) {
+      return emptyFail(`HTTP ${serverRes.status}`);
+    }
+
+    const sData: any = await serverRes.json().catch(() => null);
+    if (!sData?.success || !Array.isArray(sData.segments) || sData.segments.length === 0) {
+      return emptyFail(sData?.error || 'לא זוהו מילים בשמע');
+    }
+
+    const normalizeList = (rawList: any[], idPrefix: string): SubtitleSegment[] =>
+      rawList
+        .map((seg: any, idx: number): SubtitleSegment | null => {
+          const text = sanitizeSubtitleLettersOnly(String(seg?.text || ''));
+          if (!text || isHallucinationPhrase(text)) return null;
+          const startTime = Math.max(0, Number(seg?.startTime) || 0);
+          const endTime = Math.max(startTime + 0.8, Number(seg?.endTime) || startTime + 3.5);
+          return {
+            id: `${idPrefix}_${idx}`,
+            startTime: Number(startTime.toFixed(2)),
+            endTime: Number(endTime.toFixed(2)),
+            text,
+          };
+        })
+        .filter((x): x is SubtitleSegment => x !== null);
+
+    const cleanedBase = normalizeList(sData.segments, 'gem_seg');
+    if (cleanedBase.length === 0) {
+      return emptyFail('לא זוהו מילים בשמע');
+    }
+
+    let segmentsHe =
+      Array.isArray(sData.segmentsHe) && sData.segmentsHe.length > 0
+        ? normalizeList(sData.segmentsHe, 'gem_he')
+        : [];
+    let segmentsEn =
+      Array.isArray(sData.segmentsEn) && sData.segmentsEn.length > 0
+        ? normalizeList(sData.segmentsEn, 'gem_en')
+        : [];
+
+    if (segmentsHe.length === 0 && segmentsEn.length === 0) {
+      const totalText = cleanedBase.map((s) => s.text).join(' ');
+      const heChars = (totalText.match(/[\u0590-\u05FF]/g) || []).length;
+      const enChars = (totalText.match(/[a-zA-Z]/g) || []).length;
+      const primaryIsHe =
+        options.subtitleLanguageHint === 'en'
+          ? false
+          : options.subtitleLanguageHint === 'he'
+            ? true
+            : heChars >= enChars;
+
+      const srcLines = cleanedBase.map((s) => s.text);
+      const trLines = await translateOnDeviceIfAvailable(
+        srcLines,
+        primaryIsHe ? 'he' : 'en',
+        primaryIsHe ? 'en' : 'he'
+      ).catch(() => null);
+
+      segmentsHe = primaryIsHe
+        ? cleanedBase.map((s, idx) => ({ ...s, id: `gem_he_${idx}` }))
+        : cleanedBase.map((s, idx) => ({ ...s, id: `gem_he_${idx}`, text: trLines?.[idx] || s.text }));
+
+      segmentsEn = !primaryIsHe
+        ? cleanedBase.map((s, idx) => ({ ...s, id: `gem_en_${idx}` }))
+        : cleanedBase.map((s, idx) => ({ ...s, id: `gem_en_${idx}`, text: trLines?.[idx] || s.text }));
+    } else if (segmentsHe.length === 0 && segmentsEn.length > 0) {
+      const trLines = await translateOnDeviceIfAvailable(segmentsEn.map((s) => s.text), 'en', 'he').catch(() => null);
+      segmentsHe = segmentsEn.map((s, idx) => ({ ...s, id: `gem_he_${idx}`, text: trLines?.[idx] || s.text }));
+    } else if (segmentsEn.length === 0 && segmentsHe.length > 0) {
+      const trLines = await translateOnDeviceIfAvailable(segmentsHe.map((s) => s.text), 'he', 'en').catch(() => null);
+      segmentsEn = segmentsHe.map((s, idx) => ({ ...s, id: `gem_en_${idx}`, text: trLines?.[idx] || s.text }));
+    }
+
+    const lyricsHe = segmentsHe.map((s) => s.text).join('\n');
+    const lyricsEn = segmentsEn.map((s) => s.text).join('\n');
+    const isEn = options.language === 'en';
+
+    return {
+      success: true,
+      segments: isEn ? segmentsEn : segmentsHe,
+      segmentsHe,
+      segmentsEn,
+      lyrics: isEn ? lyricsEn : lyricsHe,
+      lyricsHe,
+      lyricsEn,
+      provider: sData.provider || 'gemini-subtitles-srt',
+    };
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || options.signal?.aborted) {
+      return emptyFail('יצירת הכתוביות בוטלה', true);
+    }
+    return emptyFail(err?.message || 'שגיאה ביצירת כתוביות');
+  }
+}
+
 /**
  * Generates bilingual synchronized subtitles without ever blocking or crashing the main browser thread:
- * 1. Primary path: Fast server-side transcription via /api/ai/transcribe (~3-8s).
+ * 1. Primary path: Fast 16kHz WAV Gemini Structured SRT transcription via /api/ai/transcribe.
  * 2. Chrome Built-in Multimodal Audio AI (when installed natively in browser, 0MB download).
  * 3. WebGPU / WASM Whisper inside dedicated background Web Worker with resetting stall watchdog.
  */
@@ -685,117 +1019,23 @@ export async function transcribeAudioOnDevice(options: {
       return { success: false, error: 'לא נבחר קובץ שמע ליצירת כתוביות' };
     }
 
-    // 1. ULTRA-FAST SERVER TRANSCRIPTION FIRST (3-8s, zero browser RAM/CPU load)
-    try {
-      options.onProgress?.('בודק תמלול מהיר בשרת...', 14);
-      const localController = new AbortController();
-      const timeoutId = setTimeout(() => localController.abort(), 24000);
-      const onParentAbort = () => localController.abort();
-      options.signal?.addEventListener('abort', onParentAbort, { once: true });
-
-      let serverRes: Response;
-      try {
-        if (options.audioFile) {
-          const fd = new FormData();
-          const cappedFile =
-            options.audioFile.size > 14 * 1024 * 1024
-              ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
-              : options.audioFile;
-          fd.append('file', cappedFile, options.audioFile instanceof File ? options.audioFile.name : 'track.mp3');
-          fd.append('language', options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he');
-          if (options.hintTitle) fd.append('songTitle', options.hintTitle);
-          if (options.trackDuration) fd.append('duration', String(options.trackDuration));
-          serverRes = await fetch('/api/ai/transcribe', {
-            method: 'POST',
-            body: fd,
-            credentials: 'include',
-            signal: localController.signal,
-          });
-        } else {
-          serverRes = await fetch('/api/ai/transcribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              audioUrl: options.audioUrl,
-              language: options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he',
-              songTitle: options.hintTitle || '',
-              duration: options.trackDuration || 180,
-            }),
-            signal: localController.signal,
-          });
-        }
-      } finally {
-        clearTimeout(timeoutId);
-        options.signal?.removeEventListener('abort', onParentAbort);
-      }
-
-      if (options.signal?.aborted) {
-        return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
-      }
-
-      if (serverRes.ok) {
-        const sData: any = await serverRes.json().catch(() => null);
-        if (sData?.success && Array.isArray(sData.segments) && sData.segments.length > 0) {
-          options.onProgress?.('מסנכרן תרגום לשפות...', 82);
-          const cleanedSegs: SubtitleSegment[] = sData.segments
-            .map((seg: any, idx: number) => {
-              const text = sanitizeSubtitleLettersOnly(String(seg?.text || ''));
-              if (!text || isHallucinationPhrase(text)) return null;
-              const startTime = Math.max(0, Number(seg.startTime) || 0);
-              const endTime = Math.max(startTime + 0.8, Number(seg.endTime) || startTime + 3.5);
-              return { id: `srv_seg_${idx}`, startTime, endTime, text };
-            })
-            .filter((x: any): x is SubtitleSegment => !!x);
-
-          if (cleanedSegs.length > 0) {
-            const totalText = cleanedSegs.map((s) => s.text).join(' ');
-            const heChars = (totalText.match(/[\u0590-\u05FF]/g) || []).length;
-            const enChars = (totalText.match(/[a-zA-Z]/g) || []).length;
-            const primaryIsHe =
-              options.subtitleLanguageHint === 'en'
-                ? false
-                : options.subtitleLanguageHint === 'he'
-                  ? true
-                  : heChars >= enChars;
-
-            const srcLines = cleanedSegs.map((s) => s.text);
-            const trLines = await translateOnDeviceIfAvailable(
-              srcLines,
-              primaryIsHe ? 'he' : 'en',
-              primaryIsHe ? 'en' : 'he'
-            ).catch(() => null);
-
-            const segmentsHe = primaryIsHe
-              ? cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_he_${idx}` }))
-              : cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_he_${idx}`, text: trLines?.[idx] || s.text }));
-
-            const segmentsEn = !primaryIsHe
-              ? cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_en_${idx}` }))
-              : cleanedSegs.map((s, idx) => ({ ...s, id: `whisper_en_${idx}`, text: trLines?.[idx] || s.text }));
-
-            const lyricsHe = segmentsHe.map((s) => s.text).join('\n');
-            const lyricsEn = segmentsEn.map((s) => s.text).join('\n');
-
-            options.onProgress?.('הכתוביות נוצרו בהצלחה!', 100);
-            return {
-              success: true,
-              segments: options.language === 'en' ? segmentsEn : segmentsHe,
-              segmentsHe,
-              segmentsEn,
-              lyrics: options.language === 'en' ? lyricsEn : lyricsHe,
-              lyricsHe,
-              lyricsEn,
-              provider: sData.provider || 'fast-cloud-transcribe',
-            };
-          }
-        }
-      }
-    } catch (fastErr: any) {
-      if (options.signal?.aborted) {
-        return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
-      }
-      console.warn('[Subtitles] Server transcribe unavailable, probing browser AI / WebGPU worker:', fastErr?.message);
+    // 1. ULTRA-FAST GEMINI STRUCTURED SRT TRANSCRIPTION FIRST
+    options.onProgress?.('בודק תמלול מהיר בשרת...', 14);
+    const geminiResult = await generateSubtitlesWithGeminiMethod({
+      audioFile: options.audioFile,
+      audioUrl: options.audioUrl,
+      duration: options.trackDuration,
+      songTitle: options.hintTitle,
+      language: options.language,
+      subtitleLanguageHint: options.subtitleLanguageHint,
+      signal: options.signal,
+    });
+    if (geminiResult.aborted || options.signal?.aborted) {
+      return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
+    }
+    if (geminiResult.success && geminiResult.segments.length > 0) {
+      options.onProgress?.('הכתוביות נוצרו בהצלחה!', 100);
+      return geminiResult;
     }
 
     const gpuAvailable = await hasWebGpuQuick();

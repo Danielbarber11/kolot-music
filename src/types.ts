@@ -147,6 +147,7 @@ export interface JamendoTrack {
   subtitleSegmentsHe?: SubtitleSegment[];
   subtitleSegmentsEn?: SubtitleSegment[];
   hasWhisperSubtitles?: boolean;
+  subtitlesDisabled?: boolean;
   artistId?: string;
   albumId?: string;
   genre?: string;

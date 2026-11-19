@@ -62,7 +62,7 @@ import {
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { parseSubtitleFileContent } from '../aiLyricsGenerator';
-import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
+import { sanitizeSubtitleLettersOnly, generateSubtitlesWithGeminiMethod, GeminiSubtitlesResult } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
@@ -179,6 +179,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
   const uploadSubFileInputRef = useRef<HTMLInputElement>(null);
   const uploadParsedSourceRef = useRef<string>('');
+  const autoSubAbortRef = useRef<AbortController | null>(null);
+  const autoSubJobIdRef = useRef<number>(0);
+  const autoSubPromiseRef = useRef<Promise<GeminiSubtitlesResult | null> | null>(null);
+  const autoSubResultRef = useRef<GeminiSubtitlesResult | null>(null);
+  const audioDurationRef = useRef<number>(180);
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
   const [genreProgressText, setGenreProgressText] = useState('');
   const [genreDetectionNotice, setGenreDetectionNotice] = useState<AudioClassificationResult | null>(null);
@@ -273,6 +278,62 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       document.body.style.overflow = '';
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    return () => {
+      autoSubAbortRef.current?.abort();
+    };
+  }, []);
+
+  const stopSilentAutoSubtitles = () => {
+    autoSubJobIdRef.current += 1;
+    autoSubAbortRef.current?.abort();
+    autoSubAbortRef.current = null;
+    autoSubPromiseRef.current = null;
+    autoSubResultRef.current = null;
+  };
+
+  const startSilentAutoSubtitles = (
+    file?: File | null,
+    urlFallback?: string,
+    titleHint?: string
+  ): Promise<GeminiSubtitlesResult | null> => {
+    stopSilentAutoSubtitles();
+    if (!file && !urlFallback) return Promise.resolve(null);
+
+    const jobId = ++autoSubJobIdRef.current;
+    const controller = new AbortController();
+    autoSubAbortRef.current = controller;
+
+    const promise = (async (): Promise<GeminiSubtitlesResult | null> => {
+      try {
+        const res = await generateSubtitlesWithGeminiMethod({
+          audioFile: file || undefined,
+          audioUrl: !file ? urlFallback : undefined,
+          duration: audioDurationRef.current || 180,
+          songTitle: titleHint || songTitle.trim(),
+          artistName: performingArtistInput.trim() || currentArtist.name,
+          language: isHe ? 'he' : 'en',
+          signal: controller.signal,
+        });
+        if (
+          jobId === autoSubJobIdRef.current &&
+          !controller.signal.aborted &&
+          res?.success &&
+          res.segments.length > 0
+        ) {
+          autoSubResultRef.current = res;
+          return res;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    })();
+
+    autoSubPromiseRef.current = promise;
+    return promise;
+  };
 
   const canManageTrack = (track: JamendoTrack) => {
     if (!currentUser) return false;
@@ -620,10 +681,23 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setAudioFileName(file.name);
     const blobUrl = URL.createObjectURL(file);
     setAudioStreamUrl(blobUrl);
+    const cleanName = file.name.replace(/\.[^/.]+$/, '');
     if (!songTitle.trim()) {
-      const cleanName = file.name.replace(/\.[^/.]+$/, '');
       setSongTitle(cleanName);
     }
+
+    audioDurationRef.current = 180;
+    try {
+      const probe = new Audio(blobUrl);
+      probe.onloadedmetadata = () => {
+        if (probe.duration && Number.isFinite(probe.duration)) {
+          audioDurationRef.current = Math.max(10, Math.round(probe.duration));
+        }
+      };
+    } catch {}
+
+    // Trigger invisible background subtitle generation the instant the audio file is uploaded
+    void startSilentAutoSubtitles(file, undefined, songTitle.trim() || cleanName);
   };
 
   const processCoverFile = (file: File) => {
@@ -990,6 +1064,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   };
 
   const handleResetAudio = () => {
+    stopSilentAutoSubtitles();
+    audioDurationRef.current = 180;
     setRawAudioFile(null);
     setAudioFileName('');
     setAudioStreamUrl('');
@@ -1143,8 +1219,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let finalDraftLyricsHe = whisperDraftLyricsHe;
     let finalDraftLyricsEn = whisperDraftLyricsEn;
     let sanitizedManualLyrics = rawUploadLyrics ? sanitizeMultilineLyrics(rawUploadLyrics) : '';
+    const trackDurationSeconds = Math.max(10, Math.round(audioDurationRef.current || 180));
+    let progressFloor = 6;
 
     if (!includeSubtitles) {
+      stopSilentAutoSubtitles();
       finalDraftSegments = undefined;
       finalDraftSegmentsHe = undefined;
       finalDraftSegmentsEn = undefined;
@@ -1156,7 +1235,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       (rawUploadLyrics !== uploadParsedSourceRef.current ||
         (!finalDraftSegments?.length && !finalDraftSegmentsHe?.length && !finalDraftSegmentsEn?.length))
     ) {
-      const parsed = await parseSubtitleFileContent(rawUploadLyrics, 180, isHe ? 'he' : 'en');
+      const parsed = await parseSubtitleFileContent(rawUploadLyrics, trackDurationSeconds, isHe ? 'he' : 'en');
       if (parsed.success) {
         finalDraftSegments = parsed.segments;
         finalDraftSegmentsHe = parsed.segmentsHe;
@@ -1164,6 +1243,46 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         finalDraftLyricsHe = parsed.lyricsHe;
         finalDraftLyricsEn = parsed.lyricsEn;
         sanitizedManualLyrics = parsed.lyricsHe || parsed.lyricsEn || sanitizedManualLyrics;
+      }
+    } else if (
+      !finalDraftSegments?.length &&
+      !finalDraftSegmentsHe?.length &&
+      !finalDraftSegmentsEn?.length
+    ) {
+      if (!autoSubResultRef.current && !autoSubPromiseRef.current && (rawAudioFile || audioStreamUrl.trim())) {
+        void startSilentAutoSubtitles(
+          rawAudioFile || null,
+          !rawAudioFile ? audioStreamUrl.trim() : undefined,
+          songTitle.trim()
+        );
+      }
+
+      if (!autoSubResultRef.current && autoSubPromiseRef.current) {
+        const waitTicker = setInterval(() => {
+          setUploadProgressPercent((prev) => {
+            const next = Math.min(34, Math.max(prev + 2, 8));
+            progressFloor = Math.max(progressFloor, next);
+            return next;
+          });
+        }, 450);
+        try {
+          await Promise.race([
+            autoSubPromiseRef.current,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 55000)),
+          ]);
+        } finally {
+          clearInterval(waitTicker);
+        }
+      }
+
+      const autoRes = autoSubResultRef.current;
+      if (autoRes?.success && autoRes.segments.length > 0) {
+        finalDraftSegments = autoRes.segments;
+        finalDraftSegmentsHe = autoRes.segmentsHe;
+        finalDraftSegmentsEn = autoRes.segmentsEn;
+        finalDraftLyricsHe = autoRes.lyricsHe;
+        finalDraftLyricsEn = autoRes.lyricsEn;
+        sanitizedManualLyrics = autoRes.lyricsHe || autoRes.lyricsEn || '';
       }
     }
 
@@ -1180,7 +1299,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       featuredArtist: featuredArtistInput.trim() || undefined,
       writers: writersInput.trim() || undefined,
       albumName: albumTitle.trim() || (isHe ? 'סינגל עצמאי' : 'Independent Single'),
-      duration: 180,
+      duration: trackDurationSeconds,
       audioUrl: audioStreamUrl.trim(),
       coverUrl: coverArtUrl.trim(),
       genre: effectiveGenre,
@@ -1195,6 +1314,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       subtitleSegmentsHe: hasAnyDraftSubtitles && finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0 ? finalDraftSegmentsHe : undefined,
       subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
       hasWhisperSubtitles: hasAnyDraftSubtitles,
+      ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
@@ -1217,7 +1337,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         currentAudioFile || undefined,
         currentCoverFile || undefined,
         (pct, msg) => {
-          setUploadProgressPercent(pct);
+          setUploadProgressPercent(Math.max(progressFloor, pct));
           setPublishProgressStep(msg);
         }
       );
@@ -1261,6 +1381,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setPublishSuccess(true);
 
       // Reset form
+      stopSilentAutoSubtitles();
+      audioDurationRef.current = 180;
       setSongTitle('');
       setPerformingArtistInput('');
       setFeaturedArtistInput('');

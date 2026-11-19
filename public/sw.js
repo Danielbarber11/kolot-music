@@ -17,11 +17,14 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
 
-  // Never intercept non-GET, API calls, external audio/AI streams, or hashed Vite bundles
+  // Never intercept non-GET, API calls, external audio/AI streams, Vite dev assets, or hashed Vite bundles
   if (
     event.request.method !== 'GET' ||
     url.includes('/api/') ||
     url.includes('/assets/') ||
+    url.includes('/@') ||
+    url.includes('/src/') ||
+    url.includes('node_modules') ||
     url.startsWith('blob:') ||
     url.includes('audius') ||
     url.includes('firebase') ||

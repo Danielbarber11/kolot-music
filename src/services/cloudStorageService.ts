@@ -844,6 +844,45 @@ export async function saveTrackSubtitlesInCloud(
   }
 }
 
+export async function saveGeneratedSubtitlesToCloud(
+  trackId: string,
+  subData: {
+    segments: NonNullable<JamendoTrack['subtitleSegments']>;
+    segmentsHe?: JamendoTrack['subtitleSegmentsHe'];
+    segmentsEn?: JamendoTrack['subtitleSegmentsEn'];
+    lyrics?: string;
+    lyricsHe?: string;
+    lyricsEn?: string;
+  }
+): Promise<JamendoTrack | null> {
+  try {
+    const cleanId = (trackId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanId || !subData.segments.length) return null;
+    const res = await fetch('/api/storage/track-subtitles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
+      body: JSON.stringify({
+        trackId: cleanId,
+        subtitleSegments: subData.segments,
+        subtitleSegmentsHe: subData.segmentsHe,
+        subtitleSegmentsEn: subData.segmentsEn,
+        lyrics: subData.lyrics,
+        lyricsHe: subData.lyricsHe,
+        lyricsEn: subData.lyricsEn,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (data?.success && data.track) {
+      return data.track as JamendoTrack;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function saveTrackGenreInCloud(
   track: JamendoTrack,
   genre: string
@@ -917,7 +956,16 @@ export function incrementTrackViewsInCloud(track: JamendoTrack): void {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trackId: track.id }),
       keepalive: true,
-    }).catch(() => {});
+    })
+      .then((res) => (res.ok ? res.json().catch(() => null) : null))
+      .then((data) => {
+        if (data?.viewsCount && Number(data.viewsCount) > 0) {
+          import('./multiMusicService')
+            .then((m) => m.syncTrackViewFromServer(track.id, Number(data.viewsCount)))
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   } catch {}
 }
 

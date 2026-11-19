@@ -8,6 +8,7 @@ import {
 
 export interface AuthUser {
   uid: string;
+  email?: string | null;
   displayName?: string | null;
   photoURL?: string | null;
   googlePhotoUrl?: string | null;
@@ -57,6 +58,7 @@ function setCurrentUserInternal(user: AuthUser | null): AuthUser | null {
   currentAuthUser = user
     ? {
         uid: user.uid,
+        email: user.email || undefined,
         displayName: user.displayName || undefined,
         photoURL: user.photoURL || undefined,
         googlePhotoUrl: user.googlePhotoUrl || undefined,

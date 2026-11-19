@@ -460,11 +460,11 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
                 <p className="text-xs font-normal text-neutral-400">
                   נתקלתם בבעיית נגישות או יש לכם הצעה לשיפור? פנו אלינו ונטפל בפנייה בהקדם האפשרי:
                 </p>
-                <p className="text-xs font-normal text-white">danielbarber1246@gmail.com</p>
+                <p className="text-xs font-normal text-white font-mono">kolot.music1@gmail.com</p>
               </div>
 
               <a
-                href="mailto:danielbarber1246@gmail.com?subject=%D7%A4%D7%A0%D7%99%D7%99%D7%AA%20%D7%A0%D7%92%D7%99%D7%A9%D7%95%D7%AA%20-%20Kolot%20Music"
+                href="mailto:kolot.music1@gmail.com?subject=%D7%A4%D7%A0%D7%99%D7%99%D7%AA%20%D7%A0%D7%92%D7%99%D7%A9%D7%95%D7%AA%20-%20Kolot%20Music"
                 className="h-10 px-4 rounded-xl bg-white hover:bg-neutral-200 text-black font-normal text-xs flex items-center justify-center gap-2 shrink-0 transition-colors"
               >
                 <Mail className="w-4 h-4" />

@@ -30,9 +30,13 @@ import {
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud } from '../services/cloudStorageService';
-import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar } from '../services/multiMusicService';
+import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveGeneratedSubtitlesToCloud } from '../services/cloudStorageService';
+import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
+import { generateSubtitlesWithGeminiMethod } from '../services/onDeviceWhisperService';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
+
+const activePlayerSubJobs = new Map<string, Promise<JamendoTrack | null>>();
+const attemptedEmptyTrackIds = new Set<string>();
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -201,13 +205,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   );
   const [whisperLyricsHe, setWhisperLyricsHe] = useState<string | undefined>(track.lyricsHe || track.lyrics);
   const [whisperLyricsEn, setWhisperLyricsEn] = useState<string | undefined>(track.lyricsEn);
-  const [showLiveCaptions, setShowLiveCaptions] = useState<boolean>(
-    !!(
-      (track.subtitleSegments && track.subtitleSegments.length > 0) ||
-      (track.subtitleSegmentsHe && track.subtitleSegmentsHe.length > 0) ||
-      (track.subtitleSegmentsEn && track.subtitleSegmentsEn.length > 0)
-    )
-  );
 
   useEffect(() => {
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
@@ -217,7 +214,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setWhisperLyricsHe(track.lyricsHe || track.lyrics);
     setWhisperLyricsEn(track.lyricsEn);
     setSubtitleLang(!hasHe && hasEn ? 'en' : 'he');
-    setShowLiveCaptions(hasHe || hasEn);
   }, [track.id, track.subtitleSegments, track.subtitleSegmentsHe, track.subtitleSegmentsEn, track.lyrics, track.lyricsHe, track.lyricsEn]);
 
   const activeSegments =
@@ -254,7 +250,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const activeLineIndex = syncedLyrics.lines.findIndex(
     (line) => currentTime >= line.startTime && currentTime <= line.endTime
   );
-  const activeSubtitleLine = activeLineIndex >= 0 ? syncedLyrics.lines[activeLineIndex] : null;
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
@@ -290,6 +285,91 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       }
     }
   }, [effectiveAudioUrl]);
+
+  // Silent background subtitle fallback when playing a song that has no saved subtitles yet.
+  // Nothing appears in the player while generating; subtitles render ONLY after R2 storage confirms persistence.
+  useEffect(() => {
+    if (!isPlaying || !track.id || !effectiveAudioUrl || track.subtitlesDisabled) return;
+    const alreadyHasSubtitles = !!(
+      whisperSegmentsHe?.length ||
+      whisperSegmentsEn?.length ||
+      whisperLyricsHe?.trim() ||
+      whisperLyricsEn?.trim() ||
+      track.subtitleSegments?.length ||
+      track.subtitleSegmentsHe?.length ||
+      track.subtitleSegmentsEn?.length ||
+      track.lyrics?.trim() ||
+      track.lyricsHe?.trim() ||
+      track.lyricsEn?.trim()
+    );
+    if (alreadyHasSubtitles || attemptedEmptyTrackIds.has(track.id)) return;
+
+    let cancelled = false;
+    const targetTrackId = track.id;
+
+    let job = activePlayerSubJobs.get(targetTrackId);
+    if (!job) {
+      job = (async (): Promise<JamendoTrack | null> => {
+        try {
+          const genRes = await generateSubtitlesWithGeminiMethod({
+            audioUrl: effectiveAudioUrl,
+            duration: track.duration || duration || 180,
+            songTitle: track.name,
+            artistName: track.artistName,
+            language: isHe ? 'he' : 'en',
+          });
+          if (!genRes.success || genRes.segments.length === 0) {
+            attemptedEmptyTrackIds.add(targetTrackId);
+            return null;
+          }
+          const savedTrack = await saveGeneratedSubtitlesToCloud(targetTrackId, {
+            segments: genRes.segments,
+            segmentsHe: genRes.segmentsHe,
+            segmentsEn: genRes.segmentsEn,
+            lyrics: genRes.lyrics,
+            lyricsHe: genRes.lyricsHe,
+            lyricsEn: genRes.lyricsEn,
+          });
+          if (!savedTrack) {
+            return null;
+          }
+          syncTrackSubtitlesInMemory(savedTrack);
+          return savedTrack;
+        } catch {
+          return null;
+        } finally {
+          activePlayerSubJobs.delete(targetTrackId);
+        }
+      })();
+      activePlayerSubJobs.set(targetTrackId, job);
+    }
+
+    job.then((savedTrack) => {
+      if (cancelled || !savedTrack || savedTrack.id !== track.id) return;
+      const savedHe = savedTrack.subtitleSegmentsHe || savedTrack.subtitleSegments;
+      const savedEn = savedTrack.subtitleSegmentsEn;
+      setWhisperSegmentsHe(savedHe);
+      setWhisperSegmentsEn(savedEn);
+      setWhisperLyricsHe(savedTrack.lyricsHe || savedTrack.lyrics);
+      setWhisperLyricsEn(savedTrack.lyricsEn);
+      if (!savedHe?.length && savedEn?.length) {
+        setSubtitleLang('en');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isPlaying,
+    track.id,
+    track.subtitlesDisabled,
+    effectiveAudioUrl,
+    whisperSegmentsHe,
+    whisperSegmentsEn,
+    whisperLyricsHe,
+    whisperLyricsEn,
+  ]);
 
   const togglePlayPause = () => {
     if (!audioRef.current) return;
@@ -687,67 +767,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           )}
 
-          {/* SAVED SUBTITLES OVERLAY (ONLY SHOWN WHEN TRACK HAS SUBTITLES SAVED AT CREATION/EDIT) */}
-          {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
-            <div className="w-full pt-2 flex flex-col items-center gap-2">
-              {showLiveCaptions && (
-                <div
-                  onClick={() => setIsLyricsExpanded(true)}
-                  className="w-full max-w-sm px-4 py-2.5 rounded-2xl bg-black/55 backdrop-blur-xl border border-white/20 text-center shadow-lg cursor-pointer hover:bg-black/70 transition-colors"
-                >
-                  <p className="text-xs sm:text-sm font-extrabold text-white leading-snug min-h-[1.25rem]">
-                    {activeSubtitleLine ? activeSubtitleLine.text : (syncedLyrics.lines[0]?.text || '')}
-                  </p>
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowLiveCaptions((v) => !v)}
-                  className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                    showLiveCaptions
-                      ? 'bg-emerald-500/25 text-emerald-200 border-emerald-400/50'
-                      : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
-                  }`}
-                >
-                  <Captions className="w-3.5 h-3.5" />
-                  <span>
-                    {isHe
-                      ? showLiveCaptions
-                        ? 'כתוביות פעילות'
-                        : 'הצג כתוביות'
-                      : showLiveCaptions
-                        ? 'Captions On'
-                        : 'Show Captions'}
-                  </span>
-                </button>
-
-                {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
-                  <div className="inline-flex items-center rounded-full bg-black/40 border border-white/20 p-0.5 text-[10px] font-bold">
-                    <button
-                      type="button"
-                      onClick={() => setSubtitleLang('he')}
-                      className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
-                        subtitleLang === 'he' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                      }`}
-                    >
-                      עברית
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSubtitleLang('en')}
-                      className={`px-2.5 py-0.5 rounded-full transition-colors cursor-pointer ${
-                        subtitleLang === 'en' ? 'bg-white text-black' : 'text-white/75 hover:text-white'
-                      }`}
-                    >
-                      English
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
@@ -848,151 +867,143 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* COLLAPSIBLE WHISPER AI SUBTITLES & LYRICS CARD */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-neutral-950/80 backdrop-blur-2xl border border-white/15 space-y-3 shadow-2xl transition-all">
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
-              className="flex-1 flex items-center justify-between text-right cursor-pointer select-none group min-w-0"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20 shrink-0">
-                  <Captions className="w-4 h-4 text-emerald-400" />
+        {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES OR LYRICS) */}
+        {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
+          <div className="p-4 sm:p-5 rounded-3xl bg-neutral-950/80 backdrop-blur-2xl border border-white/15 space-y-3 shadow-2xl transition-all">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setIsLyricsExpanded(!isLyricsExpanded)}
+                className="flex-1 flex items-center justify-between text-right cursor-pointer select-none group min-w-0"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20 shrink-0">
+                    <Captions className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-extrabold text-white flex items-center gap-2 truncate">
+                      <span>{isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}</span>
+                    </h3>
+                    {!isLyricsExpanded && (
+                      <p className="text-xs text-white/70 truncate max-w-[220px] sm:max-w-[300px] pt-0.5">
+                        {syncedLyrics.previewText || (isHe ? 'לחץ להצגה' : 'Click to view')}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-extrabold text-white flex items-center gap-2 truncate">
-                    <span>{isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}</span>
-                  </h3>
-                  {!isLyricsExpanded && (
-                    <p className="text-xs text-white/70 truncate max-w-[220px] sm:max-w-[300px] pt-0.5">
-                      {syncedLyrics.previewText || (isHe ? 'לחץ להצגה' : 'Click to view')}
-                    </p>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 rounded-full bg-white/10 text-white/90 text-[10px] font-bold border border-white/15">
+                    {isLyricsExpanded ? (isHe ? 'סגור' : 'Collapse') : (isHe ? 'פתח כתוביות' : 'Expand')}
+                  </span>
+                  {isLyricsExpanded ? (
+                    <ChevronUp className="w-5 h-5 text-white/80 group-hover:text-white" />
+                  ) : (
+                    <ChevronDown className="w-5 h-5 text-white/80 group-hover:text-white" />
                   )}
                 </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="px-2.5 py-1 rounded-full bg-white/10 text-white/90 text-[10px] font-bold border border-white/15">
-                  {isLyricsExpanded ? (isHe ? 'סגור' : 'Collapse') : (isHe ? 'פתח כתוביות' : 'Expand')}
-                </span>
-                {isLyricsExpanded ? (
-                  <ChevronUp className="w-5 h-5 text-white/80 group-hover:text-white" />
-                ) : (
-                  <ChevronDown className="w-5 h-5 text-white/80 group-hover:text-white" />
-                )}
-              </div>
-            </button>
-          </div>
-
-          {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0) || syncedLyrics.isWhisperSynced) && (
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex items-center gap-2">
-                {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
-                  <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
-                    <button
-                      type="button"
-                      onClick={() => setSubtitleLang('he')}
-                      className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                        subtitleLang === 'he' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
-                      }`}
-                    >
-                      עברית
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSubtitleLang('en')}
-                      className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                        subtitleLang === 'en' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
-                      }`}
-                    >
-                      English
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {syncedLyrics.isWhisperSynced && (
-                <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                  {isHe ? 'כתוביות מסונכרנות' : 'Synced Subtitles'}
-                </span>
-              )}
+              </button>
             </div>
-          )}
 
-          {/* EXPANDED SCROLLABLE LYRICS CONTAINER */}
-          <AnimatePresence>
-            {isLyricsExpanded && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.22 }}
-                className="pt-3 border-t border-white/10 space-y-3"
-              >
-                {syncedLyrics.lines.length === 0 ? (
-                  <div className="py-6 text-center text-xs text-white/60">
-                    {isHe
-                      ? 'לא הוגדרו כתוביות לשיר זה. ניתן להוסיף כתוביות בעריכת השיר בפרופיל האמן.'
-                      : 'No subtitles yet for this track. Subtitles can be added when creating or editing the song.'}
-                  </div>
-                ) : (
-                  <>
-                    <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
-                      {syncedLyrics.lines.map((line, lIdx) => {
-                        const isLineActive = lIdx === activeLineIndex;
-                        const mm = Math.floor(line.startTime / 60);
-                        const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
-
-                        return (
-                          <div
-                            key={line.id}
-                            onClick={() => {
-                              if (audioRef.current) {
-                                audioRef.current.currentTime = line.startTime;
-                                setCurrentTime(line.startTime);
-                              }
-                            }}
-                            className={`p-2.5 rounded-2xl transition-all cursor-pointer flex items-start gap-2.5 leading-relaxed ${
-                              isLineActive
-                                ? 'bg-white/15 border border-white/25 shadow-lg'
-                                : 'hover:bg-white/5'
-                            }`}
-                          >
-                            <span className="text-[10px] font-mono text-emerald-300/80 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
-                              {mm}:{ss}
-                            </span>
-                            <div className="flex flex-wrap items-center gap-1.5 flex-1">
-                              {line.words.map((w, wIdx) => {
-                                const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
-
-                                return (
-                                  <span
-                                    key={wIdx}
-                                    className={`text-xs sm:text-sm transition-all duration-150 ${
-                                      isWordActive
-                                        ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
-                                        : 'text-white font-medium hover:text-emerald-300'
-                                    }`}
-                                  >
-                                    {w.text}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
+            {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0) || syncedLyrics.isWhisperSynced) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) || (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
+                    <div className="inline-flex items-center rounded-xl bg-white/5 border border-white/15 p-0.5 text-[11px] font-bold">
+                      <button
+                        type="button"
+                        onClick={() => setSubtitleLang('he')}
+                        className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                          subtitleLang === 'he' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                        }`}
+                      >
+                        עברית
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSubtitleLang('en')}
+                        className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
+                          subtitleLang === 'en' ? 'bg-emerald-500 text-black' : 'text-white/75 hover:text-white'
+                        }`}
+                      >
+                        English
+                      </button>
                     </div>
-                    <p className="text-[10px] text-white/50 text-center">
-                      {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
-                    </p>
-                  </>
+                  )}
+                </div>
+
+                {syncedLyrics.isWhisperSynced && (
+                  <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                    {isHe ? 'כתוביות מסונכרנות' : 'Synced Subtitles'}
+                  </span>
                 )}
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
-        </div>
+
+            {/* EXPANDED SCROLLABLE LYRICS CONTAINER */}
+            <AnimatePresence>
+              {isLyricsExpanded && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.22 }}
+                  className="pt-3 border-t border-white/10 space-y-3"
+                >
+                  <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
+                    {syncedLyrics.lines.map((line, lIdx) => {
+                      const isLineActive = lIdx === activeLineIndex;
+                      const mm = Math.floor(line.startTime / 60);
+                      const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
+
+                      return (
+                        <div
+                          key={line.id}
+                          onClick={() => {
+                            if (audioRef.current) {
+                              audioRef.current.currentTime = line.startTime;
+                              setCurrentTime(line.startTime);
+                            }
+                          }}
+                          className={`p-2.5 rounded-2xl transition-all cursor-pointer flex items-start gap-2.5 leading-relaxed ${
+                            isLineActive
+                              ? 'bg-white/15 border border-white/25 shadow-lg'
+                              : 'hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="text-[10px] font-mono text-emerald-300/80 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
+                            {mm}:{ss}
+                          </span>
+                          <div className="flex flex-wrap items-center gap-1.5 flex-1">
+                            {line.words.map((w, wIdx) => {
+                              const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
+
+                              return (
+                                <span
+                                  key={wIdx}
+                                  className={`text-xs sm:text-sm transition-all duration-150 ${
+                                    isWordActive
+                                      ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
+                                      : 'text-white font-medium hover:text-emerald-300'
+                                  }`}
+                                >
+                                  {w.text}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-white/50 text-center">
+                    {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
+                  </p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
       </div>
 
       {/* SHARE FEEDBACK TOAST */}

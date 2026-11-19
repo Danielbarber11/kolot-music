@@ -49,8 +49,11 @@ window.addEventListener(
 // Start fetching data immediately in parallel with initial bundle evaluation
 initializeMultiMusicService().catch(() => {});
 
-// Register service worker v2 and check for updates immediately
-if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'development') {
+// Register service worker v6 and check for updates immediately
+if (
+  'serviceWorker' in navigator &&
+  (import.meta.env.PROD || window.location.protocol === 'https:')
+) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/sw.js', { updateViaCache: 'none' })
