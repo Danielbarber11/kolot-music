@@ -337,6 +337,18 @@ export default {
       });
     }
 
+    if (request.method === 'GET' && pathname.startsWith('/google') && pathname.endsWith('.html')) {
+      const tokenMatch = pathname.match(/\/google([a-zA-Z0-9_-]+)\.html$/);
+      const token = tokenMatch ? tokenMatch[1] : 'Eg8ZRcchUYZiQIJOucZKvDNi2GWoJnnhG9O5JoiGxFY';
+      return new Response(`google-site-verification: ${token}`, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
     if (request.method === 'GET' && pathname === '/manifest.json') {
       const origin = url.origin;
       const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json` }];

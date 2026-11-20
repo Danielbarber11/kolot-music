@@ -614,7 +614,14 @@ app.post('/api/storage/config', async (req, res) => {
   }
 });
 
-// Dynamic PWA Web App Manifest with origin-matched related_applications for accurate getInstalledRelatedApps()
+// Dynamic Google Search Console HTML verification file handler
+app.get(/^\/google[a-zA-Z0-9_-]+\.html$/, (req, res) => {
+  const match = req.path.match(/\/google([a-zA-Z0-9_-]+)\.html$/);
+  const token = match ? match[1] : 'Eg8ZRcchUYZiQIJOucZKvDNi2GWoJnnhG9O5JoiGxFY';
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`google-site-verification: ${token}`);
+});
 app.get('/manifest.json', (req, res) => {
   const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
   const proto = protoHeader.split(',')[0].trim();
