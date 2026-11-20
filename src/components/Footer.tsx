@@ -754,33 +754,7 @@ export const TermsReaderModal: React.FC<{
           </section>
         </div>
 
-        <div className="pt-4 mt-4 border-t border-white/10 flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={async () => {
-              const url = window.location.origin;
-              const title = isHe ? 'תנאי שימוש ומדיניות - Kolot Music' : 'Terms of Service - Kolot Music';
-              if (typeof navigator.share === 'function') {
-                try {
-                  await navigator.share({
-                    title,
-                    text: isHe ? 'קרא את תנאי השימוש ומדיניות האתר של Kolot Music' : 'Read Kolot Music terms and policy',
-                    url,
-                  });
-                  return;
-                } catch {}
-              }
-              try {
-                await navigator.clipboard.writeText(url);
-                alert(isHe ? 'קישור תנאי השימוש הועתק בהצלחה!' : 'Terms link copied successfully!');
-              } catch {}
-            }}
-            className="px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer border border-white/20"
-          >
-            <Share2 className="w-3.5 h-3.5 text-white" />
-            <span>{isHe ? 'שתף תנאי שימוש' : 'Share Terms'}</span>
-          </button>
-
+        <div className="pt-4 mt-4 border-t border-white/10 flex justify-end">
           <button
             type="button"
             onClick={onClose}
