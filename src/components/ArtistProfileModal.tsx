@@ -274,6 +274,16 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
       className="fixed inset-0 z-[120] w-full h-[100dvh] bg-[#070b14] overflow-y-auto text-white custom-scrollbar flex flex-col"
       dir={isHe ? 'rtl' : 'ltr'}
     >
+      {/* SEAMLESS AMBIENT TOP COLOR WASH — FADES SMOOTHLY INTO #070B14 WITH ZERO DIVIDER LINE */}
+      <div className="relative w-full flex-1 flex flex-col bg-[#070b14]">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 h-[340px] sm:h-[380px] transition-all duration-500"
+          style={{
+            background: `radial-gradient(ellipse 85% 65% at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.52) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.24) 45%, rgba(7, 11, 20, 0) 100%), linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.34) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.1) 58%, rgba(7, 11, 20, 0) 100%)`,
+          }}
+        />
+
         {/* BACK BUTTON */}
         <div className="absolute top-4 start-4 sm:top-6 sm:start-6 z-50">
           <button
@@ -290,22 +300,10 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           </button>
         </div>
 
-        {/* HERO HEADER: CLEAN STEADY DARK SURFACE MATCHING PROFILE ARTWORK WITHOUT COLOR FLASH */}
-        <div
-          className="relative w-full border-b border-white/10 bg-[#08090d] transition-all duration-500"
-          style={{
-            background: `radial-gradient(circle at 50% 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.45) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.16) 52%, #070b14 100%)`,
-          }}
-        >
-          <div
-            className="relative w-full h-32 sm:h-40 overflow-hidden transition-all duration-500"
-            style={{
-              background: `linear-gradient(180deg, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.55) 0%, rgba(${themeColor.r}, ${themeColor.g}, ${themeColor.b}, 0.2) 60%, rgba(7, 11, 20, 0) 100%)`,
-            }}
-          />
-
+        {/* HERO HEADER: SEAMLESS COLOR BLEND WITHOUT HORIZONTAL LINE */}
+        <div className="relative z-10 w-full pt-20 sm:pt-24">
           {/* PROFILE CARD */}
-          <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-14 sm:-mt-16 pb-6 flex flex-col sm:flex-row items-center sm:items-end gap-4 sm:gap-6">
+          <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 pb-6 flex flex-col sm:flex-row items-center sm:items-end gap-4 sm:gap-6">
             <div className="relative flex-shrink-0">
               <div
                 className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 transition-shadow duration-500"
@@ -356,7 +354,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
         {/* ALBUMS ROW IF CREATED */}
         {artistAlbums.length > 0 && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-8 pt-6 w-full space-y-3">
+          <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-8 pt-6 w-full space-y-3">
             <h3 className="text-sm font-normal text-white flex items-center gap-2">
               <Disc className="w-4 h-4 text-white" />
               <span>{isHe ? 'אלבומים' : 'Albums'}</span>
@@ -381,7 +379,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
         )}
 
         {/* ALL SONGS OF THE SINGER DIRECTLY UNDERNEATH */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-8 pt-6 pb-12 w-full flex-1 space-y-5">
+        <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-8 pt-6 pb-12 w-full flex-1 space-y-5">
           <div className="flex items-center justify-between border-b border-white/10 pb-3">
             <h2 className="text-base sm:text-lg font-normal text-white flex items-center gap-2">
               <Music className="w-4 h-4 text-white" />
@@ -509,6 +507,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           </div>
           )}
         </main>
-      </motion.div>
+      </div>
+    </motion.div>
   );
 };

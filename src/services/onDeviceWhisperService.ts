@@ -19,6 +19,46 @@ if (env.backends?.onnx?.wasm) {
 }
 
 let audioClassifierPipelinePromise: Promise<any> | null = null;
+let cachedAiStatus: { aiConfigured: boolean; ts: number } | null = null;
+let sharedWhisperWorker: Worker | null = null;
+let nextWhisperReqId = 1;
+
+async function isServerAiConfigured(): Promise<boolean> {
+  if (cachedAiStatus && Date.now() - cachedAiStatus.ts < 60000) {
+    return cachedAiStatus.aiConfigured;
+  }
+  try {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 2200) : null;
+    const res = await fetch('/api/storage/status', { signal: controller?.signal });
+    if (timer) clearTimeout(timer);
+    if (!res.ok) return false;
+    const data: any = await res.json().catch(() => null);
+    const configured = Boolean(data?.aiConfigured);
+    cachedAiStatus = { aiConfigured: configured, ts: Date.now() };
+    return configured;
+  } catch {
+    return false;
+  }
+}
+
+function getOrCreateWhisperWorker(): Worker {
+  if (!sharedWhisperWorker) {
+    sharedWhisperWorker = new Worker(new URL('../workers/whisperWorker.ts', import.meta.url), {
+      type: 'module',
+    });
+  }
+  return sharedWhisperWorker;
+}
+
+function disposeWhisperWorker() {
+  if (sharedWhisperWorker) {
+    try {
+      sharedWhisperWorker.terminate();
+    } catch {}
+    sharedWhisperWorker = null;
+  }
+}
 
 export interface LivePartialSubtitlesPayload {
   segments: SubtitleSegment[];
@@ -120,7 +160,7 @@ async function translateOnDeviceIfAvailable(
 
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), 5000) : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 3200) : null;
     const res = await fetch('/api/ai/translate-subtitles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -208,7 +248,7 @@ export async function decodeAudioToMono16k(
   }
 
   const isConstrained = isMobileOrConstrainedDevice();
-  const maxBytes = isConstrained ? 8 * 1024 * 1024 : 14 * 1024 * 1024;
+  const maxBytes = isConstrained ? 4 * 1024 * 1024 : 7 * 1024 * 1024;
   let arrayBuffer: ArrayBuffer;
 
   if (typeof source === 'string') {
@@ -252,7 +292,7 @@ export async function decodeAudioToMono16k(
     });
 
     const fullDuration = decoded.duration || 180;
-    const effectiveMaxSec = isConstrained ? Math.min(maxSeconds, 120) : Math.min(maxSeconds, 150);
+    const effectiveMaxSec = isConstrained ? Math.min(maxSeconds, 44) : Math.min(maxSeconds, 88);
     const sampleDuration = effectiveMaxSec > 0 ? Math.min(decoded.duration, effectiveMaxSec) : decoded.duration;
 
     const manualPcm = fallbackDownsampleDecodedTo16k(decoded, sampleDuration);
@@ -630,7 +670,10 @@ async function tryChromeBuiltInAudioAi(
           ],
         },
       ];
-      const out = await session.prompt(prompt, { signal });
+      const out = await Promise.race([
+        session.prompt(prompt, { signal }),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Chrome AI timeout')), 15000)),
+      ]);
       const segs = parseBrowserTimedTranscript(String(out || ''), totalDuration);
       return segs.length > 0 ? segs : null;
     } finally {
@@ -835,13 +878,13 @@ export async function generateSubtitlesWithGeminiMethod(options: {
     }
 
     const controller = new AbortController();
-    const hardTimeout = setTimeout(() => controller.abort(), 75000);
+    const hardTimeout = setTimeout(() => controller.abort(), 26000);
     const onParentAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onParentAbort, { once: true });
 
     let serverRes: Response;
     try {
-      const extracted = await extractFastAudioWavBlob(source, 260, controller.signal).catch(() => null);
+      const extracted = await extractFastAudioWavBlob(source, 220, controller.signal).catch(() => null);
       if (options.signal?.aborted) {
         return emptyFail('יצירת הכתוביות בוטלה', true);
       }
@@ -1070,28 +1113,31 @@ export async function transcribeAudioOnDevice(options: {
       return { success: false, error: 'לא נבחר קובץ שמע ליצירת כתוביות' };
     }
 
-    // 1. ULTRA-FAST GEMINI STRUCTURED SRT TRANSCRIPTION FIRST
-    options.onProgress?.('בודק תמלול מהיר בשרת...', 14);
-    const geminiResult = await generateSubtitlesWithGeminiMethod({
-      audioFile: options.audioFile,
-      audioUrl: options.audioUrl,
-      duration: options.trackDuration,
-      songTitle: options.hintTitle,
-      language: options.language,
-      subtitleLanguageHint: options.subtitleLanguageHint,
-      signal: options.signal,
-    });
-    if (geminiResult.aborted || options.signal?.aborted) {
-      return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
-    }
-    if (geminiResult.success && geminiResult.segments.length > 0) {
-      options.onProgress?.('הכתוביות נוצרו בהצלחה!', 100);
-      return geminiResult;
+    // 1. ULTRA-FAST CLOUD SRT WHEN SERVER KEY IS CONFIGURED (skipped instantly in <50ms otherwise)
+    const serverAiReady = await isServerAiConfigured();
+    if (serverAiReady) {
+      options.onProgress?.('בודק תמלול מהיר בשרת...', 10);
+      const geminiResult = await generateSubtitlesWithGeminiMethod({
+        audioFile: options.audioFile,
+        audioUrl: options.audioUrl,
+        duration: options.trackDuration,
+        songTitle: options.hintTitle,
+        language: options.language,
+        subtitleLanguageHint: options.subtitleLanguageHint,
+        signal: options.signal,
+      });
+      if (geminiResult.aborted || options.signal?.aborted) {
+        return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
+      }
+      if (geminiResult.success && geminiResult.segments.length > 0) {
+        options.onProgress?.('הכתוביות נוצרו בהצלחה!', 100);
+        return geminiResult;
+      }
     }
 
     const gpuAvailable = await hasWebGpuQuick();
-    options.onProgress?.('מכין שמע לתמלול אוטומטי במכשיר...', 18);
-    const { pcm, duration } = await decodeAudioToMono16k(source, gpuAvailable ? 150 : 84, {
+    options.onProgress?.('מכין שמע לתמלול חינמי בדפדפן...', 12);
+    const { pcm, duration } = await decodeAudioToMono16k(source, gpuAvailable ? 88 : 44, {
       isolateVocals: true,
       signal: options.signal,
     });
@@ -1119,7 +1165,7 @@ export async function transcribeAudioOnDevice(options: {
       usedProvider = 'chrome-built-in-audio-ai';
       options.onProgress?.('תומלל במהירות במנוע הדפדפן!', 88);
     } else {
-      // 3. NON-BLOCKING BACKGROUND WEB WORKER (WebGPU GPU-accelerated first, WASM fallback)
+      // 3. NON-BLOCKING PERSISTENT BACKGROUND WEB WORKER (WebGPU first, fast 44s WASM fallback)
       if (typeof Worker === 'undefined') {
         return {
           success: false,
@@ -1132,9 +1178,8 @@ export async function transcribeAudioOnDevice(options: {
         lockedWhisperLang?: 'hebrew' | 'english';
         backend?: string;
       }>((resolve, reject) => {
-        const worker = new Worker(new URL('../workers/whisperWorker.ts', import.meta.url), {
-          type: 'module',
-        });
+        const worker = getOrCreateWhisperWorker();
+        const requestId = nextWhisperReqId++;
 
         let settled = false;
         let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1146,29 +1191,31 @@ export async function transcribeAudioOnDevice(options: {
           }
         };
 
-        const cleanup = () => {
+        const cleanupListeners = (terminateWorker = false) => {
           clearStallTimer();
           options.signal?.removeEventListener('abort', onAbort);
-          try {
-            worker.terminate();
-          } catch {}
+          worker.onmessage = null;
+          worker.onerror = null;
+          if (terminateWorker) {
+            disposeWhisperWorker();
+          }
         };
 
-        // Resetting inactivity watchdog: only fails if worker sends zero progress for 120s
+        // Resetting inactivity watchdog: fails if worker is completely silent for 45s
         const resetStallWatchdog = () => {
           clearStallTimer();
           stallTimer = setTimeout(() => {
             if (settled) return;
             settled = true;
-            cleanup();
-            reject(new Error('מנוע הכתוביות נתקע מחוסר תגובה — נסה שוב או הדבק מילים'));
-          }, 120000);
+            cleanupListeners(true);
+            reject(new Error('מנוע הכתוביות התעכב מעבר לזמן המצופה — נסה שוב או הדבק מילים'));
+          }, 45000);
         };
 
         const onAbort = () => {
           if (settled) return;
           settled = true;
-          cleanup();
+          cleanupListeners(true);
           reject(new DOMException('Aborted', 'AbortError'));
         };
 
@@ -1177,7 +1224,7 @@ export async function transcribeAudioOnDevice(options: {
 
         worker.onmessage = (ev: MessageEvent) => {
           const msg = ev.data;
-          if (!msg) return;
+          if (!msg || (msg.requestId !== undefined && msg.requestId !== requestId)) return;
           if (msg.type === 'progress') {
             resetStallWatchdog();
             options.onProgress?.(msg.statusText || 'מעבד כתוביות ברקע...', msg.percent);
@@ -1197,7 +1244,7 @@ export async function transcribeAudioOnDevice(options: {
           } else if (msg.type === 'done') {
             if (settled) return;
             settled = true;
-            cleanup();
+            cleanupListeners(false);
             resolve({
               segments: Array.isArray(msg.segments) ? msg.segments : [],
               lockedWhisperLang: msg.lockedWhisperLang,
@@ -1206,7 +1253,7 @@ export async function transcribeAudioOnDevice(options: {
           } else if (msg.type === 'error') {
             if (settled) return;
             settled = true;
-            cleanup();
+            cleanupListeners(true);
             reject(new Error(msg.error || 'שגיאה במנוע הכתוביות ברקע'));
           }
         };
@@ -1214,13 +1261,14 @@ export async function transcribeAudioOnDevice(options: {
         worker.onerror = (err) => {
           if (settled) return;
           settled = true;
-          cleanup();
+          cleanupListeners(true);
           reject(new Error(err?.message || 'שגיאה בטעינת מנוע הכתוביות ברקע'));
         };
 
         worker.postMessage(
           {
             type: 'transcribe',
+            requestId,
             origin: typeof window !== 'undefined' ? window.location.origin : '',
             pcmBuffer: pcm.buffer,
             duration: totalDuration,

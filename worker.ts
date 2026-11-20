@@ -460,17 +460,18 @@ export default {
 
     // 1. Storage status
     if (pathname === '/api/storage/status' && request.method === 'GET') {
+      const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
       if (env.R2_BUCKET) {
-        return jsonResponse({ success: true, configured: true, bucket: creds.bucket, endpoint: 'configured' });
+        return jsonResponse({ success: true, configured: true, aiConfigured, bucket: creds.bucket, endpoint: 'configured' });
       }
       try {
         const res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, { 'list-type': '2', 'max-keys': '1' });
         if (res.ok) {
-          return jsonResponse({ success: true, configured: true, bucket: creds.bucket, endpoint: 'configured' });
+          return jsonResponse({ success: true, configured: true, aiConfigured, bucket: creds.bucket, endpoint: 'configured' });
         }
-        return jsonResponse({ success: false, configured: false, error: `Storage HTTP ${res.status}` });
+        return jsonResponse({ success: false, configured: false, aiConfigured, error: `Storage HTTP ${res.status}` });
       } catch (err: any) {
-        return jsonResponse({ success: false, configured: false, error: err?.message || 'Storage connection failed' });
+        return jsonResponse({ success: false, configured: false, aiConfigured, error: err?.message || 'Storage connection failed' });
       }
     }
 

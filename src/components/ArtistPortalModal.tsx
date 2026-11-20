@@ -1853,23 +1853,19 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         </div>
         )}
 
-        {/* 1. PUBLIC ARTIST PROFILE SCREEN - STEADY DARK HEADER, ZERO COLOR FLASHES */}
+        {/* 1. PUBLIC ARTIST PROFILE SCREEN - SEAMLESS AMBIENT HEADER BLEND, ZERO DIVIDER LINE */}
         {activeTab === 'profile' && (
-          <div key="portal-tab-profile" className="w-full flex-1 flex flex-col bg-[#08090d]">
+          <div key="portal-tab-profile" className="relative w-full flex-1 flex flex-col bg-[#070b14]">
             <div
-              className="relative w-full overflow-hidden border-b border-white/10 bg-[#08090d]"
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 top-0 h-[330px] sm:h-[370px] transition-all duration-500"
               style={{
-                background: `radial-gradient(circle at 50% 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.45) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.16) 52%, #08090d 100%)`,
+                background: `radial-gradient(ellipse 85% 65% at 50% 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.5) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.22) 45%, rgba(7, 11, 20, 0) 100%), linear-gradient(180deg, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.34) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.1) 58%, rgba(7, 11, 20, 0) 100%)`,
               }}
-            >
-              <div
-                className="relative w-full h-28 sm:h-36 overflow-hidden transition-all duration-500"
-                style={{
-                  background: `linear-gradient(180deg, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.55) 0%, rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.22) 60%, rgba(8, 9, 13, 0) 100%)`,
-                }}
-              />
+            />
 
-              <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 -mt-12 sm:-mt-14 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
+            <div className="relative z-10 w-full pt-16 sm:pt-22">
+              <div className="relative z-10 max-w-7xl mx-auto px-5 sm:px-8 pb-5 flex flex-col sm:flex-row items-center sm:items-end gap-4">
                 <div className="relative flex-shrink-0">
                   <div
                     className="p-1.5 rounded-full bg-white/[0.12] backdrop-blur-2xl border border-white/35 transition-shadow duration-500"

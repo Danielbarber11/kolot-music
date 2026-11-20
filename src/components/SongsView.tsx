@@ -362,6 +362,59 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const mobileTopSearchRef = useRef<HTMLInputElement>(null);
+  const mobileSearchBarRef = useRef<HTMLDivElement>(null);
+  const mobileSearchBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Automatically close top mobile search bar when device virtual keyboard closes or focus leaves
+  useEffect(() => {
+    if (!isMobileSearchOpen) return;
+
+    const openedAt = Date.now();
+    let minViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    let keyboardObservedOpen = false;
+    const baselineHeight = window.innerHeight;
+
+    const closeMobileSearch = () => {
+      setIsMobileSearchOpen(false);
+      mobileTopSearchRef.current?.blur();
+    };
+
+    const handleVisualViewportResize = () => {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      if (vv.height < minViewportHeight) {
+        minViewportHeight = vv.height;
+      }
+      if (baselineHeight - vv.height > 110) {
+        keyboardObservedOpen = true;
+      }
+      // Keyboard closed/hidden (viewport expanded back >= 100px from shrunk height)
+      if (keyboardObservedOpen && vv.height - minViewportHeight > 100 && Date.now() - openedAt > 250) {
+        closeMobileSearch();
+      }
+    };
+
+    const handlePointerDownOutside = (e: PointerEvent) => {
+      if (
+        mobileSearchBarRef.current &&
+        e.target instanceof Node &&
+        !mobileSearchBarRef.current.contains(e.target)
+      ) {
+        closeMobileSearch();
+      }
+    };
+
+    window.visualViewport?.addEventListener('resize', handleVisualViewportResize);
+    document.addEventListener('pointerdown', handlePointerDownOutside, true);
+    return () => {
+      window.visualViewport?.removeEventListener('resize', handleVisualViewportResize);
+      document.removeEventListener('pointerdown', handlePointerDownOutside, true);
+      if (mobileSearchBlurTimerRef.current) {
+        clearTimeout(mobileSearchBlurTimerRef.current);
+        mobileSearchBlurTimerRef.current = null;
+      }
+    };
+  }, [isMobileSearchOpen]);
 
   const [artistFilter, setArtistFilter] = useState<string | null>(null);
   const [profileArtistName, setProfileArtistName] = useState<string | null>(null);
@@ -819,7 +872,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   return (
     <div
-      className="h-[100dvh] overflow-hidden bg-[#000000] text-white font-sans flex flex-col antialiased selection:bg-white selection:text-black"
+      className="fixed inset-0 overflow-hidden bg-[#000000] text-white font-sans flex flex-col antialiased selection:bg-white selection:text-black"
       dir={isHe ? 'rtl' : 'ltr'}
     >
       {/* DEVTOOLS SECURITY PROTECTION */}
@@ -839,10 +892,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
         onOpenTerms={() => setShowLegalTermsModal(true)}
       />
 
-      {/* FLOATING TOP NAVIGATION BAR */}
-      <div className="px-3 md:px-6 pt-2.5 pb-1 shrink-0 z-40">
+      {/* FLOATING TOP NAVIGATION BAR (Desktop & Tablet md+) */}
+      <div className="hidden md:block px-6 pt-2.5 pb-1 shrink-0 z-40">
         {/* DESKTOP & LARGE TABLET HEADER (md:flex) — Logo on Start, Controls on End */}
-        <header className="hidden md:flex h-15 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.7)] px-4 lg:px-7 items-center justify-between gap-3 lg:gap-4 select-none">
+        <header className="flex h-15 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.7)] px-4 lg:px-7 items-center justify-between gap-3 lg:gap-4 select-none">
           {/* Logo (Start Side in RTL) - Sleek Metallic Heart Only */}
           <div
             className="flex items-center shrink-0 cursor-pointer py-1"
@@ -958,47 +1011,53 @@ export const SongsView: React.FC<SongsViewProps> = ({
             )}
           </div>
         </header>
-
-        {/* MOBILE TOP CORNERS (flex md:hidden) — True Circle Logo on start corner, True Circle Accessibility on opposite corner */}
-        <header className="flex md:hidden w-full items-center justify-between px-0.5 py-0.5 select-none">
-          <button
-            type="button"
-            onClick={() => {
-              setSearchQuery('');
-              setArtistFilter(null);
-              setSelectedGenre(null);
-              setActiveTab('all');
-              setIsMobileSearchOpen(false);
-            }}
-            className="w-11 h-11 aspect-square rounded-full bg-[#101010] border border-white/20 shadow-[0_6px_20px_rgba(0,0,0,0.85)] flex items-center justify-center p-2 cursor-pointer active:scale-95 transition-transform shrink-0 overflow-hidden"
-            title={isHe ? 'דף הבית' : 'Home'}
-            aria-label={isHe ? 'דף הבית' : 'Home'}
-          >
-            <Logo className="w-full h-full aspect-square" heartOnly={true} />
-          </button>
-
-          {onOpenAccessibility ? (
-            <button
-              type="button"
-              onClick={onOpenAccessibility}
-              className={`w-11 h-11 aspect-square rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border shadow-[0_6px_20px_rgba(0,0,0,0.85)] ${
-                activeAccessibilityCount > 0
-                  ? 'bg-white text-black border-white'
-                  : 'bg-[#101010] text-white border-white/20 hover:bg-white/15'
-              }`}
-              title={isHe ? 'נגישות' : 'Accessibility'}
-              aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
-            >
-              <AccessibilityIcon className="w-5 h-5" />
-            </button>
-          ) : (
-            <div className="w-11 h-11 aspect-square shrink-0" />
-          )}
-        </header>
       </div>
 
-      {/* MOBILE TOP-ANCHORED KEYBOARD SEARCH BAR (Opens cleanly at top of screen when keyboard activates) */}
+      {/* MOBILE PINNED TOP CORNERS (md:hidden) — True Circle Logo & Accessibility always visible at every scroll position */}
+      <header
+        className={`fixed top-2.5 start-3 end-3 z-[75] md:hidden flex items-center justify-between pointer-events-none select-none transition-all duration-200 ${
+          isMobileSearchOpen ? 'opacity-0 -translate-y-2' : 'opacity-100 translate-y-0'
+        }`}
+        aria-hidden={isMobileSearchOpen}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setSearchQuery('');
+            setArtistFilter(null);
+            setSelectedGenre(null);
+            setActiveTab('all');
+            setIsMobileSearchOpen(false);
+          }}
+          className="pointer-events-auto w-11 h-11 aspect-square rounded-full bg-[#101010]/95 backdrop-blur-xl border border-white/20 shadow-[0_6px_20px_rgba(0,0,0,0.85)] flex items-center justify-center p-2 cursor-pointer active:scale-95 transition-transform shrink-0 overflow-hidden"
+          title={isHe ? 'דף הבית' : 'Home'}
+          aria-label={isHe ? 'דף הבית' : 'Home'}
+        >
+          <Logo className="w-full h-full aspect-square" heartOnly={true} />
+        </button>
+
+        {onOpenAccessibility ? (
+          <button
+            type="button"
+            onClick={onOpenAccessibility}
+            className={`pointer-events-auto w-11 h-11 aspect-square rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border shadow-[0_6px_20px_rgba(0,0,0,0.85)] ${
+              activeAccessibilityCount > 0
+                ? 'bg-white text-black border-white'
+                : 'bg-[#101010]/95 backdrop-blur-xl text-white border-white/20 hover:bg-white/15'
+            }`}
+            title={isHe ? 'נגישות' : 'Accessibility'}
+            aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
+          >
+            <AccessibilityIcon className="w-5 h-5" />
+          </button>
+        ) : (
+          <div className="w-11 h-11 aspect-square shrink-0" />
+        )}
+      </header>
+
+      {/* MOBILE TOP-ANCHORED KEYBOARD SEARCH BAR (Opens at top of screen, closes cleanly when keyboard dismisses) */}
       <div
+        ref={mobileSearchBarRef}
         className={`fixed top-2.5 start-3 end-3 z-[80] md:hidden transition-all duration-200 ${
           isMobileSearchOpen
             ? 'opacity-100 pointer-events-auto translate-y-0 scale-100'
@@ -1027,10 +1086,24 @@ export const SongsView: React.FC<SongsViewProps> = ({
             type="text"
             tabIndex={isMobileSearchOpen ? 0 : -1}
             value={searchQuery}
-            onFocus={() => setIsMobileSearchOpen(true)}
+            onFocus={() => {
+              if (mobileSearchBlurTimerRef.current) {
+                clearTimeout(mobileSearchBlurTimerRef.current);
+                mobileSearchBlurTimerRef.current = null;
+              }
+              setIsMobileSearchOpen(true);
+            }}
+            onBlur={() => {
+              if (mobileSearchBlurTimerRef.current) clearTimeout(mobileSearchBlurTimerRef.current);
+              mobileSearchBlurTimerRef.current = setTimeout(() => {
+                if (document.activeElement !== mobileTopSearchRef.current) {
+                  setIsMobileSearchOpen(false);
+                }
+              }, 140);
+            }}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Escape') {
+              if (e.key === 'Escape' || e.key === 'Enter') {
                 setIsMobileSearchOpen(false);
                 e.currentTarget.blur();
               }
@@ -1043,6 +1116,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
             <button
               type="button"
               tabIndex={isMobileSearchOpen ? 0 : -1}
+              onMouseDown={(e) => e.preventDefault()}
+              onTouchStart={(e) => e.preventDefault()}
               onClick={() => {
                 setSearchQuery('');
                 mobileTopSearchRef.current?.focus();
@@ -1160,11 +1235,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
       </div>
 
       {/* MAIN LAYOUT — SINGLE CLEAN SCROLLABLE CONTAINER */}
-      <div className="flex-1 flex overflow-hidden px-3 md:px-6 pb-2 gap-2">
+      <div className="flex-1 min-h-0 flex overflow-hidden px-3 md:px-6 pb-2 gap-2">
         {/* FLUID MAIN CONTENT AREA — Pristine 100% pitch black surface without gray cards */}
         <main
           ref={mainFeedRef}
-          className="flex-1 bg-black border-none overflow-y-auto custom-scrollbar flex flex-col pb-24 md:pb-0"
+          className="flex-1 min-h-0 bg-black border-none overflow-y-auto overscroll-y-contain custom-scrollbar flex flex-col pt-14 md:pt-0 pb-24 md:pb-0"
         >
           {/* WEAK / OFFLINE INTERNET HEALTH NOTICE */}
           {(networkHealth.status === 'offline' || (networkHealth.status === 'weak' && !dismissedWeakNetBanner)) && (
@@ -1449,7 +1524,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             </div>
           ) : (
             /* DEFAULT HOME SECTIONS: HERO SPOTLIGHT -> QUICK MIXES -> ROW 1 (LEADING SONGS) -> ROW 2 (POPULAR ALBUMS) -> ROW 3 (POPULAR ARTISTS) -> CURATED ROWS */
-            <div key="home-feed" className="p-4 sm:p-6 space-y-10 flex-1 bg-black">
+            <div key="home-feed" className="p-2.5 sm:p-6 space-y-3.5 md:space-y-10 flex-1 bg-black">
               {/* DESKTOP LUXURY HERO SPOTLIGHT BANNER */}
               {(() => {
                 const featuredTrack = leadingTracks[featuredTrackIndex % leadingTracks.length] || leadingTracks[0];
@@ -1460,12 +1535,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
 
                 return (
-                  <section className="relative overflow-hidden rounded-3xl bg-[#0a0b0e] border border-white/15 p-5 sm:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
-                    {/* MOBILE HERO SPOTLIGHT CARD: Top Cover Artwork -> Track Title -> Circle Profile + Listen + Favorites */}
-                    <div className="relative z-10 flex flex-col items-center text-center gap-3.5 md:hidden">
+                  <section className="relative overflow-hidden rounded-3xl bg-[#0a0b0e] border border-white/15 p-3.5 sm:p-6 md:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                    {/* MOBILE HERO SPOTLIGHT CARD: Compact Above-the-Fold so Spotlight + 4 Quick Options fit before scrolling */}
+                    <div className="relative z-10 flex flex-col items-center text-center gap-2.5 md:hidden">
                       <div
                         onClick={() => openSongPlayer(featuredTrack)}
-                        className="relative w-44 h-44 rounded-2xl overflow-hidden shadow-[0_16px_40px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 cursor-pointer active:scale-98 transition-transform"
+                        className="relative w-32 h-32 rounded-2xl overflow-hidden shadow-[0_14px_34px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 cursor-pointer active:scale-98 transition-transform"
                       >
                         <TrackCoverArt
                           coverUrl={featuredTrack.coverUrl}
@@ -1477,8 +1552,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         />
                       </div>
 
-                      <div className="space-y-1 max-w-xs w-full px-1">
-                        <h1 className="text-2xl font-black text-white tracking-tight leading-tight line-clamp-2">
+                      <div className="space-y-0.5 max-w-xs w-full px-1">
+                        <h1 className="text-xl font-black text-white tracking-tight leading-tight line-clamp-1">
                           {featuredTrack.name}
                         </h1>
                         <p className="text-xs text-white/65 truncate">
@@ -1486,25 +1561,25 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         </p>
                       </div>
 
-                      <div className="flex items-center justify-center gap-3 pt-1">
+                      <div className="flex items-center justify-center gap-2.5 pt-0.5">
                         <button
                           type="button"
                           onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
-                          className="w-11 h-11 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition-all shadow-md"
+                          className="w-10 h-10 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition-all shadow-md"
                           title={featuredTrack.artistName}
                           aria-label={featuredTrack.artistName}
                         >
                           {artistAvatarImg ? (
                             <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
                           ) : (
-                            <User className="w-4.5 h-4.5 text-white" />
+                            <User className="w-4 h-4 text-white" />
                           )}
                         </button>
 
                         <button
                           type="button"
                           onClick={() => openSongPlayer(featuredTrack)}
-                          className="h-11 px-7 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-sm active:scale-95 transition-all shadow-[0_8px_25px_rgba(255,255,255,0.25)] flex items-center justify-center gap-2 cursor-pointer"
+                          className="h-10 px-6 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-sm active:scale-95 transition-all shadow-[0_8px_25px_rgba(255,255,255,0.25)] flex items-center justify-center gap-2 cursor-pointer"
                         >
                           <Play className="w-4 h-4 fill-black text-black" />
                           <span>{isHe ? 'האזן' : 'Listen'}</span>
@@ -1513,7 +1588,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => toggleFavorite(featuredTrack.id)}
-                          className={`w-11 h-11 aspect-square rounded-full border flex items-center justify-center shrink-0 transition-all cursor-pointer active:scale-95 ${
+                          className={`w-10 h-10 aspect-square rounded-full border flex items-center justify-center shrink-0 transition-all cursor-pointer active:scale-95 ${
                             likedSongIds.includes(featuredTrack.id)
                               ? 'bg-white/25 border-white/50 text-white shadow-[0_0_15px_rgba(255,255,255,0.2)]'
                               : 'bg-white/10 hover:bg-white/20 border-white/20 text-white'
@@ -1522,7 +1597,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           aria-label={isHe ? 'הוסף למועדפים' : 'Favorite'}
                         >
                           <Heart
-                            className={`w-4.5 h-4.5 text-white ${
+                            className={`w-4 h-4 text-white ${
                               likedSongIds.includes(featuredTrack.id) ? 'fill-white' : ''
                             }`}
                           />
@@ -1621,8 +1696,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 );
               })()}
 
-              {/* QUICK ACCESS MIXES STRIP (Desktop Grid — covers strictly match songs inside each category) */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
+              {/* QUICK ACCESS MIXES STRIP (Mobile shows 4 crisp options above the fold; Desktop shows 6) */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
                 {(() => {
                   const strictChillTracks = validHomeTracks.filter((t) => normalizeGenreId(t.genre) === 'Chill');
                   const likedCoverTrack = validHomeTracks.find(
@@ -1650,12 +1725,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       action: () => setSelectedGenre('Hip Hop'),
                       icon: Disc,
                       cover: hipHopTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                      mobileHide: true,
                     },
                     {
                       title: isHe ? 'צ׳יל ורגיעה' : 'Chill Vibes',
                       action: () => setSelectedGenre('Chill'),
                       icon: Disc,
                       cover: strictChillTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
+                      mobileHide: true,
                     },
                     {
                       title: isHe ? 'להיטי פופ' : 'Pop Bangers',
@@ -1675,9 +1752,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   <button
                     key={i}
                     onClick={item.action}
-                    className="group flex items-center gap-3 p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.10] border border-white/10 hover:border-white/25 backdrop-blur-md transition-all text-start cursor-pointer shadow-sm active:scale-98 overflow-hidden"
+                    className={`group ${item.mobileHide ? 'hidden md:flex' : 'flex'} items-center gap-2.5 sm:gap-3 p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.10] border border-white/10 hover:border-white/25 backdrop-blur-md transition-all text-start cursor-pointer shadow-sm active:scale-98 overflow-hidden`}
                   >
-                    <div className="w-10 h-10 rounded-lg bg-neutral-900 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-neutral-900 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
                       {item.cover && isAuthenticCover(item.cover) ? (
                         <img src={getStreamingMediaUrl(item.cover)} alt="" loading="eager" decoding="async" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       ) : (

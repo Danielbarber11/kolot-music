@@ -616,6 +616,7 @@ app.post('/api/storage/config', async (req, res) => {
 
 // Storage Status Probe
 app.get('/api/storage/status', async (req, res) => {
+  const aiConfigured = Boolean(ai || process.env.GEMINI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim());
   try {
     const cfg = resolveR2Config(req);
     const hasKeys = !!(cfg.endpoint && cfg.accessKeyId && cfg.secretAccessKey);
@@ -623,6 +624,7 @@ app.get('/api/storage/status', async (req, res) => {
       return res.json({
         success: true,
         configured: false,
+        aiConfigured,
         message: 'Cloud storage credentials not set yet',
       });
     }
@@ -631,6 +633,7 @@ app.get('/api/storage/status', async (req, res) => {
     return res.json({
       success: true,
       configured: true,
+      aiConfigured,
       bucket,
       hasPublicUrl: !!publicUrl,
       endpoint: 'configured',
@@ -639,6 +642,7 @@ app.get('/api/storage/status', async (req, res) => {
     return res.json({
       success: false,
       configured: false,
+      aiConfigured,
       error: err?.message || 'Failed to connect to cloud storage',
     });
   }

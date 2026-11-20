@@ -284,6 +284,11 @@ async function getWorkerPipeline(
 self.onmessage = async (event: MessageEvent) => {
   const data = event.data;
   if (!data || data.type !== 'transcribe') return;
+  const requestId = data.requestId;
+
+  const postWithId = (payload: Record<string, any>) => {
+    self.postMessage(requestId !== undefined ? { ...payload, requestId } : payload);
+  };
 
   try {
     const origin = String(data.origin || '');
@@ -295,14 +300,15 @@ self.onmessage = async (event: MessageEvent) => {
     let { transcriber, mode } = await getWorkerPipeline(origin);
 
     const SAMPLE_RATE = 16000;
-    // Fast contiguous non-overlapping 28s windows (eliminates duplicate work)
-    const CHUNK_SECONDS = 28;
-    const STRIDE_SECONDS = 28;
+    // Fast contiguous non-overlapping 22s windows with greedy decoding (< 1 min total)
+    const CHUNK_SECONDS = 22;
+    const STRIDE_SECONDS = 22;
     const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
     const STRIDE_SAMPLES = STRIDE_SECONDS * SAMPLE_RATE;
 
-    // On CPU WASM limit to first 84s (3 fast chunks < 1 min) while WebGPU handles up to 150s cleanly
-    const maxProcessSamples = mode === 'webgpu' ? pcm.length : Math.min(pcm.length, 84 * SAMPLE_RATE);
+    // On CPU WASM process 2 fast chunks (44s) cleanly under 1 min; WebGPU handles up to 4 chunks (88s)
+    const maxAudioSec = mode === 'webgpu' ? 88 : 44;
+    const maxProcessSamples = Math.min(pcm.length, maxAudioSec * SAMPLE_RATE);
     const totalChunks = Math.max(1, Math.ceil(maxProcessSamples / STRIDE_SAMPLES));
 
     const titleHasHebrew = /[\u0590-\u05FF]/.test(hintTitle);
@@ -316,8 +322,14 @@ self.onmessage = async (event: MessageEvent) => {
             : undefined;
 
     const rawSegments: SubtitleSegment[] = [];
+    const inferStartMs = Date.now();
+    const SOFT_INFER_DEADLINE_MS = 32000;
 
     for (let i = 0; i < totalChunks; i++) {
+      if (i > 0 && Date.now() - inferStartMs > SOFT_INFER_DEADLINE_MS) {
+        break;
+      }
+
       const startSample = i * STRIDE_SAMPLES;
       if (startSample >= maxProcessSamples) continue;
 
@@ -327,9 +339,9 @@ self.onmessage = async (event: MessageEvent) => {
       const chunkDurSec = chunkPcm.length / SAMPLE_RATE;
 
       const pct = Math.min(92, Math.max(52, Math.round(52 + ((i + 1) / totalChunks) * 40)));
-      self.postMessage({
+      postWithId({
         type: 'progress',
-        statusText: `מתמלל ${mode === 'webgpu' ? 'ב-GPU ' : ''}(חלק ${i + 1}/${totalChunks})...`,
+        statusText: `מתמלל במכשיר ${mode === 'webgpu' ? 'ב-GPU ' : ''}(חלק ${i + 1}/${totalChunks})...`,
         percent: pct,
       });
 
@@ -339,7 +351,9 @@ self.onmessage = async (event: MessageEvent) => {
 
       const decodeOptions: Record<string, any> = {
         return_timestamps: true,
-        max_new_tokens: 72,
+        max_new_tokens: 44,
+        num_beams: 1,
+        do_sample: false,
         repetition_penalty: 1.05,
         no_repeat_ngram_size: 4,
         condition_on_prev_tokens: false,
@@ -354,7 +368,6 @@ self.onmessage = async (event: MessageEvent) => {
         chunkResult = await transcriber(chunkPcm, decodeOptions);
       } catch (inferErr) {
         if (mode === 'webgpu') {
-          // Seamless automatic fallback to WASM if GPU shader execution fails mid-run
           cachedPipelinePromise = null;
           cachedBackendMode = null;
           const fallback = await getWorkerPipeline(origin, 'wasm');
@@ -387,7 +400,7 @@ self.onmessage = async (event: MessageEvent) => {
 
       if (chunkSegs.length > 0) {
         rawSegments.push(...chunkSegs);
-        self.postMessage({
+        postWithId({
           type: 'partial',
           segments: mergeOrdered(rawSegments),
           completedChunks: i + 1,
@@ -397,14 +410,14 @@ self.onmessage = async (event: MessageEvent) => {
     }
 
     const finalOrdered = mergeOrdered(rawSegments);
-    self.postMessage({
+    postWithId({
       type: 'done',
       segments: finalOrdered,
       lockedWhisperLang,
       backend: mode,
     });
   } catch (err: any) {
-    self.postMessage({
+    postWithId({
       type: 'error',
       error: err?.message || 'שגיאה בתמלול השמע ברקע',
     });
