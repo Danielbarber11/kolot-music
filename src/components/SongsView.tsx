@@ -322,6 +322,27 @@ export const SongsView: React.FC<SongsViewProps> = ({
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('terms') === 'true') {
+        setShowLegalTermsModal(true);
+      }
+    } catch {}
+  }, []);
+
+  const handleCloseLegalTerms = () => {
+    setShowLegalTermsModal(false);
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('terms') === 'true') {
+        url.searchParams.delete('terms');
+        const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+        window.history.replaceState(null, '', nextUrl);
+      }
+    } catch {}
+  };
+
   const handleAcceptTerms = async () => {
     setShowTermsModal(false);
     try {
@@ -882,7 +903,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
 
       {/* READ-ONLY TERMS OF SERVICE VIEWER */}
-      <TermsReaderModal isOpen={showLegalTermsModal} onClose={() => setShowLegalTermsModal(false)} lang={lang} />
+      <TermsReaderModal isOpen={showLegalTermsModal} onClose={handleCloseLegalTerms} lang={lang} />
 
       {/* COOKIE CONSENT BANNER */}
       <CookieBanner
