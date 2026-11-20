@@ -693,11 +693,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         }}
       />
 
-      {/* FLOATING TOP BAR - BACK BUTTON IN CLEAN SOLID DARK SURFACE */}
+      {/* FLOATING TOP BAR - FROSTED GLASS BACK BUTTON */}
       <div className="fixed top-3.5 sm:top-5 left-0 right-0 z-50 px-4 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
         <button
           onClick={handleExitPlayer}
-          className="pointer-events-auto w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-[#121216] hover:bg-[#1e1e24] shadow-xl transition-all cursor-pointer active:scale-95"
+          className="pointer-events-auto w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl transition-all cursor-pointer active:scale-95"
           title={isHe ? 'חזור לרשימת השירים' : 'Back to Songs'}
         >
           {isHe ? <ArrowRight className="w-5 h-5 text-white" /> : <ArrowLeft className="w-5 h-5 text-white" />}
@@ -709,7 +709,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
         {/* 1. COVER ARTWORK IMAGE */}
         <div
-          className="w-44 h-44 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[34vh] max-w-[34vh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-[#121216] border border-white/20 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
+          className="w-44 h-44 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[34vh] max-w-[34vh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
           style={
             extractedColor
               ? {
@@ -773,7 +773,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
             onClick={handleOpenArtistProfile}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-[#121216] hover:bg-[#1e1e24] active:scale-95 text-white border border-white/25 flex items-center justify-center p-1 transition-colors shadow-lg cursor-pointer"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center p-1 transition-all shadow-lg cursor-pointer"
             title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
           >
             {(() => {
@@ -806,7 +806,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
           <button
             onClick={() => seekRelative(-10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-[#121216] hover:bg-[#1e1e24] active:scale-95 text-white border border-white/25 flex items-center justify-center transition-colors shadow-lg cursor-pointer"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
             aria-label={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
           >
@@ -828,7 +828,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
           <button
             onClick={() => seekRelative(10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-[#121216] hover:bg-[#1e1e24] active:scale-95 text-white border border-white/25 flex items-center justify-center transition-colors shadow-lg cursor-pointer"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
             aria-label={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
           >
@@ -845,7 +845,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               }
               onToggleLike(track.id);
             }}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/25 flex items-center justify-center bg-[#121216] hover:bg-[#1e1e24] text-white transition-colors shadow-lg cursor-pointer active:scale-95"
+            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/25 flex items-center justify-center bg-white/10 hover:bg-white/20 backdrop-blur-xl text-white transition-all shadow-lg cursor-pointer active:scale-95"
             title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
           >
             <Heart
@@ -904,7 +904,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       <div className="relative z-10 max-w-xl mx-auto w-full px-4 pt-2 pb-20 space-y-5">
         {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES SAVED IN STORAGE) */}
         {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
-          <div className="p-4 sm:p-5 rounded-3xl bg-[#09090b] border border-white/20 space-y-3 shadow-2xl transition-all">
+          <div className="p-4 sm:p-5 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-3 shadow-2xl transition-all">
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
@@ -1058,8 +1058,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         )}
 
-        <div className="p-5 sm:p-6 rounded-3xl bg-[#09090b] border border-white/20 space-y-4 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+        <div className="p-5 sm:p-6 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-4 shadow-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/15 pb-3">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Music2 className="w-4 h-4 text-white" />
               <span>{isHe ? 'פרטי היצירה והזמר' : 'Track & Artist Details'}</span>
@@ -1069,7 +1069,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               {/* AI BADGE POSITIONED RIGHT NEXT TO REPORT BUTTON */}
               {track.isAiGenerated && (
                 <span
-                  className="px-2.5 py-1 rounded-full bg-[#1e162c] text-purple-200 border border-purple-400/50 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-1 shadow-md shrink-0 select-none"
+                  className="px-2.5 py-1 rounded-full bg-purple-500/20 backdrop-blur-xl text-purple-200 border border-purple-400/40 font-bold text-xs tracking-wider uppercase inline-flex items-center gap-1 shadow-md shrink-0 select-none"
                   title={isHe ? 'שיר שנוצר בבינה מלאכותית' : 'AI Generated Song'}
                 >
                   <Sparkles className="w-3.5 h-3.5 text-purple-200" />
@@ -1080,17 +1080,17 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               {/* REPORT BUTTON (🚩) */}
               <button
                 onClick={() => setIsReportModalOpen(true)}
-                className="px-3 py-1.5 rounded-full bg-[#241216] text-rose-200 border border-rose-500/45 hover:bg-[#361820] text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                className="px-3 py-1.5 rounded-full bg-rose-500/20 hover:bg-rose-500/35 backdrop-blur-xl text-rose-200 border border-rose-500/40 text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-md"
                 title={isHe ? 'דווח על שיר זה' : 'Report Song'}
               >
-                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                <ShieldAlert className="w-3.5 h-3.5 text-rose-300" />
                 <span>{isHe ? 'דווח' : 'Report'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleCopyTrackLink}
-                className="px-3 py-1.5 rounded-full bg-white text-black hover:bg-neutral-200 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow"
+                className="px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl text-white border border-white/30 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md"
                 title={isHe ? 'שתף קישור לשיר' : 'Share Song Link'}
               >
                 {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
@@ -1100,14 +1100,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
 
           {shareFeedback && !shareFeedback.copied && (
-            <div className="p-3 rounded-2xl bg-[#141418] border border-white/20 flex items-center gap-2">
+            <div className="p-3 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/20 flex items-center gap-2">
               <input
                 type="text"
                 readOnly
                 dir="ltr"
                 value={shareFeedback.url}
                 onFocus={(e) => e.currentTarget.select()}
-                className="flex-1 bg-[#09090b] border border-white/15 rounded-xl px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none"
+                className="flex-1 bg-white/10 border border-white/15 rounded-xl px-3 py-1.5 text-[11px] font-mono text-white focus:outline-none"
               />
               <button
                 type="button"
