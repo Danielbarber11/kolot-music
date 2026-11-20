@@ -1610,13 +1610,20 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       }
     }
 
-    // 2. Primary Server-Side Audio Transcription via Gemini Structured JSON SRT (gemini-4-hydrogen -> gemini-3.5-transcribe fallback)
+    // 2. Primary Server-Side Audio Transcription via Gemini Structured JSON SRT
+    // Uses fast gemini-3-flash-preview (thinkingBudget: 0) -> gemini-2.5-flash-lite -> gemini-3.5-transcribe fallback with strict timeouts
     if (!ai) {
       return res.status(503).json({
         success: false,
         error: 'שירות התמלול האוטומטי דורש הגדרת מפתח GEMINI_API_KEY או OPENAI_API_KEY בשרת.',
       });
     }
+
+    const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+      Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)),
+      ]);
 
     const base64Audio = audioBuffer.toString('base64');
     const audioPart = {
@@ -1640,70 +1647,86 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       `   - textEn (ברירת מחדל חובה): המילים באנגלית (אם השיר באנגלית - התמלול המדויק באנגלית; אם בעברית או בכל שפה אחרת - תרגום טבעי ומדויק לאנגלית).\n` +
       `אם השיר אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר segments ריק []. אל תמציא מילים או הערות.`;
 
+    const subtitleResponseSchema = {
+      type: Type.OBJECT,
+      description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
+      properties: {
+        detectedLanguageCode: { type: Type.STRING, description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
+        detectedLanguageLabel: { type: Type.STRING, description: 'שם שפת המקור בשפתה או בעברית' },
+        segments: {
+          type: Type.ARRAY,
+          description: 'רשימת כתוביות מסודרת כרונולוגית',
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              start: { type: Type.STRING, description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+              end: { type: Type.STRING, description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+              text: { type: Type.STRING, description: 'הטקסט המושר בשפת המקור' },
+              textHe: { type: Type.STRING, description: 'הטקסט בעברית' },
+              textEn: { type: Type.STRING, description: 'הטקסט באנגלית' },
+            },
+            required: ['start', 'end', 'text', 'textHe', 'textEn'],
+          },
+        },
+      },
+      required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
+    };
+
     let detectedLanguageCode = '';
     let detectedLanguageLabel = '';
     let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: {
-          parts: [{ text: structuredPrompt }, audioPart],
-        },
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
-            properties: {
-              detectedLanguageCode: { type: Type.STRING, description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
-              detectedLanguageLabel: { type: Type.STRING, description: 'שם שפת המקור בשפתה או בעברית' },
-              segments: {
-                type: Type.ARRAY,
-                description: 'רשימת כתוביות מסודרת כרונולוגית',
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    start: { type: Type.STRING, description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
-                    end: { type: Type.STRING, description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
-                    text: { type: Type.STRING, description: 'הטקסט המושר בשפת המקור' },
-                    textHe: { type: Type.STRING, description: 'הטקסט בעברית' },
-                    textEn: { type: Type.STRING, description: 'הטקסט באנגלית' },
-                  },
-                  required: ['start', 'end', 'text', 'textHe', 'textEn'],
-                },
-              },
-            },
-            required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
-          },
-        },
-      });
-      const rawJson = (response.text || '').trim();
-      if (rawJson) {
-        const parsed = JSON.parse(rawJson);
-        if (Array.isArray(parsed)) {
-          structuredItems = parsed;
-        } else if (parsed && Array.isArray(parsed.segments)) {
-          structuredItems = parsed.segments;
-          detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
-          detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
+
+    for (const candidate of [
+      { model: 'gemini-3-flash-preview', timeoutMs: 22000, config: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash-lite', timeoutMs: 14000, config: { responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+    ]) {
+      try {
+        const response = await withTimeout(
+          ai.models.generateContent({
+            model: candidate.model,
+            contents: { parts: [{ text: structuredPrompt }, audioPart] },
+            config: candidate.config as any,
+          }),
+          candidate.timeoutMs,
+          candidate.model
+        );
+        const rawJson = (response.text || '').trim();
+        if (rawJson) {
+          const parsed = JSON.parse(rawJson);
+          if (Array.isArray(parsed)) {
+            structuredItems = parsed;
+          } else if (parsed && Array.isArray(parsed.segments)) {
+            structuredItems = parsed.segments;
+            detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+            detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
+          }
+          if (structuredItems.length > 0) break;
         }
+      } catch (structErr: any) {
+        console.warn(`[Transcribe] ${candidate.model} structured fallback:`, structErr?.message || structErr);
       }
-    } catch (structErr: any) {
-      console.warn('[Transcribe] gemini-4-hydrogen structured fallback to gemini-3.5-transcribe:', structErr?.message || structErr);
     }
 
-    if (structuredItems.length > 0) {
+    const formatStructuredPayload = (
+      items: Array<{ start?: string; end?: string; startTime?: number; endTime?: number; text: string; textHe?: string; textEn?: string }>,
+      provider: string
+    ) => {
       const segments: TranscribedSegment[] = [];
       const segmentsHe: TranscribedSegment[] = [];
       const segmentsEn: TranscribedSegment[] = [];
       const segmentsOrigRaw: TranscribedSegment[] = [];
 
-      structuredItems.forEach((item, idx) => {
+      items.forEach((item, idx) => {
         const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
         if (!mainText || /^(?:\[?(?:instrumental|music|קטע אינסטרומנטלי)\]?)$/i.test(mainText)) return;
-        const startTime = Math.max(0, Number(parseTimestampToSeconds(String(item?.start || '00:00:00,000')).toFixed(2)));
-        const rawEnd = Number(parseTimestampToSeconds(String(item?.end || '')).toFixed(2));
+        const startTime =
+          typeof item.startTime === 'number'
+            ? Math.max(0, Number(item.startTime.toFixed(2)))
+            : Math.max(0, Number(parseTimestampToSeconds(String(item?.start || '00:00:00,000')).toFixed(2)));
+        const rawEnd =
+          typeof item.endTime === 'number'
+            ? Number(item.endTime.toFixed(2))
+            : Number(parseTimestampToSeconds(String(item?.end || '')).toFixed(2));
         const endTime = rawEnd > startTime ? rawEnd : Number((startTime + 3.5).toFixed(2));
 
         segments.push({ id: `gem_seg_${idx}`, startTime, endTime, text: mainText });
@@ -1727,31 +1750,37 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
         });
       });
 
-      if (segments.length > 0) {
-        const baseLang = detectedLanguageCode.split('-')[0];
-        const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
-        return res.json({
-          success: true,
-          provider: 'gemini-subtitles-srt',
-          detectedLanguageCode: detectedLanguageCode || undefined,
-          detectedLanguageLabel: detectedLanguageLabel || undefined,
-          segments,
-          segmentsHe,
-          segmentsEn,
-          ...(isOrigNonHeEn
-            ? {
-                segmentsOrig: segmentsOrigRaw,
-                lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
-              }
-            : {}),
-          lyrics: segments.map((s) => s.text).join('\n'),
-          lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
-          lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
-        });
+      if (segments.length === 0) return null;
+      const baseLang = detectedLanguageCode.split('-')[0];
+      const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
+      return {
+        success: true,
+        provider,
+        detectedLanguageCode: detectedLanguageCode || undefined,
+        detectedLanguageLabel: detectedLanguageLabel || undefined,
+        segments,
+        segmentsHe,
+        segmentsEn,
+        ...(isOrigNonHeEn
+          ? {
+              segmentsOrig: segmentsOrigRaw,
+              lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
+            }
+          : {}),
+        lyrics: segments.map((s) => s.text).join('\n'),
+        lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
+        lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
+      };
+    };
+
+    if (structuredItems.length > 0) {
+      const payload = formatStructuredPayload(structuredItems, 'gemini-subtitles-srt');
+      if (payload) {
+        return res.json(payload);
       }
     }
 
-    // 3. Fallback via gemini-3.5-transcribe if structured JSON returned empty
+    // 3. Dedicated Audio Transcription fallback via gemini-3.5-transcribe + bilingual/original enrichment
     let transcribedText = '';
     try {
       const transcribeInstruction =
@@ -1761,17 +1790,21 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
         `Format EVERY lyric line with its exact start and end timestamp like:\n` +
         `[00:08 - 00:13] First lyric line\n` +
         `If the audio has no vocals at all (purely instrumental), output NOTHING. Do not invent lyrics.`;
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-transcribe',
-        contents: { parts: [audioPart, { text: transcribeInstruction }] },
-      });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-3.5-transcribe',
+          contents: { parts: [audioPart, { text: transcribeInstruction }] },
+        }),
+        20000,
+        'gemini-3.5-transcribe'
+      );
       transcribedText = (response.text || '').trim();
     } catch (modelErr: any) {
       console.warn('[Transcribe] gemini-3.5-transcribe fallback notice:', modelErr?.message || modelErr);
     }
 
-    const segments = buildSegmentsFromTimedText(transcribedText, duration);
-    if (segments.length === 0) {
+    const baseSegments = buildSegmentsFromTimedText(transcribedText, duration);
+    if (baseSegments.length === 0) {
       return res.json({
         success: false,
         segments: [],
@@ -1779,11 +1812,59 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       });
     }
 
-    const lyrics = segments.map((s) => s.text).join('\n');
+    // Enrich transcribed lines with detectedLanguage + default Hebrew & English tracks
+    try {
+      const enrichPrompt =
+        `לפניך רשימת שורות תמלול של שיר (${baseSegments.length} שורות). ` +
+        `זהה את שפת המקור (detectedLanguageCode + detectedLanguageLabel) ותרגם את כל השורות במדויק לעברית (heLines) ולאנגלית (enLines) באותו מספר שורות בדיוק (${baseSegments.length}):\n` +
+        JSON.stringify(baseSegments.map((s) => s.text));
+      const enrichRes = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: enrichPrompt,
+          config: {
+            thinkingConfig: { thinkingBudget: 0 },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                detectedLanguageCode: { type: Type.STRING },
+                detectedLanguageLabel: { type: Type.STRING },
+                heLines: { type: Type.ARRAY, items: { type: Type.STRING } },
+                enLines: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['detectedLanguageCode', 'detectedLanguageLabel', 'heLines', 'enLines'],
+            },
+          },
+        }),
+        10000,
+        'enrich-subtitles'
+      );
+      const enrichJson = JSON.parse((enrichRes.text || '{}').trim());
+      detectedLanguageCode = String(enrichJson.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+      detectedLanguageLabel = String(enrichJson.detectedLanguageLabel || '').trim().slice(0, 48);
+      const heLines = Array.isArray(enrichJson.heLines) ? enrichJson.heLines : [];
+      const enLines = Array.isArray(enrichJson.enLines) ? enrichJson.enLines : [];
+      const enrichedPayload = formatStructuredPayload(
+        baseSegments.map((s, idx) => ({
+          startTime: s.startTime,
+          endTime: s.endTime,
+          text: s.text,
+          textHe: String(heLines[idx] || s.text),
+          textEn: String(enLines[idx] || s.text),
+        })),
+        'gemini-3.5-transcribe'
+      );
+      if (enrichedPayload) {
+        return res.json(enrichedPayload);
+      }
+    } catch {}
+
+    const lyrics = baseSegments.map((s) => s.text).join('\n');
     return res.json({
       success: true,
       provider: 'gemini-3.5-transcribe',
-      segments,
+      segments: baseSegments,
       lyrics,
     });
   } catch (err: any) {
@@ -3967,6 +4048,39 @@ app.post('/api/admin/delete-account', async (req, res) => {
       client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/artist_${cleanUid}.json` })),
       purgeOldAvatarsInR2(client, bucket, cleanUid),
     ]);
+    return res.json({ success: true, uid: cleanUid });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' });
+  }
+});
+
+app.post('/api/account/delete', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    if (!parsed?.session?.uid) {
+      return res.status(401).json({ success: false, error: 'יש להתחבר לחשבון כדי למחוק אותו.' });
+    }
+    const cleanUid = String(parsed.session.uid)
+      .replace(/^artist_/, '')
+      .replace(/[^a-zA-Z0-9_\-]/g, '')
+      .trim();
+    if (!cleanUid) {
+      return res.status(400).json({ success: false, error: 'מזהה חשבון אינו תקין.' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    await Promise.allSettled([
+      client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/${cleanUid}.json` })),
+      client.send(new DeleteObjectCommand({ Bucket: bucket, Key: `profiles/artist_${cleanUid}.json` })),
+      purgeOldAvatarsInR2(client, bucket, cleanUid),
+    ]);
+    const origin = resolveSafeAppOrigin(req);
+    const isHttps = origin.startsWith('https://');
+    res.setHeader(
+      'Set-Cookie',
+      `kolot_session=; Path=/; HttpOnly; Max-Age=0; ${isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'}`
+    );
     return res.json({ success: true, uid: cleanUid });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' });

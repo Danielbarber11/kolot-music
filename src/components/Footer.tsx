@@ -251,7 +251,7 @@ export const Footer: React.FC<FooterProps> = ({
                     <Mail className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
-                  <span className="text-[10px] text-white/40 group-hover:text-white/70">
+                  <span className="text-[10px] text-white/40 group-hover:text-white/70 truncate max-w-[140px] sm:max-w-none">
                     {contactEmail}
                   </span>
                 </button>
@@ -344,7 +344,7 @@ export const Footer: React.FC<FooterProps> = ({
               <span>© {new Date().getFullYear()} Kolot Music • קולות מוזיקה. כל הזכויות שמורות.</span>
             </div>
 
-            <div className="flex items-center gap-4 text-white/50">
+            <div className="flex flex-wrap items-center justify-center gap-x-3 sm:gap-x-4 gap-y-2 text-white/50">
               <button
                 type="button"
                 onClick={handleOpenTerms}

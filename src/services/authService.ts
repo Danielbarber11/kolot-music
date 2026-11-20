@@ -238,6 +238,34 @@ export async function logoutUser(): Promise<void> {
   setCurrentUserInternal(null);
 }
 
+export async function deleteOwnAccountInCloud(): Promise<{ success: boolean; uid?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/account/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      credentials: 'include',
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) {
+      return {
+        success: false,
+        error: data?.error || `HTTP ${res.status}`,
+      };
+    }
+    writeSessionToken(null);
+    setCurrentUserInternal(null);
+    return { success: true, uid: data.uid };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'שגיאת רשת במחיקת החשבון',
+    };
+  }
+}
+
 /**
  * Restores the user's authentic Google profile photo directly into Cloudflare R2 avatars/
  * and deletes any older avatar files for this artist.

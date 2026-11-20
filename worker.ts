@@ -1086,72 +1086,87 @@ export default {
         let detectedLanguageCode = '';
         let detectedLanguageLabel = '';
         let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
-        try {
-          const gRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-              body: JSON.stringify({
-                contents: [{ role: 'user', parts: [{ text: structuredPrompt }, { inlineData: { mimeType, data: b64 } }] }],
-                generationConfig: {
-                  thinkingConfig: { thinkingLevel: 'LOW' },
-                  responseMimeType: 'application/json',
-                  responseSchema: {
-                    type: 'OBJECT',
-                    description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
-                    properties: {
-                      detectedLanguageCode: { type: 'STRING', description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
-                      detectedLanguageLabel: { type: 'STRING', description: 'שם שפת המקור בשפתה או בעברית' },
-                      segments: {
-                        type: 'ARRAY',
-                        description: 'רשימת כתוביות מסודרת כרונולוגית',
-                        items: {
-                          type: 'OBJECT',
-                          properties: {
-                            start: { type: 'STRING', description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
-                            end: { type: 'STRING', description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
-                            text: { type: 'STRING', description: 'הטקסט המושר בשפת המקור' },
-                            textHe: { type: 'STRING', description: 'הטקסט בעברית' },
-                            textEn: { type: 'STRING', description: 'הטקסט באנגלית' },
-                          },
-                          required: ['start', 'end', 'text', 'textHe', 'textEn'],
-                        },
-                      },
-                    },
-                    required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
-                  },
+
+        const subtitleSchema = {
+          type: 'OBJECT',
+          description: 'זיהוי שפה ורשימת כתוביות מסודרת כרונולוגית',
+          properties: {
+            detectedLanguageCode: { type: 'STRING', description: 'קוד ISO-639-1 של שפת המקור המושרת בשיר' },
+            detectedLanguageLabel: { type: 'STRING', description: 'שם שפת המקור בשפתה או בעברית' },
+            segments: {
+              type: 'ARRAY',
+              description: 'רשימת כתוביות מסודרת כרונולוגית',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  start: { type: 'STRING', description: 'זמן התחלה בפורמט HH:MM:SS,mmm' },
+                  end: { type: 'STRING', description: 'זמן סיום בפורמט HH:MM:SS,mmm' },
+                  text: { type: 'STRING', description: 'הטקסט המושר בשפת המקור' },
+                  textHe: { type: 'STRING', description: 'הטקסט בעברית' },
+                  textEn: { type: 'STRING', description: 'הטקסט באנגלית' },
                 },
-              }),
-            }
-          );
-          if (gRes.ok) {
-            const gJson: any = await gRes.json();
-            const rawJson = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-            if (rawJson) {
-              const parsed = JSON.parse(rawJson);
-              if (Array.isArray(parsed)) {
-                structuredItems = parsed;
-              } else if (parsed && Array.isArray(parsed.segments)) {
-                structuredItems = parsed.segments;
-                detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
-                detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
+                required: ['start', 'end', 'text', 'textHe', 'textEn'],
+              },
+            },
+          },
+          required: ['detectedLanguageCode', 'detectedLanguageLabel', 'segments'],
+        };
+
+        for (const candidate of [
+          { model: 'gemini-3-flash-preview', timeoutMs: 22000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-2.5-flash-lite', timeoutMs: 14000, genConfig: { responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+        ]) {
+          try {
+            const gRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+                signal: AbortSignal.timeout(candidate.timeoutMs),
+                body: JSON.stringify({
+                  contents: [{ role: 'user', parts: [{ text: structuredPrompt }, { inlineData: { mimeType, data: b64 } }] }],
+                  generationConfig: candidate.genConfig,
+                }),
+              }
+            );
+            if (gRes.ok) {
+              const gJson: any = await gRes.json();
+              const rawJson = String(gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+              if (rawJson) {
+                const parsed = JSON.parse(rawJson);
+                if (Array.isArray(parsed)) {
+                  structuredItems = parsed;
+                } else if (parsed && Array.isArray(parsed.segments)) {
+                  structuredItems = parsed.segments;
+                  detectedLanguageCode = String(parsed.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+                  detectedLanguageLabel = String(parsed.detectedLanguageLabel || '').trim().slice(0, 48);
+                }
+                if (structuredItems.length > 0) break;
               }
             }
-          }
-        } catch {}
+          } catch {}
+        }
 
-        if (structuredItems.length > 0) {
+        const buildWorkerPayload = (
+          items: Array<{ start?: string; end?: string; startTime?: number; endTime?: number; text: string; textHe?: string; textEn?: string }>,
+          provider: string
+        ) => {
           const segments: any[] = [];
           const segmentsHe: any[] = [];
           const segmentsEn: any[] = [];
           const segmentsOrigRaw: any[] = [];
 
-          structuredItems.forEach((item, idx) => {
+          items.forEach((item, idx) => {
             const mainText = String(item?.text || item?.textHe || item?.textEn || '').trim();
             if (!mainText || /^(?:\[?(?:instrumental|music|קטע אינסטרומנטלי)\]?)$/i.test(mainText)) return;
-            const startTime = Math.max(0, Number(parseSrtTs(String(item?.start || '00:00:00,000')).toFixed(2)));
-            const rawEnd = Number(parseSrtTs(String(item?.end || '')).toFixed(2));
+            const startTime =
+              typeof item.startTime === 'number'
+                ? Math.max(0, Number(item.startTime.toFixed(2)))
+                : Math.max(0, Number(parseSrtTs(String(item?.start || '00:00:00,000')).toFixed(2)));
+            const rawEnd =
+              typeof item.endTime === 'number'
+                ? Number(item.endTime.toFixed(2))
+                : Number(parseSrtTs(String(item?.end || '')).toFixed(2));
             const endTime = rawEnd > startTime ? rawEnd : Number((startTime + 3.5).toFixed(2));
 
             segments.push({ id: `gem_seg_${idx}`, startTime, endTime, text: mainText });
@@ -1160,27 +1175,33 @@ export default {
             segmentsOrigRaw.push({ id: `gem_orig_${idx}`, startTime, endTime, text: mainText });
           });
 
-          if (segments.length > 0) {
-            const baseLang = detectedLanguageCode.split('-')[0];
-            const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
-            return jsonResponse({
-              success: true,
-              provider: 'gemini-subtitles-srt',
-              detectedLanguageCode: detectedLanguageCode || undefined,
-              detectedLanguageLabel: detectedLanguageLabel || undefined,
-              segments,
-              segmentsHe,
-              segmentsEn,
-              ...(isOrigNonHeEn
-                ? {
-                    segmentsOrig: segmentsOrigRaw,
-                    lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
-                  }
-                : {}),
-              lyrics: segments.map((s) => s.text).join('\n'),
-              lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
-              lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
-            });
+          if (segments.length === 0) return null;
+          const baseLang = detectedLanguageCode.split('-')[0];
+          const isOrigNonHeEn = Boolean(baseLang && baseLang !== 'he' && baseLang !== 'iw' && baseLang !== 'en');
+          return {
+            success: true,
+            provider,
+            detectedLanguageCode: detectedLanguageCode || undefined,
+            detectedLanguageLabel: detectedLanguageLabel || undefined,
+            segments,
+            segmentsHe,
+            segmentsEn,
+            ...(isOrigNonHeEn
+              ? {
+                  segmentsOrig: segmentsOrigRaw,
+                  lyricsOrig: segmentsOrigRaw.map((s) => s.text).join('\n'),
+                }
+              : {}),
+            lyrics: segments.map((s) => s.text).join('\n'),
+            lyricsHe: segmentsHe.map((s) => s.text).join('\n'),
+            lyricsEn: segmentsEn.map((s) => s.text).join('\n'),
+          };
+        };
+
+        if (structuredItems.length > 0) {
+          const payload = buildWorkerPayload(structuredItems, 'gemini-subtitles-srt');
+          if (payload) {
+            return jsonResponse(payload);
           }
         }
 
@@ -1196,6 +1217,7 @@ export default {
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+              signal: AbortSignal.timeout(20000),
               body: JSON.stringify({
                 contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
               }),
@@ -1208,6 +1230,62 @@ export default {
         } catch {}
 
         const segments = buildSegmentsFromText(textOut, duration);
+        if (segments.length > 0) {
+          try {
+            const enrichRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+                signal: AbortSignal.timeout(10000),
+                body: JSON.stringify({
+                  contents: [{
+                    role: 'user',
+                    parts: [{
+                      text:
+                        `לפניך ${segments.length} שורות תמלול של שיר. זהה את שפת המקור ותרגם לעברית (heLines) ולאנגלית (enLines) באותו אורך בדיוק:\n` +
+                        JSON.stringify(segments.map((s: any) => s.text)),
+                    }],
+                  }],
+                  generationConfig: {
+                    thinkingConfig: { thinkingBudget: 0 },
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                      type: 'OBJECT',
+                      properties: {
+                        detectedLanguageCode: { type: 'STRING' },
+                        detectedLanguageLabel: { type: 'STRING' },
+                        heLines: { type: 'ARRAY', items: { type: 'STRING' } },
+                        enLines: { type: 'ARRAY', items: { type: 'STRING' } },
+                      },
+                      required: ['detectedLanguageCode', 'detectedLanguageLabel', 'heLines', 'enLines'],
+                    },
+                  },
+                }),
+              }
+            );
+            if (enrichRes.ok) {
+              const ej: any = await enrichRes.json();
+              const parsedE = JSON.parse(String(ej?.candidates?.[0]?.content?.parts?.[0]?.text || '{}'));
+              detectedLanguageCode = String(parsedE.detectedLanguageCode || '').trim().toLowerCase().slice(0, 12);
+              detectedLanguageLabel = String(parsedE.detectedLanguageLabel || '').trim().slice(0, 48);
+              const heLines = Array.isArray(parsedE.heLines) ? parsedE.heLines : [];
+              const enLines = Array.isArray(parsedE.enLines) ? parsedE.enLines : [];
+              const enriched = buildWorkerPayload(
+                segments.map((s: any, idx: number) => ({
+                  startTime: s.startTime,
+                  endTime: s.endTime,
+                  text: s.text,
+                  textHe: String(heLines[idx] || s.text),
+                  textEn: String(enLines[idx] || s.text),
+                })),
+                'gemini-3.5-transcribe'
+              );
+              if (enriched) return jsonResponse(enriched);
+            }
+          } catch {}
+        }
+
         return jsonResponse({
           success: segments.length > 0,
           provider: 'gemini-3.5-transcribe',
@@ -2589,6 +2667,36 @@ export default {
           purgeOldAvatarsWorker(cleanUid),
         ]);
         return jsonResponse({ success: true, uid: cleanUid });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' }, 500);
+      }
+    }
+
+    // 17. Self-Service Account Deletion for logged-in user
+    if (pathname === '/api/account/delete' && request.method === 'POST') {
+      try {
+        const { sessionSecret } = getGoogleCreds();
+        const parsed = await extractWorkerSession(sessionSecret);
+        if (!parsed?.session?.uid) {
+          return jsonResponse({ success: false, error: 'יש להתחבר לחשבון כדי למחוק אותו.' }, 401);
+        }
+        const cleanUid = String(parsed.session.uid).replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+        if (!cleanUid) {
+          return jsonResponse({ success: false, error: 'מזהה חשבון אינו תקין.' }, 400);
+        }
+        await Promise.allSettled([
+          r2DeleteKey(`profiles/${cleanUid}.json`),
+          r2DeleteKey(`profiles/artist_${cleanUid}.json`),
+          purgeOldAvatarsWorker(cleanUid),
+        ]);
+        const isHttps = url.protocol === 'https:';
+        return jsonResponse(
+          { success: true, uid: cleanUid },
+          200,
+          {
+            'Set-Cookie': `kolot_session=; Path=/; HttpOnly; Max-Age=0; ${isHttps ? 'Secure; SameSite=None' : 'SameSite=Lax'}`,
+          }
+        );
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' }, 500);
       }

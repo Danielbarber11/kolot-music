@@ -816,7 +816,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
     }
 
     const controller = new AbortController();
-    const hardTimeout = setTimeout(() => controller.abort(), 52000);
+    const hardTimeout = setTimeout(() => controller.abort(), 75000);
     const onParentAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onParentAbort, { once: true });
 
@@ -841,7 +841,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
         serverRes = await fetchWithRetry(
           '/api/ai/transcribe',
           { method: 'POST', body: fd, credentials: 'include' },
-          3,
+          2,
           controller.signal
         );
       } else if (options.audioFile) {
@@ -859,7 +859,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
         serverRes = await fetchWithRetry(
           '/api/ai/transcribe',
           { method: 'POST', body: fd, credentials: 'include' },
-          3,
+          2,
           controller.signal
         );
       } else {
@@ -877,7 +877,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
               duration: detectedDuration,
             }),
           },
-          3,
+          2,
           controller.signal
         );
       }

@@ -46,6 +46,7 @@ import {
   onAuthUserChanged,
   updateCurrentAuthUserProfile,
   restoreGoogleAvatarInCloud,
+  deleteOwnAccountInCloud,
   getEffectiveUserAvatar,
   getGoogleAccountPhotoUrl,
   upgradeGooglePhotoQuality,
@@ -77,6 +78,7 @@ import {
   getArtistAccountByUid,
   saveArtistAccountToR2,
   upsertMemoryArtistProfile,
+  removeMemoryArtistProfile,
   updateMemoryTracksArtistAvatar,
 } from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
@@ -91,6 +93,7 @@ interface ArtistPortalModalProps {
   onPlayTrack?: (track: JamendoTrack) => void;
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
+  onAccountDeleted?: (deletedUid: string) => void;
 }
 
 export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
@@ -108,6 +111,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   onPlayTrack,
   onRemoveTrack,
   onArtistUpdated,
+  onAccountDeleted,
 }) => {
   const isHe = lang === 'he';
 
@@ -276,6 +280,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -680,6 +687,31 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const handleLogout = async () => {
     await logoutUser();
     setCurrentUser(null);
+    setConfirmDeleteAccount(false);
+    setDeleteAccountError(null);
+  };
+
+  const handleDeleteOwnAccount = async () => {
+    if (!currentUser || isDeletingAccount) return;
+    setDeleteAccountError(null);
+    setIsDeletingAccount(true);
+    try {
+      const deletedUid = currentUser.uid;
+      await deleteOwnAccountInCloud();
+      removeMemoryArtistProfile(deletedUid);
+      setCurrentUser(null);
+      setArtistAvatarPreview(null);
+      setArtistAvatarFile(null);
+      setConfirmDeleteAccount(false);
+      onAccountDeleted?.(deletedUid);
+      onClose();
+    } catch (err: any) {
+      setDeleteAccountError(
+        err?.message || (isHe ? 'מחיקת החשבון נכשלה. נסה שוב.' : 'Failed to delete account. Please try again.')
+      );
+    } finally {
+      setIsDeletingAccount(false);
+    }
   };
 
   const processAudioFile = (file: File) => {
@@ -1285,7 +1317,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         try {
           await Promise.race([
             autoSubPromiseRef.current,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 55000)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 76000)),
           ]);
         } finally {
           clearInterval(waitTicker);
@@ -1680,7 +1712,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     return (
                       <div
                         key={album.id}
-                        className="group relative min-w-[170px] max-w-[190px] p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/15 transition-all shadow-xl space-y-2.5 flex flex-col justify-between"
+                        className="group relative min-w-[146px] max-w-[172px] sm:min-w-[170px] sm:max-w-[190px] shrink-0 p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/15 transition-all shadow-xl space-y-2.5 flex flex-col justify-between"
                       >
                         <div
                           onClick={() => setSelectedAlbumForView(album)}
@@ -3247,22 +3279,23 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   dir={isHe ? 'rtl' : 'ltr'}
                 >
                   {/* Selector Top Bar */}
-                  <div className="h-16 px-4 sm:px-8 border-b border-white/10 flex items-center justify-between gap-4 shrink-0 bg-black">
-                    <div className="flex items-center gap-3">
+                  <div className="min-h-16 py-2.5 px-3 sm:px-8 border-b border-white/10 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 sm:gap-4 shrink-0 bg-black">
+                    <div className="flex items-center gap-2.5 sm:gap-3 order-1">
                       <button
                         type="button"
                         onClick={() => setIsAlbumSongSelectorOpen(false)}
-                        className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white flex items-center justify-center cursor-pointer transition-all"
+                        className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white flex items-center justify-center cursor-pointer transition-all shrink-0"
+                        aria-label={isHe ? 'סגור' : 'Close'}
                       >
                         <X className="w-4 h-4 text-white" />
                       </button>
-                      <h3 className="text-base sm:text-lg font-normal text-white">
+                      <h3 className="text-sm sm:text-lg font-normal text-white truncate">
                         {isHe ? 'בחירת שירים לאלבום' : 'Select Songs for Album'}
                       </h3>
                     </div>
 
                     {/* Keyboard / Search Input inside Selector */}
-                    <div className="relative flex-1 max-w-xs sm:max-w-md">
+                    <div className="relative w-full sm:w-auto sm:flex-1 sm:max-w-md order-3 sm:order-2">
                       <div className="absolute inset-y-0 start-3 flex items-center pointer-events-none text-white/50">
                         <Search className="w-4 h-4 text-white/50" />
                       </div>
@@ -3278,7 +3311,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsAlbumSongSelectorOpen(false)}
-                      className="px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black text-xs sm:text-sm font-normal cursor-pointer transition-all"
+                      className="order-2 sm:order-3 px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black text-xs sm:text-sm font-normal cursor-pointer transition-all whitespace-nowrap shrink-0"
                     >
                       {isHe ? 'אישור ובחירה' : 'Confirm'}
                     </button>
@@ -3668,6 +3701,90 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </button>
               </div>
             </form>
+
+            {/* Danger Zone: Self-Service Account Deletion */}
+            {currentUser && (
+              <div className="rounded-2xl bg-[#120b0d] border border-rose-500/25 p-5 sm:p-7 space-y-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm sm:text-base font-bold text-rose-200 flex items-center gap-2">
+                      <Trash2 className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
+                    </h3>
+                    <p className="text-xs text-neutral-400 leading-relaxed max-w-xl">
+                      {isHe
+                        ? 'מחיקת החשבון תסיר את פרופיל המשתמש והאמן שלך ותנתק אותך מהאתר לצמיתות. שירים שכבר העלית יישארו זמינים בנגן.'
+                        : 'Deleting your account permanently removes your profile and avatar and signs you out. Published tracks remain available.'}
+                    </p>
+                  </div>
+
+                  {!confirmDeleteAccount && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeleteAccountError(null);
+                        setConfirmDeleteAccount(true);
+                      }}
+                      className="self-start sm:self-auto px-5 py-2.5 rounded-full bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-200 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-2"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {deleteAccountError && (
+                  <p className="text-xs text-rose-300 bg-rose-950/60 border border-rose-500/35 px-3.5 py-2.5 rounded-xl">
+                    {deleteAccountError}
+                  </p>
+                )}
+
+                {confirmDeleteAccount && (
+                  <div className="rounded-xl bg-black/70 border border-rose-500/35 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="text-xs text-rose-100 leading-relaxed">
+                      <span className="font-bold block">
+                        {isHe ? 'האם אתה בטוח שברצונך למחוק את החשבון?' : 'Are you sure you want to delete your account?'}
+                      </span>
+                      <span className="text-neutral-400">
+                        {isHe ? 'פעולה זו אינה הפיכה ותסיים את ההתחברות שלך מיידית.' : 'This action cannot be undone and signs you out immediately.'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isDeletingAccount}
+                        onClick={() => {
+                          setConfirmDeleteAccount(false);
+                          setDeleteAccountError(null);
+                        }}
+                        className="px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-white text-xs font-medium cursor-pointer transition-colors disabled:opacity-50"
+                      >
+                        {isHe ? 'ביטול' : 'Cancel'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDeletingAccount}
+                        onClick={handleDeleteOwnAccount}
+                        className="px-5 py-2 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isDeletingAccount ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>{isHe ? 'מוחק חשבון...' : 'Deleting...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{isHe ? 'אשר מחיקת חשבון' : 'Confirm Delete'}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             </div>
           </div>
         )}

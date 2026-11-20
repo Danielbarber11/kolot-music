@@ -839,8 +839,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
       {/* FLOATING TOP NAVIGATION BAR */}
       <div className="px-3 sm:px-6 pt-2.5 pb-1 shrink-0 z-40">
-        {/* DESKTOP HEADER (sm:flex) — Logo on Right (Start in RTL), Controls on Left (End in RTL) */}
-        <header className="hidden sm:flex h-14 sm:h-15 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.7)] px-4 sm:px-7 items-center justify-between gap-4 select-none">
+        {/* DESKTOP & TABLET HEADER (sm:flex) — Logo on Right (Start in RTL), Controls on Left (End in RTL) */}
+        <header className="hidden sm:flex h-14 sm:h-15 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.7)] px-3.5 md:px-7 items-center justify-between gap-2.5 md:gap-4 select-none">
           {/* Logo (Start Side in RTL) - Sleek Metallic Heart Only */}
           <div className="flex items-center shrink-0 cursor-pointer py-1" onClick={() => {
             setSearchQuery('');
@@ -851,10 +851,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
             <Logo className="h-7 sm:h-8 md:h-8.5 w-auto" heartOnly={true} />
           </div>
 
-          {/* Controls: Search Keyboard + Favorites + Profile (End Side in RTL) */}
-          <div className="flex items-center gap-2 sm:gap-3 flex-1 max-w-2xl justify-end">
+          {/* Controls: Search Keyboard + Favorites + Accessibility + Profile (End Side in RTL) */}
+          <div className="flex items-center gap-2 md:gap-3 flex-1 max-w-2xl justify-end min-w-0">
             {/* Search Input (Keyboard) */}
-            <div className="relative flex-1 max-w-xs sm:max-w-sm">
+            <div className="relative flex-1 min-w-[130px] max-w-xs md:max-w-sm">
               <div className="absolute inset-y-0 start-3 flex items-center pointer-events-none text-white/60">
                 <Search className="w-4 h-4 text-white/60" />
               </div>
@@ -922,7 +922,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             {!authUser ? (
               <button
                 onClick={handleGoogleSignInClick}
-                className="h-9 px-4 rounded-full bg-white hover:bg-neutral-200 active:scale-95 text-black font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-[0_0_15px_rgba(255,255,255,0.2)] cursor-pointer shrink-0"
+                className="h-9 px-3 md:px-4 rounded-full bg-white hover:bg-neutral-200 active:scale-95 text-black font-bold text-xs md:text-sm flex items-center gap-2 transition-all shadow-[0_0_15px_rgba(255,255,255,0.2)] cursor-pointer shrink-0"
               >
                 <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
                   <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -930,7 +930,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
                   <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
                 </svg>
-                <span className="whitespace-nowrap">{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
+                <span className="whitespace-nowrap hidden md:inline">{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
+                <span className="whitespace-nowrap md:hidden">{isHe ? 'התחברות' : 'Sign in'}</span>
               </button>
             ) : (
               <button
@@ -953,24 +954,50 @@ export const SongsView: React.FC<SongsViewProps> = ({
           </div>
         </header>
 
-        {/* MOBILE HEADER (flex sm:hidden) — ONLY Metallic Heart Emblem at top */}
-        <header className="flex sm:hidden h-12 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_4px_20px_rgba(0,0,0,0.8)] px-4 items-center justify-center select-none cursor-pointer" onClick={() => {
-          setSearchQuery('');
-          setArtistFilter(null);
-          setSelectedGenre(null);
-          setActiveTab('all');
-        }}>
-          <Logo className="h-7 w-auto" heartOnly={true} />
+        {/* MOBILE TOP CORNERS (flex sm:hidden) — Circular Logo on start corner, Circular Accessibility on opposite corner */}
+        <header className="flex sm:hidden w-full items-center justify-between px-0.5 py-0.5 select-none">
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery('');
+              setArtistFilter(null);
+              setSelectedGenre(null);
+              setActiveTab('all');
+            }}
+            className="w-11 h-11 rounded-full bg-[#101010] border border-white/20 shadow-[0_6px_20px_rgba(0,0,0,0.85)] flex items-center justify-center cursor-pointer active:scale-95 transition-transform shrink-0"
+            title={isHe ? 'דף הבית' : 'Home'}
+            aria-label={isHe ? 'דף הבית' : 'Home'}
+          >
+            <Logo className="w-6 h-6" heartOnly={true} />
+          </button>
+
+          {onOpenAccessibility ? (
+            <button
+              type="button"
+              onClick={onOpenAccessibility}
+              className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border shadow-[0_6px_20px_rgba(0,0,0,0.85)] ${
+                activeAccessibilityCount > 0
+                  ? 'bg-white text-black border-white'
+                  : 'bg-[#101010] text-white border-white/20 hover:bg-white/15'
+              }`}
+              title={isHe ? 'נגישות' : 'Accessibility'}
+              aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
+            >
+              <AccessibilityIcon className="w-5 h-5" />
+            </button>
+          ) : (
+            <div className="w-11 h-11 shrink-0" />
+          )}
         </header>
       </div>
 
-      {/* MOBILE FLOATING BOTTOM NAVIGATION ELLIPSE / PILL BAR (sm:hidden) */}
-      <div className="fixed bottom-3 start-3 end-3 sm:hidden z-50 rounded-full bg-[#161616]/95 backdrop-blur-2xl border border-white/20 shadow-[0_12px_40px_rgba(0,0,0,0.9)] px-3 py-2 flex items-center justify-between gap-2 text-white select-none transition-all duration-300">
+      {/* MOBILE FLOATING BOTTOM NAVIGATION BAR (sm:hidden) — Profile/Sign-in + Favorites Heart + Search */}
+      <div className="fixed bottom-3 start-3 end-3 sm:hidden z-50 rounded-full bg-[#161616]/95 backdrop-blur-2xl border border-white/20 shadow-[0_12px_40px_rgba(0,0,0,0.9)] px-2.5 py-1.5 flex items-center justify-between gap-2 text-white select-none transition-all duration-300">
         {/* Mobile Profile / Google Sign-in */}
         {!authUser ? (
           <button
             onClick={handleGoogleSignInClick}
-            className="h-8.5 px-3 rounded-full bg-white hover:bg-neutral-200 active:scale-95 text-black font-bold text-[11px] flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+            className="h-10 px-3 rounded-full bg-white hover:bg-neutral-200 active:scale-95 text-black font-bold text-[11px] flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
           >
             <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
               <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -978,12 +1005,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
               <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
               <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
             </svg>
-            <span>{isHe ? 'התחברות' : 'Sign in'}</span>
+            <span className="whitespace-nowrap">{isHe ? 'התחברות' : 'Sign in'}</span>
           </button>
         ) : (
           <button
             onClick={handleProfileClick}
-            className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+            className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
             title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
           >
             {(() => {
@@ -999,47 +1026,29 @@ export const SongsView: React.FC<SongsViewProps> = ({
           </button>
         )}
 
-        {/* Mobile Favorites Button (Only visible when signed in, pure circle with white Heart only) */}
-        {authUser && (
-          <button
-            onClick={() => {
-              setActiveTab((prev) => (prev === 'favorites' ? 'all' : 'favorites'));
-            }}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
-              activeTab === 'favorites'
-                ? 'bg-white/25 text-white border-white/40 shadow-sm'
-                : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
+        {/* Mobile Favorites Heart Button (placed cleanly in the bottom bar slot) */}
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab((prev) => (prev === 'favorites' ? 'all' : 'favorites'));
+          }}
+          className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
+            activeTab === 'favorites'
+              ? 'bg-white/25 text-white border-white/40 shadow-sm'
+              : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
+          }`}
+          title={isHe ? 'מועדפים' : 'Favorites'}
+          aria-label={isHe ? 'מועדפים' : 'Favorites'}
+        >
+          <Heart
+            className={`w-4 h-4 text-white ${
+              activeTab === 'favorites' ? 'fill-white' : ''
             }`}
-            title={isHe ? 'מועדפים' : 'Favorites'}
-            aria-label={isHe ? 'מועדפים' : 'Favorites'}
-          >
-            <Heart
-              className={`w-4 h-4 text-white ${
-                activeTab === 'favorites' ? 'fill-white' : ''
-              }`}
-            />
-          </button>
-        )}
-
-        {/* Mobile Accessibility Button Right Next to Favorites Heart */}
-        {onOpenAccessibility && (
-          <button
-            type="button"
-            onClick={onOpenAccessibility}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border ${
-              activeAccessibilityCount > 0
-                ? 'bg-white text-black border-white shadow-sm'
-                : 'bg-white/10 text-white/90 hover:text-white hover:bg-white/20 border-white/15'
-            }`}
-            title={isHe ? 'נגישות' : 'Accessibility'}
-            aria-label={isHe ? 'פתח דף והגדרות נגישות' : 'Open Accessibility Settings'}
-          >
-            <AccessibilityIcon className="w-4 h-4" />
-          </button>
-        )}
+          />
+        </button>
 
         {/* Mobile Search Input Keyboard */}
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <div className="absolute inset-y-0 start-2.5 flex items-center pointer-events-none text-white/60">
             <Search className="w-3.5 h-3.5 text-white/60" />
           </div>
@@ -1048,7 +1057,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={isHe ? 'חיפוש שירים...' : 'Search songs...'}
-            className="w-full h-9 ps-8 pe-7 bg-white/10 hover:bg-white/15 focus:bg-white/20 focus:outline-none focus:ring-1 focus:ring-white/40 text-xs text-white placeholder-white/50 rounded-full border border-white/20 backdrop-blur-md transition-all"
+            className="w-full h-10 ps-8 pe-7 bg-white/10 hover:bg-white/15 focus:bg-white/20 focus:outline-none focus:ring-1 focus:ring-white/40 text-xs text-white placeholder-white/50 rounded-full border border-white/20 backdrop-blur-md transition-all"
           />
           {searchQuery && (
             <button
@@ -1369,7 +1378,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       <div className="flex-1 text-center md:text-start space-y-3">
                         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-[11px] sm:text-xs font-medium text-white/90 backdrop-blur-md shadow-sm">
                           <Sparkles className="w-3.5 h-3.5 text-white" />
-                          <span>{isHe ? 'בחירת העורכים • שיר השבוע' : "Editor's Choice • Track of the Week"}</span>
+                          <span>{isHe ? 'שיר השבוע' : 'Track of the Week'}</span>
                         </div>
 
                         <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black text-white tracking-tight leading-tight">
@@ -1630,7 +1639,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       key={track.id}
                       onClick={() => openSongPlayer(track)}
                       onMouseEnter={() => prewarmTrackColor(track)}
-                      className="group relative w-44 sm:w-48 shrink-0 p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                      className="group relative w-36 sm:w-44 md:w-48 shrink-0 p-2.5 sm:p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                     >
                       <div>
                         {/* 1:1 Aspect ratio cover */}
@@ -1733,7 +1742,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <div
                           key={album.id}
                           onClick={() => setSelectedAlbum(album)}
-                          className="group relative w-44 sm:w-48 shrink-0 p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                          className="group relative w-36 sm:w-44 md:w-48 shrink-0 p-2.5 sm:p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                         >
                           <div>
                             {/* Album Cover Art */}
@@ -1813,7 +1822,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <div
                           key={artist.uid || artist.name || idx}
                           onClick={() => openArtistProfile(artist.name, artist.uid)}
-                          className="group w-36 sm:w-40 shrink-0 p-3.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                          className="group w-32 sm:w-36 md:w-40 shrink-0 p-3 sm:p-3.5 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col items-center border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                         >
                           {/* Circular Avatar */}
                           <div className="relative aspect-square w-full rounded-full overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
@@ -1857,7 +1866,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       key={track.id}
                       onClick={() => openSongPlayer(track)}
                       onMouseEnter={() => prewarmTrackColor(track)}
-                      className="group relative w-44 sm:w-48 shrink-0 p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                      className="group relative w-36 sm:w-44 md:w-48 shrink-0 p-2.5 sm:p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.09] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/25 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
                     >
                       <div>
                         <div className="relative aspect-square w-full rounded-[8px] overflow-hidden mb-3 bg-white/5 shadow-sm border border-white/10">
@@ -2223,6 +2232,20 @@ export const SongsView: React.FC<SongsViewProps> = ({
         }}
         allTracks={allTracks}
         onPlayTrack={(track) => openSongPlayer(track)}
+        onAccountDeleted={(deletedUid) => {
+          const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
+          removeMemoryArtistProfile(deletedUid);
+          setAuthUser(null);
+          setActiveArtistProfile(null);
+          setAllArtists((prev) => {
+            const next = prev.filter((a) => {
+              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+              return aUid !== cleanDeleted;
+            });
+            onArtistsSync?.(next);
+            return next;
+          });
+        }}
         onRemoveTrack={async (trackId) => {
           markSongAsDeleted(trackId);
           setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
