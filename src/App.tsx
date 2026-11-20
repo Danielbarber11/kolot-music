@@ -10,6 +10,7 @@ import {
   getCachedArtistProfiles,
   getCachedAlbums,
   incrementTrackViewInMemory,
+  TRACK_SUBTITLES_UPDATED_EVENT,
 } from './services/multiMusicService';
 import { getStreamingMediaUrl, incrementTrackViewsInCloud, fetchSingleTrackFromCloud } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
@@ -240,9 +241,22 @@ export default function App() {
     };
     window.addEventListener('popstate', handlePopState);
 
+    const handleSubtitlesUpdated = (ev: Event) => {
+      const updated = (ev as CustomEvent<JamendoTrack>)?.detail;
+      if (!updated?.id || !active) return;
+      setAllTracks((prev) =>
+        prev.some((t) => t.id === updated.id)
+          ? prev.map((t) => (t.id === updated.id ? { ...t, ...updated } : t))
+          : prev
+      );
+      setActivePlayerTrack((cur) => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
+    };
+    window.addEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
+
     return () => {
       active = false;
       window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
     };
   }, []);
 

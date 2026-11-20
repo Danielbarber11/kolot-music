@@ -232,6 +232,11 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         detectedLanguageCode: existing.detectedLanguageCode || t.detectedLanguageCode,
         detectedLanguageLabel: existing.detectedLanguageLabel || t.detectedLanguageLabel,
         hasWhisperSubtitles: !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
+        subtitlesIncomplete:
+          existing.subtitlesIncomplete === false || t.subtitlesIncomplete === false
+            ? false
+            : !!(existing.subtitlesIncomplete || t.subtitlesIncomplete),
+        subtitlesCompletedUpTo: Math.max(existing.subtitlesCompletedUpTo || 0, t.subtitlesCompletedUpTo || 0) || undefined,
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
         viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
       };
@@ -274,6 +279,8 @@ export function syncTrackViewFromServer(trackId: string, serverViewsCount: numbe
   } catch {}
 }
 
+export const TRACK_SUBTITLES_UPDATED_EVENT = 'kolot:track-subtitles-updated';
+
 export function syncTrackSubtitlesInMemory(updatedTrack: JamendoTrack): void {
   if (!updatedTrack?.id) return;
   const applySubs = (t: JamendoTrack): JamendoTrack => ({
@@ -288,11 +295,14 @@ export function syncTrackSubtitlesInMemory(updatedTrack: JamendoTrack): void {
     lyricsOrig: updatedTrack.lyricsOrig ?? t.lyricsOrig,
     detectedLanguageCode: updatedTrack.detectedLanguageCode ?? t.detectedLanguageCode,
     detectedLanguageLabel: updatedTrack.detectedLanguageLabel ?? t.detectedLanguageLabel,
+    subtitlesIncomplete: updatedTrack.subtitlesIncomplete ?? t.subtitlesIncomplete,
+    subtitlesCompletedUpTo: Math.max(Number(t.subtitlesCompletedUpTo || 0), Number(updatedTrack.subtitlesCompletedUpTo || 0)) || undefined,
     hasWhisperSubtitles: !!(
       updatedTrack.subtitleSegments?.length ||
       updatedTrack.subtitleSegmentsHe?.length ||
       updatedTrack.subtitleSegmentsEn?.length ||
-      updatedTrack.subtitleSegmentsOrig?.length
+      updatedTrack.subtitleSegmentsOrig?.length ||
+      t.hasWhisperSubtitles
     ),
   });
   memorySessionTracks = memorySessionTracks.map((t) => (t.id === updatedTrack.id ? applySubs(t) : t));
@@ -302,6 +312,12 @@ export function syncTrackSubtitlesInMemory(updatedTrack: JamendoTrack): void {
       saveCachedCloudTracks(cached.map((t) => (t.id === updatedTrack.id ? applySubs(t) : t)));
     }
   } catch {}
+  if (typeof window !== 'undefined') {
+    try {
+      const mergedTrack = memorySessionTracks.find((t) => t.id === updatedTrack.id) || updatedTrack;
+      window.dispatchEvent(new CustomEvent(TRACK_SUBTITLES_UPDATED_EVENT, { detail: mergedTrack }));
+    } catch {}
+  }
 }
 
 export function getSavedRepoTracks(): JamendoTrack[] {

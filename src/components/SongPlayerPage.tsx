@@ -32,16 +32,31 @@ import {
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveGeneratedSubtitlesToCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
+import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
 import { trackEvent } from '../services/analyticsService';
 import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, removeMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
-import { transcribeAudioOnDevice } from '../services/onDeviceWhisperService';
+import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
-const activePlayerSubJobs = new Map<string, Promise<JamendoTrack | null>>();
-const attemptedEmptyTrackIds = new Set<string>();
-
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
+
+const isRtlSubtitleText = (text: string, subLang: 'he' | 'en' | 'orig'): boolean => {
+  const rtlCount = (text.match(/[\u0590-\u05FF\u0600-\u06FF]/g) || []).length;
+  const latinCount = (text.match(/[A-Za-z]/g) || []).length;
+  if (subLang === 'en') {
+    return rtlCount > 0 && latinCount === 0;
+  }
+  if (rtlCount === 0 && latinCount > 0) return false;
+  if (subLang === 'he') {
+    return rtlCount >= latinCount;
+  }
+  return rtlCount > latinCount;
+};
+
+const formatClockTime = (seconds: number): string => {
+  const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  return `${Math.floor(safe / 60)}:${Math.floor(safe % 60).toString().padStart(2, '0')}`;
+};
 
 const SkipBack10Icon: React.FC<{ className?: string }> = ({ className = 'w-6 h-6' }) => (
   <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
@@ -168,6 +183,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const playerScrollRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
+  const progressFillRef = useRef<HTMLDivElement>(null);
+  const elapsedTimeRef = useRef<HTMLSpanElement>(null);
+  const lastReactTimeSyncRef = useRef<number>(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(track.duration || 180);
@@ -236,39 +254,54 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
     if (!track.id) return;
     let cancelled = false;
+
+    const applyFreshTrackSubs = (freshTrack: JamendoTrack) => {
+      if (cancelled || freshTrack.id !== track.id) return;
+      const freshHe = freshTrack.subtitleSegmentsHe || freshTrack.subtitleSegments;
+      const freshEn = freshTrack.subtitleSegmentsEn;
+      const freshOrig = freshTrack.subtitleSegmentsOrig;
+      const freshHasSubs = !!(
+        freshHe?.length ||
+        freshEn?.length ||
+        freshOrig?.length ||
+        freshTrack.lyricsHe?.trim() ||
+        freshTrack.lyricsEn?.trim() ||
+        freshTrack.lyricsOrig?.trim() ||
+        freshTrack.lyrics?.trim()
+      );
+      if (freshHasSubs) {
+        setWhisperSegmentsHe(freshHe);
+        setWhisperSegmentsEn(freshEn);
+        setWhisperSegmentsOrig(freshOrig);
+        setWhisperLyricsHe(freshTrack.lyricsHe || freshTrack.lyrics);
+        setWhisperLyricsEn(freshTrack.lyricsEn);
+        setWhisperLyricsOrig(freshTrack.lyricsOrig);
+        setDetectedLangLabel(freshTrack.detectedLanguageLabel);
+        if (!freshHe?.length && freshEn?.length) {
+          setSubtitleLang('en');
+        }
+      }
+    };
+
+    const unsubLive = subscribeTrackSubtitles(track.id, (updatedTrack) => {
+      applyFreshTrackSubs(updatedTrack);
+    });
+
     fetchSingleTrackFromCloud(track.id)
       .then((freshTrack) => {
         if (cancelled || !freshTrack || freshTrack.id !== track.id) return;
-        const freshHe = freshTrack.subtitleSegmentsHe || freshTrack.subtitleSegments;
-        const freshEn = freshTrack.subtitleSegmentsEn;
-        const freshOrig = freshTrack.subtitleSegmentsOrig;
-        const freshHasSubs = !!(
-          freshHe?.length ||
-          freshEn?.length ||
-          freshOrig?.length ||
-          freshTrack.lyricsHe?.trim() ||
-          freshTrack.lyricsEn?.trim() ||
-          freshTrack.lyricsOrig?.trim() ||
-          freshTrack.lyrics?.trim()
-        );
-        if (freshHasSubs) {
-          syncTrackSubtitlesInMemory(freshTrack);
-          setWhisperSegmentsHe(freshHe);
-          setWhisperSegmentsEn(freshEn);
-          setWhisperSegmentsOrig(freshOrig);
-          setWhisperLyricsHe(freshTrack.lyricsHe || freshTrack.lyrics);
-          setWhisperLyricsEn(freshTrack.lyricsEn);
-          setWhisperLyricsOrig(freshTrack.lyricsOrig);
-          setDetectedLangLabel(freshTrack.detectedLanguageLabel);
-          if (!freshHe?.length && freshEn?.length) {
-            setSubtitleLang('en');
-          }
+        syncTrackSubtitlesInMemory(freshTrack);
+        applyFreshTrackSubs(freshTrack);
+        // Collaborative auto-resume if another user left incomplete subtitles OR track still lacks subtitles
+        if (!freshTrack.subtitlesDisabled) {
+          void ensureTrackSubtitlesInBackground(freshTrack, isHe ? 'he' : 'en');
         }
       })
       .catch(() => {});
 
     return () => {
       cancelled = true;
+      unsubLive();
     };
   }, [
     track.id,
@@ -361,102 +394,30 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   }, [effectiveAudioUrl]);
 
-  // Silent background subtitle fallback when playing a song that has no saved subtitles yet.
-  // Nothing appears in the player while generating; subtitles render ONLY after R2 storage confirms persistence.
+  // Collaborative global background subtitle runner: starts when track plays if missing or incomplete in R2,
+  // and keeps running even after the user exits this player screen so R2 receives full-song subtitles!
   useEffect(() => {
     if (!isPlaying || !track.id || !effectiveAudioUrl || track.subtitlesDisabled) return;
-    const alreadyHasSubtitles = !!(
-      whisperSegmentsHe?.length ||
-      whisperSegmentsEn?.length ||
-      whisperSegmentsOrig?.length ||
-      whisperLyricsHe?.trim() ||
-      whisperLyricsEn?.trim() ||
-      whisperLyricsOrig?.trim() ||
-      track.subtitleSegments?.length ||
-      track.subtitleSegmentsHe?.length ||
-      track.subtitleSegmentsEn?.length ||
-      track.subtitleSegmentsOrig?.length ||
-      track.lyrics?.trim() ||
-      track.lyricsHe?.trim() ||
-      track.lyricsEn?.trim() ||
-      track.lyricsOrig?.trim()
-    );
-    if (alreadyHasSubtitles || attemptedEmptyTrackIds.has(track.id)) return;
-
-    let cancelled = false;
-    const targetTrackId = track.id;
-
-    let job = activePlayerSubJobs.get(targetTrackId);
-    if (!job) {
-      job = (async (): Promise<JamendoTrack | null> => {
-        try {
-          const genRes = await transcribeAudioOnDevice({
-            audioUrl: effectiveAudioUrl,
-            trackDuration: track.duration || duration || 180,
-            hintTitle: track.name,
-            language: isHe ? 'he' : 'en',
-          });
-          if (!genRes.success || !genRes.segments || genRes.segments.length === 0) {
-            attemptedEmptyTrackIds.add(targetTrackId);
-            return null;
-          }
-          const savedTrack = await saveGeneratedSubtitlesToCloud(targetTrackId, {
-            segments: genRes.segments,
-            segmentsHe: genRes.segmentsHe,
-            segmentsEn: genRes.segmentsEn,
-            segmentsOrig: genRes.segmentsOrig,
-            lyrics: genRes.lyrics,
-            lyricsHe: genRes.lyricsHe,
-            lyricsEn: genRes.lyricsEn,
-            lyricsOrig: genRes.lyricsOrig,
-            detectedLanguageCode: genRes.detectedLanguageCode,
-            detectedLanguageLabel: genRes.detectedLanguageLabel,
-          });
-          if (!savedTrack) {
-            return null;
-          }
-          syncTrackSubtitlesInMemory(savedTrack);
-          return savedTrack;
-        } catch {
-          return null;
-        } finally {
-          activePlayerSubJobs.delete(targetTrackId);
-        }
-      })();
-      activePlayerSubJobs.set(targetTrackId, job);
-    }
-
-    job.then((savedTrack) => {
-      if (cancelled || !savedTrack || savedTrack.id !== track.id) return;
-      const savedHe = savedTrack.subtitleSegmentsHe || savedTrack.subtitleSegments;
-      const savedEn = savedTrack.subtitleSegmentsEn;
-      const savedOrig = savedTrack.subtitleSegmentsOrig;
-      setWhisperSegmentsHe(savedHe);
-      setWhisperSegmentsEn(savedEn);
-      setWhisperSegmentsOrig(savedOrig);
-      setWhisperLyricsHe(savedTrack.lyricsHe || savedTrack.lyrics);
-      setWhisperLyricsEn(savedTrack.lyricsEn);
-      setWhisperLyricsOrig(savedTrack.lyricsOrig);
-      setDetectedLangLabel(savedTrack.detectedLanguageLabel);
-      if (!savedHe?.length && savedEn?.length) {
-        setSubtitleLang('en');
-      }
-    });
-
-    return () => {
-      cancelled = true;
+    const trackSnapshot: JamendoTrack = {
+      ...track,
+      audioUrl: effectiveAudioUrl,
+      duration: track.duration || duration || 180,
+      subtitleSegments: activeSegments || track.subtitleSegments,
+      subtitleSegmentsHe: whisperSegmentsHe || track.subtitleSegmentsHe,
+      subtitleSegmentsEn: whisperSegmentsEn || track.subtitleSegmentsEn,
+      subtitleSegmentsOrig: whisperSegmentsOrig || track.subtitleSegmentsOrig,
+      lyricsHe: whisperLyricsHe || track.lyricsHe,
+      lyricsEn: whisperLyricsEn || track.lyricsEn,
+      lyricsOrig: whisperLyricsOrig || track.lyricsOrig,
     };
+    void ensureTrackSubtitlesInBackground(trackSnapshot, isHe ? 'he' : 'en');
   }, [
     isPlaying,
     track.id,
     track.subtitlesDisabled,
+    track.subtitlesIncomplete,
+    track.subtitlesCompletedUpTo,
     effectiveAudioUrl,
-    whisperSegmentsHe,
-    whisperSegmentsEn,
-    whisperSegmentsOrig,
-    whisperLyricsHe,
-    whisperLyricsEn,
-    whisperLyricsOrig,
   ]);
 
   const togglePlayPause = () => {
@@ -495,13 +456,26 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
   }, []);
 
+  const syncProgressDomImmediate = (timeSec: number, durSec: number) => {
+    const safeDur = durSec > 0 && Number.isFinite(durSec) ? durSec : 1;
+    const pct = Math.min(100, Math.max(0, (timeSec / safeDur) * 100));
+    if (progressFillRef.current) {
+      progressFillRef.current.style.width = `${pct}%`;
+    }
+    if (elapsedTimeRef.current) {
+      elapsedTimeRef.current.textContent = formatClockTime(timeSec);
+    }
+  };
+
   const seekRelative = (seconds: number) => {
     if (audioRef.current) {
+      const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
       const targetTime = Math.max(
         0,
-        Math.min(audioRef.current.duration || duration, audioRef.current.currentTime + seconds)
+        Math.min(effectiveDur, audioRef.current.currentTime + seconds)
       );
       audioRef.current.currentTime = targetTime;
+      syncProgressDomImmediate(targetTime, effectiveDur);
       setCurrentTime(targetTime);
     }
   };
@@ -513,7 +487,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (width <= 0) return;
     const clickX = Math.max(0, Math.min(width, clientX - rect.left));
     const ratio = clickX / width;
-    const newTime = ratio * (duration || 1);
+    const effectiveDur = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : (duration || 1);
+    const newTime = ratio * effectiveDur;
+    syncProgressDomImmediate(newTime, effectiveDur);
     setCurrentTime(newTime);
     if (audioRef.current) {
       audioRef.current.currentTime = newTime;
@@ -616,23 +592,39 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   const requestRef = useRef<number | null>(null);
 
-  const updateProgress = () => {
-    if (audioRef.current && isPlaying && !isScrubbing) {
-      setCurrentTime(audioRef.current.currentTime);
-      requestRef.current = requestAnimationFrame(updateProgress);
-    }
-  };
-
   useEffect(() => {
+    let active = true;
+    const tick = (nowMs: number) => {
+      if (!active) return;
+      const audio = audioRef.current;
+      if (audio && !isScrubbing) {
+        const audioDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : duration;
+        const audioCur = audio.currentTime || 0;
+        syncProgressDomImmediate(audioCur, audioDur);
+        if (nowMs - lastReactTimeSyncRef.current >= 75) {
+          lastReactTimeSyncRef.current = nowMs;
+          setCurrentTime(audioCur);
+        }
+      }
+      if (isPlaying && !isScrubbing) {
+        requestRef.current = requestAnimationFrame(tick);
+      }
+    };
+
     if (isPlaying && !isScrubbing) {
-      requestRef.current = requestAnimationFrame(updateProgress);
+      requestRef.current = requestAnimationFrame(tick);
     } else if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
+      requestRef.current = null;
     }
     return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      active = false;
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+        requestRef.current = null;
+      }
     };
-  }, [isPlaying, isScrubbing]);
+  }, [isPlaying, isScrubbing, duration]);
 
   return (
     <motion.div
@@ -674,8 +666,38 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         src={effectiveAudioUrl}
         preload="auto"
         onLoadedMetadata={() => {
-          if (audioRef.current?.duration) {
+          if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
+          }
+        }}
+        onDurationChange={() => {
+          if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
+            setDuration(audioRef.current.duration);
+          }
+        }}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onTimeUpdate={() => {
+          if (audioRef.current && !isScrubbing) {
+            const t = audioRef.current.currentTime;
+            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+            syncProgressDomImmediate(t, d);
+          }
+        }}
+        onSeeking={() => {
+          if (audioRef.current) {
+            const t = audioRef.current.currentTime;
+            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+            syncProgressDomImmediate(t, d);
+            setCurrentTime(t);
+          }
+        }}
+        onSeeked={() => {
+          if (audioRef.current) {
+            const t = audioRef.current.currentTime;
+            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+            syncProgressDomImmediate(t, d);
+            setCurrentTime(t);
           }
         }}
         onEnded={() => {
@@ -747,7 +769,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           >
             <div className="w-full h-2 group-hover:h-2.5 rounded-full bg-white/20 relative shadow-inner overflow-visible">
               <div
-                className="h-full bg-white rounded-full relative"
+                ref={progressFillRef}
+                className="h-full bg-white rounded-full relative will-change-[width]"
                 style={{ width: `${progressPercent}%` }}
               >
                 <div className="w-4 h-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9),0_2px_4px_rgba(0,0,0,0.5)] absolute top-1/2 -translate-y-1/2 left-full -translate-x-1/2 group-hover:scale-125 transition-transform duration-100 ring-2 ring-black/10" />
@@ -755,12 +778,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           </div>
 
-          <div className="flex justify-between text-xs font-mono font-bold text-white/90 px-1 select-none">
-            <span>
-              {Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}
+          <div dir="ltr" className="flex justify-between text-xs font-mono font-bold text-white/90 px-1 select-none">
+            <span ref={elapsedTimeRef}>
+              {formatClockTime(currentTime)}
             </span>
             <span>
-              {Math.floor(duration / 60)}:{(Math.floor(duration % 60)).toString().padStart(2, '0')}
+              {formatClockTime(duration)}
             </span>
           </div>
         </div>
@@ -915,13 +938,23 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                     <h3 className="text-sm font-extrabold text-white flex items-center gap-2 truncate">
                       <span>{isHe ? 'כתוביות ומילות השיר' : 'Subtitles & Lyrics'}</span>
                     </h3>
-                    {!isLyricsExpanded && (
-                      <p className="text-xs text-white/80 truncate max-w-[220px] sm:max-w-[320px] pt-0.5">
-                        {(activeLineIndex >= 0 && syncedLyrics.lines[activeLineIndex]
+                    {!isLyricsExpanded && (() => {
+                      const previewTxt =
+                        (activeLineIndex >= 0 && syncedLyrics.lines[activeLineIndex]
                           ? syncedLyrics.lines[activeLineIndex].words.map((w) => w.text).join(' ')
-                          : syncedLyrics.previewText) || (isHe ? 'לחץ להצגה' : 'Click to view')}
-                      </p>
-                    )}
+                          : syncedLyrics.previewText) || (isHe ? 'לחץ להצגה' : 'Click to view');
+                      const previewRtl = isRtlSubtitleText(previewTxt, subtitleLang);
+                      return (
+                        <p
+                          dir={previewRtl ? 'rtl' : 'ltr'}
+                          className={`text-xs text-white/80 truncate max-w-[220px] sm:max-w-[320px] pt-0.5 ${
+                            previewRtl ? 'text-right' : 'text-left'
+                          }`}
+                        >
+                          {previewTxt}
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -1004,13 +1037,17 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                       const isLineActive = lIdx === activeLineIndex;
                       const mm = Math.floor(line.startTime / 60);
                       const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
+                      const lineIsRtl = isRtlSubtitleText(line.text, subtitleLang);
 
                       return (
                         <div
                           key={line.id}
+                          dir={lineIsRtl ? 'rtl' : 'ltr'}
                           onClick={() => {
                             if (audioRef.current) {
+                              const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
                               audioRef.current.currentTime = line.startTime;
+                              syncProgressDomImmediate(line.startTime, effectiveDur);
                               setCurrentTime(line.startTime);
                             }
                           }}
@@ -1023,14 +1060,19 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                           <span className="text-[10px] font-mono text-white/70 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
                             {mm}:{ss}
                           </span>
-                          <div className="flex flex-wrap items-center gap-1.5 flex-1">
+                          <div
+                            dir={lineIsRtl ? 'rtl' : 'ltr'}
+                            className={`flex flex-wrap items-center justify-start gap-1.5 flex-1 ${
+                              lineIsRtl ? 'text-right' : 'text-left'
+                            }`}
+                          >
                             {line.words.map((w, wIdx) => {
                               const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
 
                               return (
                                 <span
                                   key={wIdx}
-                                  className={`text-xs sm:text-sm transition-all duration-150 ${
+                                  className={`text-xs sm:text-sm transition-all duration-100 ${
                                     isWordActive
                                       ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
                                       : 'text-white font-medium hover:text-white/80'

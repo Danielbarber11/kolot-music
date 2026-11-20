@@ -21,20 +21,37 @@ export interface SynchronizedLyrics {
   isWhisperSynced?: boolean;
 }
 
-function buildWordsForSegment(text: string, startTime: number, endTime: number): LyricWord[] {
+function estimateFallbackWordWeight(word: string): number {
+  const letters = word.replace(/[^\p{L}]/gu, '');
+  if (!letters) return 0.5;
+  const vowels = letters.match(/[aeiouyאאהוי]/gi);
+  const syllables = Math.max(1, vowels ? vowels.length : Math.ceil(letters.length / 2.6));
+  const lengthBoost = letters.length <= 2 ? 0.65 : letters.length >= 6 ? 1.2 : 1.0;
+  return (0.45 + syllables * 0.42 + Math.min(10, letters.length) * 0.1) * lengthBoost;
+}
+
+export function buildWordsForSegment(text: string, startTime: number, endTime: number): LyricWord[] {
   const clean = sanitizeSubtitleLettersOnly(text);
   const wordsRaw = clean.split(/\s+/).filter((w) => w.length > 0);
-  const wordCount = Math.max(1, wordsRaw.length);
-  const span = Math.max(0.5, endTime - startTime);
-  const timePerWord = span / wordCount;
+  if (wordsRaw.length === 0) return [];
+  const span = Math.max(0.45, endTime - startTime);
+  if (wordsRaw.length === 1) {
+    return [{ text: wordsRaw[0], startTime, endTime: startTime + span }];
+  }
 
-  return wordsRaw.map((wordStr, wIdx) => {
-    const wStart = startTime + wIdx * timePerWord;
-    const wEnd = wStart + timePerWord;
+  const weights = wordsRaw.map(estimateFallbackWordWeight);
+  const totalWeight = weights.reduce((a, b) => a + b, 0) || wordsRaw.length;
+  let cursor = startTime;
+
+  return wordsRaw.map((wordStr, idx) => {
+    const share = (weights[idx] / totalWeight) * span;
+    const wStart = cursor;
+    const wEnd = idx === wordsRaw.length - 1 ? startTime + span : wStart + share;
+    cursor = wEnd;
     return {
       text: wordStr,
-      startTime: wStart,
-      endTime: wEnd,
+      startTime: Number(wStart.toFixed(2)),
+      endTime: Number(wEnd.toFixed(2)),
     };
   });
 }

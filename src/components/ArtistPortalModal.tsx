@@ -64,7 +64,16 @@ import {
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { parseSubtitleFileContent } from '../aiLyricsGenerator';
-import { sanitizeSubtitleLettersOnly, generateSubtitlesWithGeminiMethod, transcribeAudioOnDevice, GeminiSubtitlesResult } from '../services/onDeviceWhisperService';
+import { sanitizeSubtitleLettersOnly, GeminiSubtitlesResult } from '../services/onDeviceWhisperService';
+import {
+  startUploadPrefetchJob,
+  getUploadPrefetchJob,
+  attachUploadJobToPublishedTrack,
+  stopUploadPrefetchJob,
+  startProgressiveTrackSubtitleJob,
+  ensureTrackSubtitlesInBackground,
+  SubtitleDraftSnapshot,
+} from '../services/backgroundSubtitleManager';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
@@ -198,8 +207,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const uploadParsedSourceRef = useRef<string>('');
   const autoSubAbortRef = useRef<AbortController | null>(null);
   const autoSubJobIdRef = useRef<number>(0);
-  const autoSubPromiseRef = useRef<Promise<GeminiSubtitlesResult | null> | null>(null);
-  const autoSubResultRef = useRef<GeminiSubtitlesResult | null>(null);
+  const autoSubPromiseRef = useRef<Promise<SubtitleDraftSnapshot | null> | null>(null);
+  const autoSubResultRef = useRef<SubtitleDraftSnapshot | null>(null);
+  const uploadJobKeyRef = useRef<string>('');
+  const includeSubtitlesRef = useRef<boolean>(true);
   const audioDurationRef = useRef<number>(180);
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
   const [genreProgressText, setGenreProgressText] = useState('');
@@ -310,51 +321,68 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    includeSubtitlesRef.current = includeSubtitles;
+  }, [includeSubtitles]);
+
   const stopSilentAutoSubtitles = () => {
     autoSubJobIdRef.current += 1;
     autoSubAbortRef.current?.abort();
     autoSubAbortRef.current = null;
     autoSubPromiseRef.current = null;
     autoSubResultRef.current = null;
+    if (uploadJobKeyRef.current) {
+      stopUploadPrefetchJob(uploadJobKeyRef.current);
+      uploadJobKeyRef.current = '';
+    }
+  };
+
+  const applyDraftSnapshotToUploadState = (snap: SubtitleDraftSnapshot) => {
+    if (!includeSubtitlesRef.current) return;
+    autoSubResultRef.current = snap;
+    if (snap.segments.length > 0) {
+      setWhisperDraftSegments(snap.segments);
+      setWhisperDraftSegmentsHe(snap.segmentsHe);
+      setWhisperDraftSegmentsEn(snap.segmentsEn);
+      setWhisperDraftSegmentsOrig(snap.segmentsOrig);
+      setWhisperDraftLyricsHe(snap.lyricsHe);
+      setWhisperDraftLyricsEn(snap.lyricsEn);
+      setWhisperDraftLyricsOrig(snap.lyricsOrig || '');
+      setDetectedSubLangCode(snap.detectedLanguageCode);
+      setDetectedSubLangLabel(snap.detectedLanguageLabel);
+      const primaryText = snap.lyricsHe || snap.lyricsEn || snap.lyrics || '';
+      if (primaryText) {
+        setLyricsInput(primaryText);
+        uploadParsedSourceRef.current = primaryText.trim();
+      }
+    }
   };
 
   const startSilentAutoSubtitles = (
     file?: File | null,
     urlFallback?: string,
     titleHint?: string
-  ): Promise<GeminiSubtitlesResult | null> => {
+  ): Promise<SubtitleDraftSnapshot | null> => {
     stopSilentAutoSubtitles();
     if (!file && !urlFallback) return Promise.resolve(null);
 
     const jobId = ++autoSubJobIdRef.current;
-    const controller = new AbortController();
-    autoSubAbortRef.current = controller;
+    const key = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    uploadJobKeyRef.current = key;
 
-    const promise = (async (): Promise<GeminiSubtitlesResult | null> => {
-      try {
-        const res = await generateSubtitlesWithGeminiMethod({
-          audioFile: file || undefined,
-          audioUrl: !file ? urlFallback : undefined,
-          duration: audioDurationRef.current || 180,
-          songTitle: titleHint || songTitle.trim(),
-          artistName: performingArtistInput.trim() || currentArtist.name,
-          language: isHe ? 'he' : 'en',
-          signal: controller.signal,
-        });
-        if (
-          jobId === autoSubJobIdRef.current &&
-          !controller.signal.aborted &&
-          res?.success &&
-          res.segments.length > 0
-        ) {
-          autoSubResultRef.current = res;
-          return res;
-        }
-        return null;
-      } catch {
-        return null;
-      }
-    })();
+    const promise = startUploadPrefetchJob({
+      key,
+      audioFile: file || null,
+      audioUrl: !file ? urlFallback : undefined,
+      songTitle: titleHint || songTitle.trim(),
+      artistName: performingArtistInput.trim() || currentArtist.name,
+      duration: audioDurationRef.current || 180,
+      language: isHe ? 'he' : 'en',
+      onUpdate: (snap) => {
+        if (jobId !== autoSubJobIdRef.current) return;
+        applyDraftSnapshotToUploadState(snap);
+      },
+    });
 
     autoSubPromiseRef.current = promise;
     return promise;
@@ -410,79 +438,39 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsGeneratingUploadSubs(true);
     setIncludeSubtitles(true);
     setWhisperUploadNotice(
-      isHe ? 'מנתח שמע ומייצר כתוביות מסונכרנות...' : 'Analyzing audio and generating synchronized subtitles...'
+      isHe ? 'מנתח שמע ומייצר כתוביות מסונכרנות לכל השיר ברקע...' : 'Analyzing audio and generating synchronized full-song subtitles...'
     );
 
     try {
-      let res: Partial<GeminiSubtitlesResult> | null = null;
-      if (autoSubPromiseRef.current && !autoSubResultRef.current) {
-        res = await autoSubPromiseRef.current.catch(() => null);
-      }
-      if (!res || !res.success || !res.segments || res.segments.length === 0) {
-        stopSilentAutoSubtitles();
-        res = await transcribeAudioOnDevice({
-          audioFile: rawAudioFile || undefined,
-          audioUrl: !rawAudioFile ? getStreamingMediaUrl(audioStreamUrl.trim()) : undefined,
-          trackDuration: audioDurationRef.current || 180,
-          hintTitle: songTitle.trim(),
-          language: isHe ? 'he' : 'en',
-          onProgress: (statusText) => {
-            if (statusText) setWhisperUploadNotice(statusText);
-          },
-          onPartialSegments: (partial) => {
-            if (partial.segments.length > 0) {
-              setWhisperDraftSegments(partial.segments);
-              setWhisperDraftSegmentsHe(partial.segmentsHe);
-              setWhisperDraftSegmentsEn(partial.segmentsEn);
-              setWhisperDraftLyricsHe(partial.lyricsHe);
-              setWhisperDraftLyricsEn(partial.lyricsEn);
-              const partialText = partial.lyricsHe || partial.lyricsEn || '';
-              if (partialText) {
-                setLyricsInput(partialText);
-                uploadParsedSourceRef.current = partialText.trim();
-              }
-            }
-          },
-        });
-      }
-
-      if (res?.success && res.segments && res.segments.length > 0) {
-        const finalizedRes: GeminiSubtitlesResult = {
-          success: true,
-          segments: res.segments,
-          segmentsHe: res.segmentsHe || res.segments,
-          segmentsEn: res.segmentsEn || res.segments,
-          segmentsOrig: res.segmentsOrig,
-          lyrics: res.lyrics || res.lyricsHe || res.lyricsEn || '',
-          lyricsHe: res.lyricsHe || res.lyrics || '',
-          lyricsEn: res.lyricsEn || '',
-          lyricsOrig: res.lyricsOrig,
-          detectedLanguageCode: res.detectedLanguageCode,
-          detectedLanguageLabel: res.detectedLanguageLabel,
-          provider: res.provider,
-        };
-        autoSubResultRef.current = finalizedRes;
-        setWhisperDraftSegments(finalizedRes.segments);
-        setWhisperDraftSegmentsHe(finalizedRes.segmentsHe);
-        setWhisperDraftSegmentsEn(finalizedRes.segmentsEn);
-        setWhisperDraftSegmentsOrig(finalizedRes.segmentsOrig);
-        setWhisperDraftLyricsHe(finalizedRes.lyricsHe);
-        setWhisperDraftLyricsEn(finalizedRes.lyricsEn);
-        setWhisperDraftLyricsOrig(finalizedRes.lyricsOrig || '');
-        setDetectedSubLangCode(finalizedRes.detectedLanguageCode);
-        setDetectedSubLangLabel(finalizedRes.detectedLanguageLabel);
-        const primaryText = finalizedRes.lyricsHe || finalizedRes.lyricsEn || finalizedRes.lyrics || '';
-        setLyricsInput(primaryText);
-        uploadParsedSourceRef.current = primaryText.trim();
-        setUploadSubtitleLangTab('he');
+      const existingSnap = uploadJobKeyRef.current ? getUploadPrefetchJob(uploadJobKeyRef.current)?.snapshot : null;
+      if (existingSnap && existingSnap.segments.length > 0) {
+        applyDraftSnapshotToUploadState(existingSnap);
         setWhisperUploadNotice(
           isHe
-            ? `נוצרו ${finalizedRes.segments.length} שורות כתוביות מסונכרנות${finalizedRes.detectedLanguageLabel ? ` (${finalizedRes.detectedLanguageLabel})` : ''} — יישמרו עם פרסום השיר!`
-            : `Generated ${finalizedRes.segments.length} synchronized subtitle lines — ready to publish!`
+            ? existingSnap.isComplete
+              ? `נוצרו ${existingSnap.segments.length} שורות כתוביות מסונכרנות לכל השיר!`
+              : `כבר מוכנות ${existingSnap.segments.length} שורות — ממשיך להשלים את שאר השיר ברקע!`
+            : `${existingSnap.segments.length} subtitle lines ready!`
+        );
+        return;
+      }
+
+      const snap = await startSilentAutoSubtitles(
+        rawAudioFile || null,
+        !rawAudioFile ? getStreamingMediaUrl(audioStreamUrl.trim()) : undefined,
+        songTitle.trim()
+      );
+
+      if (snap && snap.segments.length > 0) {
+        applyDraftSnapshotToUploadState(snap);
+        setWhisperUploadNotice(
+          isHe
+            ? `נוצרו ${snap.segments.length} שורות כתוביות מסונכרנות — יישמרו עם פרסום השיר!`
+            : `Generated ${snap.segments.length} synchronized subtitle lines — ready to publish!`
         );
       } else {
         setWhisperUploadNotice(
-          res?.error || (isHe ? 'לא זוהו מילים בקובץ השמע — ניתן להדביק מילים ידנית' : 'No lyrics detected in audio')
+          isHe ? 'לא זוהו מילים בקובץ השמע — ניתן להדביק מילים ידנית' : 'No lyrics detected in audio'
         );
       }
     } catch (err: any) {
@@ -505,98 +493,80 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsGeneratingEditSubs(true);
     setEditIncludeSubtitles(true);
     setEditWhisperNotice(
-      isHe ? 'מנתח שמע ומייצר כתוביות מסונכרנות לשיר...' : 'Analyzing audio and generating synchronized subtitles...'
+      isHe ? 'מייצר כדקה ראשונה של כתוביות (ממשיך להשלים ברקע)...' : 'Generating first minute of subtitles (continues in background)...'
     );
 
+    const applySavedTrackToEditUi = (savedTrack: JamendoTrack) => {
+      const segs = savedTrack.subtitleSegments;
+      const segsHe = savedTrack.subtitleSegmentsHe || segs;
+      const segsEn = savedTrack.subtitleSegmentsEn;
+      const primaryTxt = savedTrack.lyricsHe || savedTrack.lyrics || savedTrack.lyricsEn || '';
+      setEditWhisperSegments(segs);
+      setEditWhisperSegmentsHe(segsHe);
+      setEditWhisperSegmentsEn(segsEn);
+      setEditWhisperSegmentsOrig(savedTrack.subtitleSegmentsOrig);
+      setEditLyricsHe(savedTrack.lyricsHe || primaryTxt);
+      setEditLyricsEn(savedTrack.lyricsEn || '');
+      setEditLyricsOrig(savedTrack.lyricsOrig || '');
+      setEditDetectedLangCode(savedTrack.detectedLanguageCode);
+      setEditDetectedLangLabel(savedTrack.detectedLanguageLabel);
+      setEditLyrics(primaryTxt);
+      editParsedSourceRef.current = primaryTxt.trim();
+      const updatedPool = getInstantSongPool().map((item) =>
+        item.id === savedTrack.id ? { ...item, ...savedTrack } : item
+      );
+      saveCachedCloudTracks(updatedPool);
+      onTrackPublished(savedTrack);
+      setEditingTrack((prev) => (prev && prev.id === savedTrack.id ? { ...prev, ...savedTrack } : prev));
+    };
+
     try {
-      const res = await transcribeAudioOnDevice({
-        audioUrl: resolvedAudioUrl,
-        trackDuration: editingTrack.duration || 180,
-        hintTitle: editTitle.trim() || editingTrack.name,
-        language: isHe ? 'he' : 'en',
-        onProgress: (statusText) => {
-          if (statusText) setEditWhisperNotice(statusText);
-        },
-        onPartialSegments: (partial) => {
-          if (partial.segments.length > 0) {
-            setEditWhisperSegments(partial.segments);
-            setEditWhisperSegmentsHe(partial.segmentsHe);
-            setEditWhisperSegmentsEn(partial.segmentsEn);
-            setEditLyricsHe(partial.lyricsHe);
-            setEditLyricsEn(partial.lyricsEn);
-            const partialText = partial.lyricsHe || partial.lyricsEn || '';
-            if (partialText) {
-              setEditLyrics(partialText);
-              editParsedSourceRef.current = partialText.trim();
+      const targetTrackForJob: JamendoTrack = {
+        ...editingTrack,
+        name: editTitle.trim() || editingTrack.name,
+        artistName: editPerformingArtist.trim() || editingTrack.artistName,
+        subtitlesDisabled: false,
+      };
+
+      const firstBatchResult = await new Promise<{ track: JamendoTrack | null; snap: SubtitleDraftSnapshot | null }>((resolve) => {
+        void startProgressiveTrackSubtitleJob({
+          track: targetTrackForJob,
+          language: isHe ? 'he' : 'en',
+          forceRestart: true,
+          onProgress: (statusText) => {
+            if (statusText) setEditWhisperNotice(statusText);
+          },
+          onBatchSaved: (savedTrack, snap) => {
+            applySavedTrackToEditUi(savedTrack);
+            if (snap.isComplete) {
+              setEditWhisperNotice(
+                isHe
+                  ? `הושלמו ונשמרו ${snap.segments.length} שורות כתוביות לכל השיר בענן!`
+                  : `Completed and saved ${snap.segments.length} full-song subtitle lines!`
+              );
             }
-          }
-        },
+          },
+          onFirstBatchReady: (savedTrack, snap) => {
+            resolve({ track: savedTrack, snap });
+          },
+        });
       });
 
-      if (res?.success && res.segments && res.segments.length > 0) {
-        const finalSegments = res.segments;
-        const finalSegmentsHe = res.segmentsHe && res.segmentsHe.length > 0 ? res.segmentsHe : finalSegments;
-        const finalSegmentsEn = res.segmentsEn && res.segmentsEn.length > 0 ? res.segmentsEn : undefined;
-        const finalLyricsHe = res.lyricsHe || res.lyrics || '';
-        const finalLyricsEn = res.lyricsEn || '';
-        const primaryText = finalLyricsHe || finalLyricsEn || res.lyrics || '';
-        setEditWhisperSegments(finalSegments);
-        setEditWhisperSegmentsHe(finalSegmentsHe);
-        setEditWhisperSegmentsEn(finalSegmentsEn);
-        setEditWhisperSegmentsOrig(res.segmentsOrig);
-        setEditLyricsHe(finalLyricsHe);
-        setEditLyricsEn(finalLyricsEn);
-        setEditLyricsOrig(res.lyricsOrig || '');
-        setEditDetectedLangCode(res.detectedLanguageCode);
-        setEditDetectedLangLabel(res.detectedLanguageLabel);
-        setEditLyrics(primaryText);
-        editParsedSourceRef.current = primaryText.trim();
+      if (firstBatchResult.track && firstBatchResult.snap && firstBatchResult.snap.segments.length > 0) {
+        applySavedTrackToEditUi(firstBatchResult.track);
         setEditSubLangTab('he');
-
-        const updatedTrack: JamendoTrack = {
-          ...editingTrack,
-          name: editTitle.trim() || editingTrack.name,
-          artistName: editPerformingArtist.trim() || editingTrack.artistName,
-          featuredArtist: editFeaturedArtist.trim() || undefined,
-          writers: editWriters.trim() || undefined,
-          genre: editGenre.trim() || editingTrack.genre,
-          albumName: editAlbum.trim() || editingTrack.albumName,
-          lyrics: primaryText || undefined,
-          lyricsHe: finalLyricsHe || undefined,
-          lyricsEn: finalLyricsEn || undefined,
-          lyricsOrig: res.lyricsOrig || undefined,
-          subtitleSegments: finalSegments,
-          subtitleSegmentsHe: finalSegmentsHe,
-          subtitleSegmentsEn: finalSegmentsEn,
-          subtitleSegmentsOrig: res.segmentsOrig && res.segmentsOrig.length > 0 ? res.segmentsOrig : undefined,
-          detectedLanguageCode: res.detectedLanguageCode,
-          detectedLanguageLabel: res.detectedLanguageLabel,
-          hasWhisperSubtitles: true,
-          subtitlesDisabled: false,
-          isAiGenerated: editIsAiGenerated,
-        };
-
-        try {
-          await uploadTrackToCloud(updatedTrack);
-        } catch (err) {
-          console.warn('Cloud subtitle save notice:', err);
-        }
-
-        const updatedPool = getInstantSongPool().map((item) =>
-          item.id === updatedTrack.id ? { ...item, ...updatedTrack } : item
-        );
-        saveCachedCloudTracks(updatedPool);
-        onTrackPublished(updatedTrack);
-        setEditingTrack(updatedTrack);
-
         setEditWhisperNotice(
           isHe
-            ? `נוצרו ונשמרו ${finalSegments.length} שורות כתוביות בענן בהצלחה!`
-            : `Generated and saved ${finalSegments.length} subtitle lines to cloud!`
+            ? firstBatchResult.snap.isComplete
+              ? `נוצרו ונשמרו ${firstBatchResult.snap.segments.length} שורות כתוביות בענן בהצלחה!`
+              : `הסתיים שלב ראשון (${firstBatchResult.snap.segments.length} שורות נשמרו) — שאר השיר ממשיך להיווצר ברקע אוטומטית!`
+            : firstBatchResult.snap.isComplete
+              ? `Generated and saved ${firstBatchResult.snap.segments.length} subtitle lines!`
+              : `Initial part finished & saved (${firstBatchResult.snap.segments.length} lines) — continuing the rest in background!`
         );
       } else {
         setEditWhisperNotice(
-          res?.error || (isHe ? 'לא זוהו מילים בקובץ השמע — ניתן להדביק מילים ידנית' : 'No lyrics detected in audio')
+          isHe ? 'לא זוהו מילים בקובץ השמע — ניתן להדביק מילים ידנית' : 'No lyrics detected in audio'
         );
       }
     } catch (err: any) {
@@ -1501,6 +1471,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let finalDetectedLangCode: string | undefined = detectedSubLangCode;
     let finalDetectedLangLabel: string | undefined = detectedSubLangLabel;
 
+    let uploadJobIsComplete = false;
+    let uploadCompletedUpTo = 0;
+
     if (!includeSubtitles) {
       stopSilentAutoSubtitles();
       finalDraftSegments = undefined;
@@ -1526,50 +1499,27 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         finalDraftLyricsHe = parsed.lyricsHe;
         finalDraftLyricsEn = parsed.lyricsEn;
         sanitizedManualLyrics = parsed.lyricsHe || parsed.lyricsEn || sanitizedManualLyrics;
+        uploadJobIsComplete = true;
+        uploadCompletedUpTo = trackDurationSeconds;
       }
-    } else if (
-      !finalDraftSegments?.length &&
-      !finalDraftSegmentsHe?.length &&
-      !finalDraftSegmentsEn?.length
-    ) {
-      if (!autoSubResultRef.current && !autoSubPromiseRef.current && (rawAudioFile || audioStreamUrl.trim())) {
-        void startSilentAutoSubtitles(
-          rawAudioFile || null,
-          !rawAudioFile ? audioStreamUrl.trim() : undefined,
-          songTitle.trim()
-        );
-      }
+    } else {
+      const activeSnap =
+        (uploadJobKeyRef.current ? getUploadPrefetchJob(uploadJobKeyRef.current)?.snapshot : null) ||
+        autoSubResultRef.current;
 
-      if (!autoSubResultRef.current && autoSubPromiseRef.current) {
-        const waitTicker = setInterval(() => {
-          setUploadProgressPercent((prev) => {
-            const next = Math.min(34, Math.max(prev + 2, 8));
-            progressFloor = Math.max(progressFloor, next);
-            return next;
-          });
-        }, 450);
-        try {
-          await Promise.race([
-            autoSubPromiseRef.current,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 76000)),
-          ]);
-        } finally {
-          clearInterval(waitTicker);
-        }
-      }
-
-      const autoRes = autoSubResultRef.current;
-      if (autoRes?.success && autoRes.segments.length > 0) {
-        finalDraftSegments = autoRes.segments;
-        finalDraftSegmentsHe = autoRes.segmentsHe;
-        finalDraftSegmentsEn = autoRes.segmentsEn;
-        finalDraftSegmentsOrig = autoRes.segmentsOrig;
-        finalDraftLyricsHe = autoRes.lyricsHe;
-        finalDraftLyricsEn = autoRes.lyricsEn;
-        finalDraftLyricsOrig = autoRes.lyricsOrig || '';
-        finalDetectedLangCode = autoRes.detectedLanguageCode;
-        finalDetectedLangLabel = autoRes.detectedLanguageLabel;
-        sanitizedManualLyrics = autoRes.lyricsHe || autoRes.lyricsEn || '';
+      if (activeSnap && activeSnap.segments.length > 0) {
+        finalDraftSegments = activeSnap.segments;
+        finalDraftSegmentsHe = activeSnap.segmentsHe;
+        finalDraftSegmentsEn = activeSnap.segmentsEn;
+        finalDraftSegmentsOrig = activeSnap.segmentsOrig;
+        finalDraftLyricsHe = activeSnap.lyricsHe;
+        finalDraftLyricsEn = activeSnap.lyricsEn;
+        finalDraftLyricsOrig = activeSnap.lyricsOrig || '';
+        finalDetectedLangCode = activeSnap.detectedLanguageCode;
+        finalDetectedLangLabel = activeSnap.detectedLanguageLabel;
+        sanitizedManualLyrics = activeSnap.lyricsHe || activeSnap.lyricsEn || '';
+        uploadJobIsComplete = activeSnap.isComplete;
+        uploadCompletedUpTo = activeSnap.completedUpTo || 0;
       }
     }
 
@@ -1606,6 +1556,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       detectedLanguageCode: includeSubtitles ? finalDetectedLangCode : undefined,
       detectedLanguageLabel: includeSubtitles ? finalDetectedLangLabel : undefined,
       hasWhisperSubtitles: hasAnyDraftSubtitles,
+      ...(includeSubtitles && !uploadJobIsComplete ? { subtitlesIncomplete: true } : { subtitlesIncomplete: false }),
+      ...(uploadCompletedUpTo > 0 ? { subtitlesCompletedUpTo: uploadCompletedUpTo } : {}),
       ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
@@ -1619,6 +1571,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     const currentAudioFile = rawAudioFile;
     const currentCoverFile = rawCoverFile;
+    const activeUploadJobKey = uploadJobKeyRef.current;
 
     try {
       setPublishProgressStep(isHe ? 'מעלה לאחסון האתר...' : 'Uploading to cloud storage...');
@@ -1653,6 +1606,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         newTrack.coverUrl = cloudRes.coverUrl;
       }
 
+      // Transfer ongoing background subtitle prefetch directly onto the published track ID so the full song completes silently!
+      if (includeSubtitles && !uploadJobIsComplete) {
+        const attached = activeUploadJobKey
+          ? attachUploadJobToPublishedTrack(activeUploadJobKey, newTrack)
+          : false;
+        if (!attached) {
+          void ensureTrackSubtitlesInBackground(newTrack, isHe ? 'he' : 'en');
+        }
+      }
+
       // Pre-cache color under both track ID and final cover URL
       globalTrackColorCache.set(newTrack.id, computedColor);
       if (newTrack.coverUrl) {
@@ -1672,8 +1635,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setPublishProgressStep(isHe ? 'השיר פורסם וזמין כעת בכל המכשירים!' : 'Track saved to cloud storage!');
       setPublishSuccess(true);
 
-      // Reset form
-      stopSilentAutoSubtitles();
+      // Reset form refs without aborting transferred background subtitle job
+      autoSubJobIdRef.current += 1;
+      autoSubPromiseRef.current = null;
+      autoSubResultRef.current = null;
+      uploadJobKeyRef.current = '';
       audioDurationRef.current = 180;
       setSongTitle('');
       setPerformingArtistInput('');
@@ -2523,6 +2489,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                           <textarea
                             rows={5}
+                            dir={editSubLangTab === 'en' ? 'ltr' : 'rtl'}
                             value={
                               editSubLangTab === 'en'
                                 ? editLyricsEn
@@ -2545,7 +2512,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                 ? 'הדבק כאן מילים או כתוביות (תומך בטקסט רגיל, SRT, VTT או LRC) — או לחץ "צור כתוביות" למעלה...'
                                 : 'Paste lyrics or subtitles here (supports plain text, SRT, VTT, or LRC) — or click "Generate Subtitles" above...'
                             }
-                            className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-500 text-xs leading-relaxed focus:outline-none focus:border-white/50 transition-colors"
+                            className={`w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white placeholder-neutral-500 text-xs leading-relaxed focus:outline-none focus:border-white/50 transition-colors ${
+                              editSubLangTab === 'en' ? 'text-left' : 'text-right'
+                            }`}
                           />
                         </div>
                       )}
@@ -3203,6 +3172,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                       <textarea
                         rows={4}
+                        dir={uploadSubtitleLangTab === 'en' ? 'ltr' : 'rtl'}
                         value={
                           uploadSubtitleLangTab === 'en'
                             ? whisperDraftLyricsEn

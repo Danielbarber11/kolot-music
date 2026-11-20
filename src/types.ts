@@ -152,6 +152,8 @@ export interface JamendoTrack {
   detectedLanguageLabel?: string;
   hasWhisperSubtitles?: boolean;
   subtitlesDisabled?: boolean;
+  subtitlesIncomplete?: boolean;
+  subtitlesCompletedUpTo?: number;
   artistId?: string;
   albumId?: string;
   genre?: string;

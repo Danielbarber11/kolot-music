@@ -604,6 +604,8 @@ export default {
                 if (!incoming.detectedLanguageCode && existing.detectedLanguageCode) incoming.detectedLanguageCode = existing.detectedLanguageCode;
                 if (!incoming.detectedLanguageLabel && existing.detectedLanguageLabel) incoming.detectedLanguageLabel = existing.detectedLanguageLabel;
                 if (existing.hasWhisperSubtitles) incoming.hasWhisperSubtitles = true;
+                if (incoming.subtitlesIncomplete === undefined && existing.subtitlesIncomplete !== undefined) incoming.subtitlesIncomplete = existing.subtitlesIncomplete;
+                if (incoming.subtitlesCompletedUpTo === undefined && existing.subtitlesCompletedUpTo !== undefined) incoming.subtitlesCompletedUpTo = existing.subtitlesCompletedUpTo;
               }
               bodyBytes = encoder.encode(JSON.stringify(incoming, null, 2));
             }
@@ -1797,27 +1799,89 @@ export default {
         if (!existing) return jsonResponse({ success: false, error: 'Track not found' }, 404);
         if (existing.subtitlesDisabled === true) return jsonResponse({ success: false, disabled: true });
 
-        if (
+        const incomingIncomplete = Boolean(body?.subtitlesIncomplete);
+        const incomingCompletedUpTo = Math.max(0, Number(body?.subtitlesCompletedUpTo) || 0);
+        const existingHasSubs =
           (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) ||
           (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) ||
-          (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0)
+          (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0);
+        const existingCompletedUpTo = Math.max(0, Number(existing.subtitlesCompletedUpTo) || 0);
+
+        if (existingHasSubs && existing.subtitlesIncomplete !== true) {
+          return jsonResponse({ success: true, alreadyExists: true, track: existing });
+        }
+
+        if (
+          existingHasSubs &&
+          existing.subtitlesIncomplete === true &&
+          incomingCompletedUpTo > 0 &&
+          incomingCompletedUpTo <= existingCompletedUpTo &&
+          incomingIncomplete
         ) {
           return jsonResponse({ success: true, alreadyExists: true, track: existing });
         }
 
+        const mergeSegmentArrays = (prevArr: any[], nextArr: any[]): any[] => {
+          const combined = [...(Array.isArray(prevArr) ? prevArr : []), ...(Array.isArray(nextArr) ? nextArr : [])]
+            .filter((s) => s && typeof s.text === 'string' && s.text.trim())
+            .sort((a, b) => (Number(a.startTime) || 0) - (Number(b.startTime) || 0));
+          const merged: any[] = [];
+          for (const seg of combined) {
+            const prev = merged[merged.length - 1];
+            const sStart = Number(seg.startTime) || 0;
+            const pStart = prev ? Number(prev.startTime) || 0 : -99;
+            const pEnd = prev ? Number(prev.endTime) || 0 : -99;
+            if (prev && (Math.abs(sStart - pStart) < 0.7 || sStart < pEnd - 0.35)) {
+              const prevTxt = String(prev.text || '').trim().toLowerCase();
+              const curTxt = String(seg.text || '').trim().toLowerCase();
+              if (prevTxt === curTxt || (curTxt.length <= prevTxt.length && prevTxt.includes(curTxt))) {
+                prev.endTime = Number(Math.max(pEnd, Number(seg.endTime) || 0).toFixed(2));
+                if ((!prev.words || !prev.words.length) && Array.isArray(seg.words) && seg.words.length) {
+                  prev.words = seg.words;
+                }
+                continue;
+              }
+            }
+            merged.push(seg);
+          }
+          return merged;
+        };
+
+        const nextBase = incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn);
+        const mergedSegments = existingHasSubs ? mergeSegmentArrays(existing.subtitleSegments || [], nextBase) : nextBase;
+        const mergedHe = incomingHe.length > 0
+          ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsHe || [], incomingHe) : incomingHe)
+          : existing.subtitleSegmentsHe;
+        const mergedEn = incomingEn.length > 0
+          ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsEn || [], incomingEn) : incomingEn)
+          : existing.subtitleSegmentsEn;
+        const mergedOrig = incomingOrig.length > 0
+          ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsOrig || [], incomingOrig) : incomingOrig)
+          : existing.subtitleSegmentsOrig;
+
+        const nextCompletedUpTo = Math.max(existingCompletedUpTo, incomingCompletedUpTo);
+        const nextIncomplete = incomingIncomplete;
+
+        const nextLyricsHe = mergedHe?.length ? mergedHe.map((s: any) => s.text).join('\n') : (body?.lyricsHe ? String(body.lyricsHe) : existing.lyricsHe);
+        const nextLyricsEn = mergedEn?.length ? mergedEn.map((s: any) => s.text).join('\n') : (body?.lyricsEn ? String(body.lyricsEn) : existing.lyricsEn);
+        const nextLyricsOrig = mergedOrig?.length ? mergedOrig.map((s: any) => s.text).join('\n') : (body?.lyricsOrig ? String(body.lyricsOrig) : existing.lyricsOrig);
+        const nextLyrics = mergedSegments?.length ? mergedSegments.map((s: any) => s.text).join('\n') : (body?.lyrics ? String(body.lyrics) : existing.lyrics);
+
         const updated = {
           ...existing,
-          subtitleSegments: incomingSegs.length > 0 ? incomingSegs : (incomingHe.length > 0 ? incomingHe : incomingEn),
-          ...(incomingHe.length > 0 ? { subtitleSegmentsHe: incomingHe } : {}),
-          ...(incomingEn.length > 0 ? { subtitleSegmentsEn: incomingEn } : {}),
-          ...(incomingOrig.length > 0 ? { subtitleSegmentsOrig: incomingOrig } : {}),
-          ...(body?.lyrics ? { lyrics: String(body.lyrics) } : {}),
-          ...(body?.lyricsHe ? { lyricsHe: String(body.lyricsHe) } : {}),
-          ...(body?.lyricsEn ? { lyricsEn: String(body.lyricsEn) } : {}),
-          ...(body?.lyricsOrig ? { lyricsOrig: String(body.lyricsOrig) } : {}),
+          subtitleSegments: mergedSegments,
+          ...(mergedHe?.length ? { subtitleSegmentsHe: mergedHe } : {}),
+          ...(mergedEn?.length ? { subtitleSegmentsEn: mergedEn } : {}),
+          ...(mergedOrig?.length ? { subtitleSegmentsOrig: mergedOrig } : {}),
+          ...(nextLyrics ? { lyrics: nextLyrics } : {}),
+          ...(nextLyricsHe ? { lyricsHe: nextLyricsHe } : {}),
+          ...(nextLyricsEn ? { lyricsEn: nextLyricsEn } : {}),
+          ...(nextLyricsOrig ? { lyricsOrig: nextLyricsOrig } : {}),
           ...(incomingOrigCode ? { detectedLanguageCode: incomingOrigCode } : {}),
           ...(incomingOrigLabel ? { detectedLanguageLabel: incomingOrigLabel } : {}),
           hasWhisperSubtitles: true,
+          subtitlesIncomplete: nextIncomplete,
+          ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
           viewsCount: Math.max(Number(existing.viewsCount) || 0, workerOptimisticViewCounts.get(cleanId) || 0),
         };
 
@@ -1847,6 +1911,8 @@ export default {
                     ...(updated.detectedLanguageCode ? { detectedLanguageCode: updated.detectedLanguageCode } : {}),
                     ...(updated.detectedLanguageLabel ? { detectedLanguageLabel: updated.detectedLanguageLabel } : {}),
                     hasWhisperSubtitles: true,
+                    subtitlesIncomplete: updated.subtitlesIncomplete,
+                    ...(updated.subtitlesCompletedUpTo ? { subtitlesCompletedUpTo: updated.subtitlesCompletedUpTo } : {}),
                   };
                 }
                 return t;
@@ -1877,6 +1943,8 @@ export default {
                       ...(updated.detectedLanguageCode ? { detectedLanguageCode: updated.detectedLanguageCode } : {}),
                       ...(updated.detectedLanguageLabel ? { detectedLanguageLabel: updated.detectedLanguageLabel } : {}),
                       hasWhisperSubtitles: true,
+                      subtitlesIncomplete: updated.subtitlesIncomplete,
+                      ...(updated.subtitlesCompletedUpTo ? { subtitlesCompletedUpTo: updated.subtitlesCompletedUpTo } : {}),
                     }
                   : t
               );

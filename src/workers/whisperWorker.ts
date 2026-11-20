@@ -1,5 +1,5 @@
 import { pipeline, env } from '@huggingface/transformers';
-import { SubtitleSegment } from '../types';
+import { SubtitleSegment, SubtitleWord } from '../types';
 
 type WhisperBackendMode = 'webgpu' | 'wasm';
 
@@ -78,12 +78,143 @@ function computeRms(samples: Float32Array): number {
   return count > 0 ? Math.sqrt(sumSq / count) : 0;
 }
 
+function estimateWordWeight(word: string): number {
+  const letters = word.replace(/[^\p{L}]/gu, '');
+  if (!letters) return 0.5;
+  // Approximate vowel/syllable nuclei for Hebrew & Latin words
+  const vowelMatches = letters.match(/[aeiouyאאהוי]/gi);
+  const syllables = Math.max(1, vowelMatches ? vowelMatches.length : Math.ceil(letters.length / 2.6));
+  const charFactor = Math.min(10, letters.length) * 0.11;
+  // Short function words ("the", "a", "את", "של", "לא", "כי") are sung faster than long content words
+  const lengthBoost = letters.length <= 2 ? 0.65 : letters.length >= 6 ? 1.22 : 1.0;
+  return (0.45 + syllables * 0.42 + charFactor) * lengthBoost;
+}
+
+/**
+ * Aligns individual words to real vocal-onset energy frames inside the 16kHz PCM window.
+ * Trims leading/trailing instrumental/breath gaps so the first word lights up only when sung,
+ * and snaps word boundaries onto local RMS energy valleys/attacks.
+ */
+function alignSegmentWordsToAudio(
+  text: string,
+  absStart: number,
+  absEnd: number,
+  windowPcm: Float32Array,
+  windowOffsetSec: number
+): SubtitleWord[] {
+  const wordsRaw = text.split(/\s+/).filter((w) => w.length > 0);
+  if (wordsRaw.length === 0) return [];
+
+  const sampleRate = 16000;
+  const relStart = Math.max(0, absStart - windowOffsetSec);
+  const relEnd = Math.min(windowPcm.length / sampleRate, Math.max(relStart + 0.35, absEnd - windowOffsetSec));
+  const startIdx = Math.max(0, Math.floor(relStart * sampleRate));
+  const endIdx = Math.min(windowPcm.length, Math.ceil(relEnd * sampleRate));
+
+  const frameSize = 320; // 20ms per RMS frame at 16kHz
+  const frameRms: number[] = [];
+  let maxRms = 0;
+
+  for (let pos = startIdx; pos + frameSize <= endIdx; pos += frameSize) {
+    let sumSq = 0;
+    for (let k = 0; k < frameSize; k += 2) {
+      const v = windowPcm[pos + k];
+      sumSq += v * v;
+    }
+    const rms = Math.sqrt(sumSq / (frameSize / 2));
+    frameRms.push(rms);
+    if (rms > maxRms) maxRms = rms;
+  }
+
+  let vocalStart = absStart;
+  let vocalEnd = Math.max(absStart + 0.4, absEnd);
+
+  if (frameRms.length >= 6 && maxRms > 0.01) {
+    const onsetThresh = Math.max(0.012, maxRms * 0.19);
+    let firstActive = 0;
+    while (firstActive < frameRms.length - 3 && frameRms[firstActive] < onsetThresh) {
+      firstActive++;
+    }
+    let lastActive = frameRms.length - 1;
+    while (lastActive > firstActive + 2 && frameRms[lastActive] < onsetThresh * 0.85) {
+      lastActive--;
+    }
+
+    const trimLeadSec = Math.min(0.95, firstActive * 0.02);
+    const trimTailSec = Math.min(0.9, Math.max(0, frameRms.length - 1 - lastActive) * 0.02);
+    const candidateStart = absStart + trimLeadSec;
+    const candidateEnd = absEnd - trimTailSec;
+    if (candidateEnd - candidateStart >= Math.max(0.45, wordsRaw.length * 0.14)) {
+      vocalStart = candidateStart;
+      vocalEnd = candidateEnd;
+    }
+  }
+
+  if (wordsRaw.length === 1) {
+    return [{
+      text: wordsRaw[0],
+      startTime: Number(vocalStart.toFixed(2)),
+      endTime: Number(Math.max(vocalStart + 0.25, vocalEnd).toFixed(2)),
+    }];
+  }
+
+  const weights = wordsRaw.map(estimateWordWeight);
+  const totalWeight = weights.reduce((a, b) => a + b, 0) || wordsRaw.length;
+  const vocalSpan = Math.max(0.4, vocalEnd - vocalStart);
+
+  // Cumulative initial boundaries [0 .. wordsRaw.length]
+  const boundaries: number[] = [vocalStart];
+  let accWeight = 0;
+  for (let i = 0; i < wordsRaw.length - 1; i++) {
+    accWeight += weights[i];
+    const targetTime = vocalStart + (accWeight / totalWeight) * vocalSpan;
+
+    // Search nearby 20ms RMS frames (+/- 18% of average word duration) for an inter-word energy valley/onset
+    let snappedTime = targetTime;
+    if (frameRms.length >= 8 && maxRms > 0.012) {
+      const searchSec = Math.min(0.28, (vocalSpan / wordsRaw.length) * 0.42);
+      const centerFrame = Math.round((targetTime - absStart) / 0.02);
+      const radiusFrames = Math.max(1, Math.round(searchSec / 0.02));
+      const fMin = Math.max(1, centerFrame - radiusFrames);
+      const fMax = Math.min(frameRms.length - 2, centerFrame + radiusFrames);
+      let bestScore = Infinity;
+      let bestFrame = centerFrame;
+      for (let f = fMin; f <= fMax; f++) {
+        // Prefer low local energy just before an energy rise (new word attack)
+        const riseBonus = frameRms[f + 1] > frameRms[f] ? (frameRms[f + 1] - frameRms[f]) * 0.65 : 0;
+        const distPenalty = Math.abs(f - centerFrame) * 0.002 * maxRms;
+        const score = frameRms[f] - riseBonus + distPenalty;
+        if (score < bestScore) {
+          bestScore = score;
+          bestFrame = f;
+        }
+      }
+      const candidate = absStart + bestFrame * 0.02;
+      const prevBound = boundaries[boundaries.length - 1];
+      if (candidate > prevBound + 0.09 && candidate < vocalEnd - (wordsRaw.length - 1 - i) * 0.09) {
+        snappedTime = candidate;
+      }
+    }
+
+    const prevBound = boundaries[boundaries.length - 1];
+    boundaries.push(Math.max(prevBound + 0.08, Math.min(vocalEnd - 0.08, snappedTime)));
+  }
+  boundaries.push(vocalEnd);
+
+  return wordsRaw.map((w, idx) => ({
+    text: w,
+    startTime: Number(boundaries[idx].toFixed(2)),
+    endTime: Number(Math.max(boundaries[idx] + 0.08, boundaries[idx + 1]).toFixed(2)),
+  }));
+}
+
 function buildSegmentsFromChunk(
   result: any,
   windowOffsetSec: number,
   windowDurationSec: number,
   totalDuration: number,
-  idPrefix: string
+  idPrefix: string,
+  chunkPcm: Float32Array
 ): SubtitleSegment[] {
   const rawChunks: Array<{ timestamp?: [number | null, number | null]; text?: string }> =
     Array.isArray(result?.chunks) ? result.chunks : [];
@@ -109,14 +240,18 @@ function buildSegmentsFromChunk(
     const prevSeg = segments[segments.length - 1];
     if (prevSeg && prevSeg.text.toLowerCase() === cleanText.toLowerCase()) {
       prevSeg.endTime = Number(Math.max(prevSeg.endTime, absEnd).toFixed(2));
+      prevSeg.words = alignSegmentWordsToAudio(prevSeg.text, prevSeg.startTime, prevSeg.endTime, chunkPcm, windowOffsetSec);
       return;
     }
 
+    const finalStart = Number(absStart.toFixed(2));
+    const finalEnd = Number(Math.max(absStart + 0.8, absEnd).toFixed(2));
     segments.push({
       id: `${idPrefix}_${segments.length}`,
-      startTime: Number(absStart.toFixed(2)),
-      endTime: Number(Math.max(absStart + 0.8, absEnd).toFixed(2)),
+      startTime: finalStart,
+      endTime: finalEnd,
       text: cleanText,
+      words: alignSegmentWordsToAudio(cleanText, finalStart, finalEnd, chunkPcm, windowOffsetSec),
     });
   });
 
@@ -132,11 +267,14 @@ function buildSegmentsFromChunk(
       segments = rawParts.map((text, idx) => {
         const absStart = windowOffsetSec + idx * step;
         const absEnd = Math.min(totalDuration, windowOffsetSec + (idx + 1) * step);
+        const finalStart = Number(absStart.toFixed(2));
+        const finalEnd = Number(Math.max(absStart + 0.8, absEnd).toFixed(2));
         return {
           id: `${idPrefix}_${idx}`,
-          startTime: Number(absStart.toFixed(2)),
-          endTime: Number(Math.max(absStart + 0.8, absEnd).toFixed(2)),
+          startTime: finalStart,
+          endTime: finalEnd,
           text,
+          words: alignSegmentWordsToAudio(text, finalStart, finalEnd, chunkPcm, windowOffsetSec),
         };
       });
     }
@@ -161,6 +299,7 @@ function mergeOrdered(allSegments: SubtitleSegment[]): SubtitleSegment[] {
         prev.endTime = Number(Math.max(prev.endTime, seg.endTime).toFixed(2));
         if (seg.text.length > prev.text.length + 4 && seg.startTime >= prev.startTime) {
           prev.text = seg.text;
+          if (seg.words?.length) prev.words = seg.words;
         }
         continue;
       }
@@ -294,21 +433,23 @@ self.onmessage = async (event: MessageEvent) => {
     const origin = String(data.origin || '');
     const pcm = new Float32Array(data.pcmBuffer);
     const totalDuration = Math.max(10, Number(data.duration) || 180);
+    const pcmOffsetSec = Math.max(0, Number(data.pcmOffsetSec) || 0);
     const subtitleLanguageHint = data.subtitleLanguageHint as 'auto' | 'he' | 'en' | undefined;
     const hintTitle = String(data.hintTitle || '');
 
     let { transcriber, mode } = await getWorkerPipeline(origin);
 
     const SAMPLE_RATE = 16000;
-    // Fast contiguous non-overlapping 22s windows with greedy decoding (< 1 min total)
     const CHUNK_SECONDS = 22;
     const STRIDE_SECONDS = 22;
     const CHUNK_SAMPLES = CHUNK_SECONDS * SAMPLE_RATE;
     const STRIDE_SAMPLES = STRIDE_SECONDS * SAMPLE_RATE;
 
-    // On CPU WASM process 2 fast chunks (44s) cleanly under 1 min; WebGPU handles up to 4 chunks (88s)
-    const maxAudioSec = mode === 'webgpu' ? 88 : 44;
-    const maxProcessSamples = Math.min(pcm.length, maxAudioSec * SAMPLE_RATE);
+    // Respect explicit batch window slice when supplied, else default fast 44s WASM / 88s WebGPU cap
+    const maxAudioSec = Number(data.maxProcessSeconds) > 0
+      ? Number(data.maxProcessSeconds)
+      : (mode === 'webgpu' ? 88 : 44);
+    const maxProcessSamples = Math.min(pcm.length, Math.floor(maxAudioSec * SAMPLE_RATE));
     const totalChunks = Math.max(1, Math.ceil(maxProcessSamples / STRIDE_SAMPLES));
 
     const titleHasHebrew = /[\u0590-\u05FF]/.test(hintTitle);
@@ -317,13 +458,16 @@ self.onmessage = async (event: MessageEvent) => {
         ? 'hebrew'
         : subtitleLanguageHint === 'en'
           ? 'english'
-          : titleHasHebrew
-            ? 'hebrew'
-            : undefined;
+          : data.lockedWhisperLang === 'hebrew' || data.lockedWhisperLang === 'english'
+            ? data.lockedWhisperLang
+            : titleHasHebrew
+              ? 'hebrew'
+              : undefined;
 
     const rawSegments: SubtitleSegment[] = [];
     const inferStartMs = Date.now();
-    const SOFT_INFER_DEADLINE_MS = 32000;
+    const SOFT_INFER_DEADLINE_MS = Number(data.softDeadlineMs) > 0 ? Number(data.softDeadlineMs) : 34000;
+    let processedUpToSec = pcmOffsetSec;
 
     for (let i = 0; i < totalChunks; i++) {
       if (i > 0 && Date.now() - inferStartMs > SOFT_INFER_DEADLINE_MS) {
@@ -335,8 +479,9 @@ self.onmessage = async (event: MessageEvent) => {
 
       const endSample = Math.min(maxProcessSamples, startSample + CHUNK_SAMPLES);
       const chunkPcm = pcm.subarray(startSample, endSample);
-      const offsetSec = startSample / SAMPLE_RATE;
+      const offsetSec = pcmOffsetSec + startSample / SAMPLE_RATE;
       const chunkDurSec = chunkPcm.length / SAMPLE_RATE;
+      processedUpToSec = Math.max(processedUpToSec, pcmOffsetSec + endSample / SAMPLE_RATE);
 
       const pct = Math.min(92, Math.max(52, Math.round(52 + ((i + 1) / totalChunks) * 40)));
       postWithId({
@@ -351,7 +496,7 @@ self.onmessage = async (event: MessageEvent) => {
 
       const decodeOptions: Record<string, any> = {
         return_timestamps: true,
-        max_new_tokens: 44,
+        max_new_tokens: 48,
         num_beams: 1,
         do_sample: false,
         repetition_penalty: 1.05,
@@ -384,7 +529,8 @@ self.onmessage = async (event: MessageEvent) => {
         offsetSec,
         chunkDurSec,
         totalDuration,
-        `whisper_c${i}`
+        `whisper_${Math.round(pcmOffsetSec)}_c${i}`,
+        chunkPcm
       );
 
       if (!lockedWhisperLang && chunkSegs.length > 0 && (!subtitleLanguageHint || subtitleLanguageHint === 'auto')) {
@@ -405,6 +551,7 @@ self.onmessage = async (event: MessageEvent) => {
           segments: mergeOrdered(rawSegments),
           completedChunks: i + 1,
           totalChunks,
+          processedUpToSec: Number(processedUpToSec.toFixed(2)),
         });
       }
     }
@@ -415,6 +562,7 @@ self.onmessage = async (event: MessageEvent) => {
       segments: finalOrdered,
       lockedWhisperLang,
       backend: mode,
+      processedUpToSec: Number(processedUpToSec.toFixed(2)),
     });
   } catch (err: any) {
     postWithId({
