@@ -122,9 +122,9 @@ body, h1, h2, h3, h4, h5, h6, p, span, a, button, input, textarea, select, label
 
 /* Content & Image Protection (Default: block text/image selection; allow text highlighting only when Accessibility toggle is enabled) */
 body {
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 
 input,
