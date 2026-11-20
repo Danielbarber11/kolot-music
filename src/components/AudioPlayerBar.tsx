@@ -41,6 +41,38 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
     }
   }, [currentTrack]);
 
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') {
+      return;
+    }
+    try {
+      const artwork: MediaImage[] = [];
+      if (coverUrl) {
+        try {
+          const absUrl = new URL(coverUrl, window.location.origin).toString();
+          artwork.push({ src: absUrl, sizes: '512x512', type: 'image/png' });
+        } catch {}
+      }
+      if (artwork.length === 0) {
+        artwork.push({ src: `${window.location.origin}/pwa-512x512.png`, sizes: '512x512', type: 'image/png' });
+      }
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title || 'Kolot Music',
+        artist: subtitle || 'Kolot Music',
+        album: 'Kolot Music',
+        artwork,
+      });
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      navigator.mediaSession.setActionHandler('play', () => {
+        audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => {});
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        audioRef.current?.pause();
+        setIsPlaying(false);
+      });
+    } catch {}
+  }, [title, subtitle, coverUrl, isPlaying]);
+
   const togglePlay = () => {
     if (!audioRef.current) return;
     if (isPlaying) {

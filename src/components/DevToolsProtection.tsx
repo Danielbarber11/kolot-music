@@ -18,20 +18,42 @@ const isPreviewEnvironment = (): boolean => {
   );
 };
 
+const isMobileOrStandalonePWA = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const ua = (navigator.userAgent || '').toLowerCase();
+    const isTouchDevice =
+      navigator.maxTouchPoints > 0 ||
+      window.matchMedia('(pointer: coarse)').matches ||
+      /android|iphone|ipad|ipod|mobile|tablet/.test(ua);
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    return isTouchDevice || isStandalone;
+  } catch {
+    return false;
+  }
+};
+
 export const DevToolsProtection: React.FC = () => {
   const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
   const isPreview = isPreviewEnvironment();
+  const skipDimensionCheck = isPreview || isMobileOrStandalonePWA();
 
   useEffect(() => {
-    // If in Google AI Studio preview or local dev, do not block devtools at all
-    if (isPreview) {
+    // If in preview or mobile/tablet/standalone PWA, never run outer/inner window size heuristics
+    if (skipDimensionCheck) {
       setIsDevToolsOpen(false);
       return;
     }
 
     const checkDevTools = () => {
-      const widthThreshold = window.outerWidth - window.innerWidth > 160;
-      const heightThreshold = window.outerHeight - window.innerHeight > 160;
+      if (document.visibilityState !== 'visible') {
+        setIsDevToolsOpen(false);
+        return;
+      }
+      const widthThreshold = window.outerWidth - window.innerWidth > 220;
+      const heightThreshold = window.outerHeight - window.innerHeight > 220;
 
       if (widthThreshold || heightThreshold) {
         setIsDevToolsOpen(true);
@@ -40,7 +62,7 @@ export const DevToolsProtection: React.FC = () => {
       }
     };
 
-    // Keyboard shortcuts prevention for DevTools in production
+    // Keyboard shortcuts prevention for DevTools in desktop production
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F12' || e.keyCode === 123) {
         e.preventDefault();
@@ -63,19 +85,25 @@ export const DevToolsProtection: React.FC = () => {
       }
     };
 
-    const interval = setInterval(checkDevTools, 500);
-    window.addEventListener('resize', checkDevTools);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        setIsDevToolsOpen(false);
+      }
+    };
+
+    const interval = setInterval(checkDevTools, 700);
     window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
-      window.removeEventListener('resize', checkDevTools);
       window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [isPreview]);
+  }, [skipDimensionCheck]);
 
-  // Completely inactive in AI Studio preview
-  if (isPreview || !isDevToolsOpen) return null;
+  // Completely inactive in AI Studio preview, mobile devices, and standalone PWA
+  if (skipDimensionCheck || !isDevToolsOpen) return null;
 
   return (
     <AnimatePresence>

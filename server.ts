@@ -614,6 +614,43 @@ app.post('/api/storage/config', async (req, res) => {
   }
 });
 
+// Dynamic PWA Web App Manifest with origin-matched related_applications for accurate getInstalledRelatedApps()
+app.get('/manifest.json', (req, res) => {
+  const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const proto = protoHeader.split(',')[0].trim();
+  const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
+  const origin = `${proto}://${host}`;
+  const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json` }];
+  if (origin !== 'https://kolot-music.kolot-music.workers.dev') {
+    relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json' });
+  }
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    id: '/',
+    name: 'Kolot Music',
+    short_name: 'Kolot Music',
+    description: 'Kolot Music - פלטפורמת מוזיקה להאזנה, יצירה והפצת שירים ואלבומים',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    theme_color: '#000000',
+    background_color: '#000000',
+    lang: 'he',
+    dir: 'rtl',
+    prefer_related_applications: false,
+    related_applications: relatedApps,
+    icons: [
+      { src: '/pwa-192x192.png?v=5', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-512x512.png?v=5', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-maskable-512x512.png?v=5', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: '/favicon.svg?v=5', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+    ],
+    categories: ['music', 'entertainment', 'audio'],
+  });
+});
+
 // Storage Status Probe
 app.get('/api/storage/status', async (req, res) => {
   const aiConfigured = Boolean(ai || process.env.GEMINI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim());

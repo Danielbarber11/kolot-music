@@ -13,6 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { Language } from '../types';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface AppDownloadViewProps {
   lang: Language;
@@ -21,40 +22,14 @@ interface AppDownloadViewProps {
 export const AppDownloadView: React.FC<AppDownloadViewProps> = ({ lang }) => {
   const isHe = lang === 'he';
 
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
+  const { isInstallable, isInstalled, install } = usePWAInstall();
   const [exportingBundle, setExportingBundle] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
-  useEffect(() => {
-    const handler = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handler);
-
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-    }
-
-    return () => window.removeEventListener('beforeinstallprompt', handler);
-  }, []);
-
   const handleInstallPWA = async () => {
-    if (!deferredPrompt) {
-      alert(
-        isHe
-          ? 'כדי להתקין: לחץ על 3 הנקודות בדפדפן (או כפתור השיתוף ב-iPhone) ובחר "הוסף למסך הבית" / "התקן אפליקציה".'
-          : 'To install: Open browser menu (or share icon on iOS) and tap "Add to Home Screen" or "Install App".'
-      );
+    if (isInstallable) {
+      await install();
       return;
-    }
-
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
     }
   };
 

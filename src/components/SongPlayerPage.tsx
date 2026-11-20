@@ -234,12 +234,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [whisperLyricsOrig, setWhisperLyricsOrig] = useState<string | undefined>(track.lyricsOrig);
   const [detectedLangLabel, setDetectedLangLabel] = useState<string | undefined>(track.detectedLanguageLabel);
 
+  // Reset scroll & local UI ONLY when entering a different song (track.id changes), never on background subtitle updates!
   useEffect(() => {
     if (playerScrollRef.current) {
       playerScrollRef.current.scrollTop = 0;
     }
     setShareFeedback(null);
     setCopiedLink(false);
+    setIsLyricsExpanded(false);
 
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
     const hasEn = !!track.subtitleSegmentsEn?.length;
@@ -277,9 +279,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         setWhisperLyricsEn(freshTrack.lyricsEn);
         setWhisperLyricsOrig(freshTrack.lyricsOrig);
         setDetectedLangLabel(freshTrack.detectedLanguageLabel);
-        if (!freshHe?.length && freshEn?.length) {
-          setSubtitleLang('en');
-        }
+        setSubtitleLang((cur) => (cur === 'he' && !freshHe?.length && freshEn?.length ? 'en' : cur));
       }
     };
 
@@ -303,8 +303,18 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       cancelled = true;
       unsubLive();
     };
+  }, [track.id]);
+
+  // Keep subtitle segments in sync when parent updates track props without scrolling or resetting user tab
+  useEffect(() => {
+    setWhisperSegmentsHe(track.subtitleSegmentsHe || track.subtitleSegments);
+    setWhisperSegmentsEn(track.subtitleSegmentsEn);
+    setWhisperSegmentsOrig(track.subtitleSegmentsOrig);
+    setWhisperLyricsHe(track.lyricsHe || track.lyrics);
+    setWhisperLyricsEn(track.lyricsEn);
+    setWhisperLyricsOrig(track.lyricsOrig);
+    setDetectedLangLabel(track.detectedLanguageLabel);
   }, [
-    track.id,
     track.subtitleSegments,
     track.subtitleSegmentsHe,
     track.subtitleSegmentsEn,
@@ -467,6 +477,24 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
+  const syncMediaSessionPosition = (timeSec: number, durSec: number) => {
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        'mediaSession' in navigator &&
+        typeof navigator.mediaSession.setPositionState === 'function' &&
+        Number.isFinite(durSec) &&
+        durSec > 0
+      ) {
+        navigator.mediaSession.setPositionState({
+          duration: durSec,
+          playbackRate: 1,
+          position: Math.max(0, Math.min(durSec, Number.isFinite(timeSec) ? timeSec : 0)),
+        });
+      }
+    } catch {}
+  };
+
   const seekRelative = (seconds: number) => {
     if (audioRef.current) {
       const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
@@ -476,6 +504,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       );
       audioRef.current.currentTime = targetTime;
       syncProgressDomImmediate(targetTime, effectiveDur);
+      syncMediaSessionPosition(targetTime, effectiveDur);
       setCurrentTime(targetTime);
     }
   };
@@ -490,11 +519,106 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     const effectiveDur = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : (duration || 1);
     const newTime = ratio * effectiveDur;
     syncProgressDomImmediate(newTime, effectiveDur);
+    syncMediaSessionPosition(newTime, effectiveDur);
     setCurrentTime(newTime);
     if (audioRef.current) {
       audioRef.current.currentTime = newTime;
     }
   };
+
+  // Native Mobile / OS Media Notification Controls (Lock screen & Notification shade show Song Cover + Song Title + Artist)
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') {
+      return;
+    }
+    try {
+      const origin = window.location.origin;
+      const artwork: MediaImage[] = [];
+      if (effectiveCoverUrl && !effectiveCoverUrl.startsWith('blob:')) {
+        try {
+          const absCover = new URL(effectiveCoverUrl, origin).toString();
+          artwork.push(
+            { src: absCover, sizes: '512x512', type: 'image/png' },
+            { src: absCover, sizes: '192x192', type: 'image/png' }
+          );
+        } catch {}
+      }
+      if (artwork.length === 0) {
+        artwork.push(
+          { src: `${origin}/pwa-512x512.png`, sizes: '512x512', type: 'image/png' },
+          { src: `${origin}/pwa-192x192.png`, sizes: '192x192', type: 'image/png' }
+        );
+      }
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.name || 'Kolot Music',
+        artist: track.artistName || 'Kolot Music',
+        album: track.albumName || 'Kolot Music',
+        artwork,
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => {
+        audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => {});
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        audioRef.current?.pause();
+        setIsPlaying(false);
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        seekRelative(-(details?.seekOffset || 10));
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        seekRelative(details?.seekOffset || 10);
+      });
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (audioRef.current && typeof details?.seekTime === 'number' && Number.isFinite(details.seekTime)) {
+          const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+          const t = Math.max(0, Math.min(d, details.seekTime));
+          audioRef.current.currentTime = t;
+          syncProgressDomImmediate(t, d);
+          syncMediaSessionPosition(t, d);
+          setCurrentTime(t);
+        }
+      });
+
+      const idx = allTracks.findIndex((t) => t.id === track.id);
+      if (onPlayTrack && idx >= 0 && allTracks.length > 1) {
+        navigator.mediaSession.setActionHandler('previoustrack', () => {
+          const prev = allTracks[(idx - 1 + allTracks.length) % allTracks.length];
+          if (prev) onPlayTrack(prev);
+        });
+        navigator.mediaSession.setActionHandler('nexttrack', () => {
+          const next = allTracks[(idx + 1) % allTracks.length];
+          if (next) onPlayTrack(next);
+        });
+      } else {
+        navigator.mediaSession.setActionHandler('previoustrack', null);
+        navigator.mediaSession.setActionHandler('nexttrack', null);
+      }
+    } catch {}
+
+    return () => {
+      try {
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.setActionHandler('play', null);
+          navigator.mediaSession.setActionHandler('pause', null);
+          navigator.mediaSession.setActionHandler('seekbackward', null);
+          navigator.mediaSession.setActionHandler('seekforward', null);
+          navigator.mediaSession.setActionHandler('seekto', null);
+          navigator.mediaSession.setActionHandler('previoustrack', null);
+          navigator.mediaSession.setActionHandler('nexttrack', null);
+        }
+      } catch {}
+    };
+  }, [track.id, track.name, track.artistName, track.albumName, effectiveCoverUrl, allTracks.length]);
+
+  useEffect(() => {
+    try {
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      }
+    } catch {}
+  }, [isPlaying]);
 
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
 
@@ -668,15 +792,29 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         onLoadedMetadata={() => {
           if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
+            syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
           }
         }}
         onDurationChange={() => {
           if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
+            syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
           }
         }}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onPlay={() => {
+          setIsPlaying(true);
+          if (audioRef.current) {
+            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+            syncMediaSessionPosition(audioRef.current.currentTime || 0, d);
+          }
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          if (audioRef.current) {
+            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+            syncMediaSessionPosition(audioRef.current.currentTime || 0, d);
+          }
+        }}
         onTimeUpdate={() => {
           if (audioRef.current && !isScrubbing) {
             const t = audioRef.current.currentTime;
@@ -689,6 +827,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             const t = audioRef.current.currentTime;
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
             syncProgressDomImmediate(t, d);
+            syncMediaSessionPosition(t, d);
             setCurrentTime(t);
           }
         }}
@@ -697,6 +836,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             const t = audioRef.current.currentTime;
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
             syncProgressDomImmediate(t, d);
+            syncMediaSessionPosition(t, d);
             setCurrentTime(t);
           }
         }}
@@ -709,6 +849,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       {/* FLOATING TOP BAR - FROSTED GLASS BACK BUTTON */}
       <div className="absolute top-3.5 sm:top-5 left-0 right-0 z-50 px-4 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
         <button
+          type="button"
           onClick={handleExitPlayer}
           className="pointer-events-auto w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl transition-all cursor-pointer active:scale-95"
           title={isHe ? 'חזור לרשימת השירים' : 'Back to Songs'}
@@ -717,13 +858,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </button>
       </div>
 
-      {/* INNER SCROLL CONTAINER */}
+      {/* INNER SCROLL CONTAINER (min-h-0 + overflowAnchor:none ensures smooth desktop & mobile scrolling without snapping back to top) */}
       <div
         ref={playerScrollRef}
-        className="relative z-10 flex-1 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
+        style={{ overflowAnchor: 'none' }}
+        className="relative z-10 flex-1 min-h-0 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
       >
-        {/* SCREEN 1: COMPACT PLAYER MAIN CONTROLS */}
-        <div className="relative flex flex-col items-center px-4 pt-16 pb-4 gap-4 sm:gap-5 max-w-md mx-auto w-full shrink-0">
+        {/* SCREEN 1: FULL-VIEWPORT MAIN PLAYER ON ALL DEVICES (Subtitles & Details remain below the fold until scrolling down) */}
+        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center px-4 pt-14 pb-12 gap-3.5 sm:gap-5 max-w-md mx-auto shrink-0">
 
         {/* 1. COVER ARTWORK IMAGE */}
         <div
@@ -791,6 +933,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" — Profile Avatar on Left, Heart on Right) */}
         <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
           <button
+            type="button"
             onClick={handleOpenArtistProfile}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center p-1 transition-all shadow-lg cursor-pointer"
             title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
@@ -824,6 +967,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => seekRelative(-10)}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
@@ -833,6 +977,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
 
           <motion.button
+            type="button"
             whileTap={{ scale: 0.92 }}
             onClick={togglePlayPause}
             className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white hover:bg-slate-100 text-slate-950 flex items-center justify-center shadow-2xl transition-all cursor-pointer ring-4 ring-white/25 active:scale-95"
@@ -846,6 +991,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </motion.button>
 
           <button
+            type="button"
             onClick={() => seekRelative(10)}
             className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
@@ -855,6 +1001,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => {
               if (!authUser) {
                 setFavoriteAuthNotice(true);
@@ -883,6 +1030,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
           <div>
             <button
+              type="button"
               onClick={handleOpenArtistProfile}
               className="text-xs sm:text-sm font-bold text-white hover:text-white/80 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
             >
@@ -917,10 +1065,25 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           )}
 
         </div>
+
+        {/* SUBTLE BOTTOM SCROLL BUTTON TO SCREEN 2 (SUBTITLES & DETAILS) */}
+        <button
+          type="button"
+          onClick={() => {
+            if (playerScrollRef.current) {
+              playerScrollRef.current.scrollBy({ top: Math.round(window.innerHeight * 0.85), behavior: 'smooth' });
+            }
+          }}
+          className="absolute bottom-3.5 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 backdrop-blur-xl flex items-center justify-center text-white/75 hover:text-white transition-colors cursor-pointer"
+          title={isHe ? 'גלול למטה לכתוביות ופרטים' : 'Scroll down for subtitles & details'}
+          aria-label={isHe ? 'גלול למטה לכתוביות ופרטים' : 'Scroll down for subtitles & details'}
+        >
+          <ChevronDown className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* SCREEN 2: SUBTITLES CARD FIRST + TRACK DETAILS & SHARE */}
-      <div className="relative max-w-xl mx-auto w-full px-4 pt-2 pb-24 space-y-5 shrink-0">
+      {/* SCREEN 2: SUBTITLES CARD FIRST + TRACK DETAILS & SHARE (STRICTLY BELOW THE FOLD UNTIL SCROLLED) */}
+      <div className="relative max-w-xl mx-auto w-full px-4 pt-6 pb-24 space-y-5 shrink-0">
         {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES SAVED IN STORAGE) */}
         {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
           <div className="p-4 sm:p-5 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-3 shadow-2xl transform-gpu isolate transition-colors">
@@ -1023,76 +1186,69 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             )}
 
             {/* EXPANDED SCROLLABLE LYRICS CONTAINER */}
-            <AnimatePresence>
-              {isLyricsExpanded && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.22 }}
-                  className="overflow-hidden pt-3 border-t border-white/10 space-y-3"
-                >
-                  <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
-                    {syncedLyrics.lines.map((line, lIdx) => {
-                      const isLineActive = lIdx === activeLineIndex;
-                      const mm = Math.floor(line.startTime / 60);
-                      const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
-                      const lineIsRtl = isRtlSubtitleText(line.text, subtitleLang);
+            {isLyricsExpanded && (
+              <div className="pt-3 border-t border-white/10 space-y-3">
+                <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
+                  {syncedLyrics.lines.map((line, lIdx) => {
+                    const isLineActive = lIdx === activeLineIndex;
+                    const mm = Math.floor(line.startTime / 60);
+                    const ss = Math.floor(line.startTime % 60).toString().padStart(2, '0');
+                    const lineIsRtl = isRtlSubtitleText(line.text, subtitleLang);
 
-                      return (
+                    return (
+                      <div
+                        key={line.id}
+                        dir={lineIsRtl ? 'rtl' : 'ltr'}
+                        onClick={() => {
+                          if (audioRef.current) {
+                            const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+                            audioRef.current.currentTime = line.startTime;
+                            syncProgressDomImmediate(line.startTime, effectiveDur);
+                            syncMediaSessionPosition(line.startTime, effectiveDur);
+                            setCurrentTime(line.startTime);
+                          }
+                        }}
+                        className={`p-2.5 rounded-2xl transition-colors cursor-pointer flex items-start gap-2.5 leading-relaxed ${
+                          isLineActive
+                            ? 'bg-white/15 border border-white/25 shadow-lg'
+                            : 'hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="text-[10px] font-mono text-white/70 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
+                          {mm}:{ss}
+                        </span>
                         <div
-                          key={line.id}
                           dir={lineIsRtl ? 'rtl' : 'ltr'}
-                          onClick={() => {
-                            if (audioRef.current) {
-                              const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
-                              audioRef.current.currentTime = line.startTime;
-                              syncProgressDomImmediate(line.startTime, effectiveDur);
-                              setCurrentTime(line.startTime);
-                            }
-                          }}
-                          className={`p-2.5 rounded-2xl transition-all cursor-pointer flex items-start gap-2.5 leading-relaxed ${
-                            isLineActive
-                              ? 'bg-white/15 border border-white/25 shadow-lg'
-                              : 'hover:bg-white/5'
+                          className={`flex flex-wrap items-center justify-start gap-1.5 flex-1 ${
+                            lineIsRtl ? 'text-right' : 'text-left'
                           }`}
                         >
-                          <span className="text-[10px] font-mono text-white/70 bg-white/5 px-1.5 py-0.5 rounded mt-1 shrink-0">
-                            {mm}:{ss}
-                          </span>
-                          <div
-                            dir={lineIsRtl ? 'rtl' : 'ltr'}
-                            className={`flex flex-wrap items-center justify-start gap-1.5 flex-1 ${
-                              lineIsRtl ? 'text-right' : 'text-left'
-                            }`}
-                          >
-                            {line.words.map((w, wIdx) => {
-                              const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
+                          {line.words.map((w, wIdx) => {
+                            const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
 
-                              return (
-                                <span
-                                  key={wIdx}
-                                  className={`text-xs sm:text-sm transition-all duration-100 ${
-                                    isWordActive
-                                      ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
-                                      : 'text-white font-medium hover:text-white/80'
-                                  }`}
-                                >
-                                  {w.text}
-                                </span>
-                              );
-                            })}
-                          </div>
+                            return (
+                              <span
+                                key={wIdx}
+                                className={`text-xs sm:text-sm transition-all duration-100 ${
+                                  isWordActive
+                                    ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg shadow-md scale-105 inline-block'
+                                    : 'text-white font-medium hover:text-white/80'
+                                }`}
+                              >
+                                {w.text}
+                              </span>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
-                  </div>
-                  <p className="text-[10px] text-white/50 text-center">
-                    {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-white/50 text-center">
+                  {isHe ? 'לחץ על כל שורת כתובית כדי לקפוץ אליה בשיר' : 'Click any subtitle line to jump to that moment'}
+                </p>
+              </div>
+            )}
           </div>
         )}
 

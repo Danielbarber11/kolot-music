@@ -1,8 +1,31 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
+const PWA_INSTALLED_STORAGE_KEY = 'kolot_pwa_installed_at';
+
+function readPersistedInstallFlag(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const raw = localStorage.getItem(PWA_INSTALLED_STORAGE_KEY);
+    return Boolean(raw && raw.trim().length > 0);
+  } catch {
+    return false;
+  }
+}
+
+function writePersistedInstallFlag(installed: boolean): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (installed) {
+      localStorage.setItem(PWA_INSTALLED_STORAGE_KEY, String(Date.now()));
+    } else {
+      localStorage.removeItem(PWA_INSTALLED_STORAGE_KEY);
+    }
+  } catch {}
 }
 
 function checkIsRunningStandalone(): boolean {
@@ -23,25 +46,51 @@ function checkIsRunningStandalone(): boolean {
 export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isStandaloneMode, setIsStandaloneMode] = useState<boolean>(() => checkIsRunningStandalone());
-  const [isInstalled, setIsInstalled] = useState<boolean>(() => checkIsRunningStandalone());
+  const [isInstalled, setIsInstalled] = useState<boolean>(
+    () => checkIsRunningStandalone() || readPersistedInstallFlag()
+  );
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
 
-  useEffect(() => {
-    // Clear legacy false-positive flag so uninstalls / other devices always show install prompt accurately
+  const verifyInstalledStatus = useCallback(async (promptEventAvailable: boolean) => {
+    const standalone = checkIsRunningStandalone();
+    setIsStandaloneMode(standalone);
+    if (standalone) {
+      writePersistedInstallFlag(true);
+      setIsInstalled(true);
+      return;
+    }
+
+    // Check browser's Related Installed Apps API (Chrome / Edge / Android WebAPK)
     try {
-      localStorage.removeItem('kolot_pwa_installed');
+      const navAny = window.navigator as unknown as {
+        getInstalledRelatedApps?: () => Promise<Array<{ platform?: string; url?: string; id?: string }>>;
+      };
+      if (typeof navAny.getInstalledRelatedApps === 'function') {
+        const apps = await navAny.getInstalledRelatedApps();
+        if (Array.isArray(apps) && apps.length > 0) {
+          writePersistedInstallFlag(true);
+          setIsInstalled(true);
+          return;
+        }
+      }
     } catch {}
 
-    const checkStandalone = () => {
-      const standalone = checkIsRunningStandalone();
-      setIsStandaloneMode(standalone);
-      if (standalone) {
-        setIsInstalled(true);
-      }
-    };
+    // If Chrome/Edge explicitly fired beforeinstallprompt, the app is NOT installed on this device.
+    if (promptEventAvailable) {
+      writePersistedInstallFlag(false);
+      setIsInstalled(false);
+      return;
+    }
 
-    checkStandalone();
+    // Otherwise trust persisted browser-side install confirmation (set by appinstalled / prior standalone run)
+    if (readPersistedInstallFlag()) {
+      setIsInstalled(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    let promptSeen = false;
 
     const userAgent = window.navigator.userAgent.toLowerCase();
     const isIOSDevice = /iphone|ipad|ipod/.test(userAgent) && !(window as any).MSStream;
@@ -49,57 +98,54 @@ export function usePWAInstall() {
     setIsIOS(isIOSDevice);
     setIsAndroid(isAndroidDevice);
 
-    // Query browser Related Installed Apps API (Chrome/Edge on Android & Desktop)
-    // Only marks installed when the OS actually confirms an installed matching app.
-    try {
-      const navAny = window.navigator as unknown as {
-        getInstalledRelatedApps?: () => Promise<Array<{ platform?: string; url?: string }>>;
-      };
-      if (typeof navAny.getInstalledRelatedApps === 'function') {
-        navAny
-          .getInstalledRelatedApps()
-          .then((apps) => {
-            if (Array.isArray(apps) && apps.length > 0) {
-              setIsInstalled(true);
-            } else if (!checkIsRunningStandalone()) {
-              setIsInstalled(false);
-            }
-          })
-          .catch(() => {});
-      }
-    } catch {}
+    void verifyInstalledStatus(false);
 
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
+      promptSeen = true;
       setDeferredPrompt(e as BeforeInstallPromptEvent);
+      writePersistedInstallFlag(false);
       setIsInstalled(false);
     };
 
     const handleAppInstalled = () => {
+      promptSeen = false;
+      writePersistedInstallFlag(true);
       setIsInstalled(true);
       setDeferredPrompt(null);
     };
 
+    const handleFocusOrVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void verifyInstalledStatus(promptSeen);
+      }
+    };
+
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('focus', handleFocusOrVisibility);
+    document.addEventListener('visibilitychange', handleFocusOrVisibility);
 
     const matchMediaDisplay = window.matchMedia('(display-mode: standalone)');
+    const handleDisplayChange = () => void verifyInstalledStatus(promptSeen);
     try {
-      matchMediaDisplay.addEventListener('change', checkStandalone);
+      matchMediaDisplay.addEventListener('change', handleDisplayChange);
     } catch {
-      matchMediaDisplay.addListener(checkStandalone);
+      matchMediaDisplay.addListener(handleDisplayChange);
     }
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('focus', handleFocusOrVisibility);
+      document.removeEventListener('visibilitychange', handleFocusOrVisibility);
       try {
-        matchMediaDisplay.removeEventListener('change', checkStandalone);
+        matchMediaDisplay.removeEventListener('change', handleDisplayChange);
       } catch {
-        matchMediaDisplay.removeListener(checkStandalone);
+        matchMediaDisplay.removeListener(handleDisplayChange);
       }
     };
-  }, []);
+  }, [verifyInstalledStatus]);
 
   const install = async (): Promise<boolean> => {
     if (!deferredPrompt) return false;
@@ -107,6 +153,7 @@ export function usePWAInstall() {
       await deferredPrompt.prompt();
       const { outcome } = await deferredPrompt.userChoice;
       if (outcome === 'accepted') {
+        writePersistedInstallFlag(true);
         setIsInstalled(true);
         setDeferredPrompt(null);
         return true;

@@ -337,6 +337,47 @@ export default {
       });
     }
 
+    if (request.method === 'GET' && pathname === '/manifest.json') {
+      const origin = url.origin;
+      const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json` }];
+      if (origin !== 'https://kolot-music.kolot-music.workers.dev') {
+        relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json' });
+      }
+      return new Response(
+        JSON.stringify({
+          id: '/',
+          name: 'Kolot Music',
+          short_name: 'Kolot Music',
+          description: 'Kolot Music - פלטפורמת מוזיקה להאזנה, יצירה והפצת שירים ואלבומים',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          orientation: 'portrait',
+          theme_color: '#000000',
+          background_color: '#000000',
+          lang: 'he',
+          dir: 'rtl',
+          prefer_related_applications: false,
+          related_applications: relatedApps,
+          icons: [
+            { src: '/pwa-192x192.png?v=5', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/pwa-512x512.png?v=5', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/pwa-maskable-512x512.png?v=5', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+            { src: '/favicon.svg?v=5', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          ],
+          categories: ['music', 'entertainment', 'audio'],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/manifest+json; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      );
+    }
+
     const creds = getR2Creds(env);
 
     const resolveGoogleCredsTop = () => {

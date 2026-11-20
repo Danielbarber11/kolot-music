@@ -60,8 +60,23 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
               </li>
               <li>
                 {isHe
-                  ? 'השימוש באתר מיועד לתושבי ישראל בלבד בהתאם למדיניות הזמינות הגיאוגרפית.'
+                  ? 'השימוש באתר מיועד בהתאם לדין החל ולמדיניות הזמינות הגיאוגרפית.'
                   : 'Service is governed under standard geographical distribution terms.'}
+              </li>
+              <li>
+                {isHe
+                  ? 'הכתוביות, התמלולים והתרגומים המוצגים בנגן (לרבות אלו המופקים באמצעות בינה מלאכותית – AI וזיהוי דיבור אוטומטי) הינם משוערים ועלולים לכלול שגיאות כתיב, השמטות, טעויות תרגום או אי-דיוקים בתזמון. השירות ניתן כמות שהוא ("AS IS") ללא כל התחייבות או אחריות לדיוקם.'
+                  : 'Synchronized subtitles, transcriptions, and translations (including those generated automatically via AI speech recognition) are provided "AS IS" and may contain errors, omissions, or timing offsets.'}
+              </li>
+              <li>
+                {isHe
+                  ? 'פרטי היצירות, ז׳אנרים, קרדיטים, תיאורי אמנים ונתוני מטא-דאטה המוצגים באתר עשויים להכיל אי-דיוקים, פערים או טעויות סופר, והנהלת האתר אינה נושאת באחריות לנכונותם.'
+                  : 'Track metadata, credits, genres, and artist descriptions displayed on the platform may contain inaccuracies or typographical errors without liability.'}
+              </li>
+              <li>
+                {isHe
+                  ? 'מספרי הצפיות, ההשמעות, האהבות והמדדים הסטטיסטיים המוצגים באתר מהווים אומדן טכני ומשוער בלבד, מושפעים משמירה במטמון (Cache) והשהיית סנכרון, ואינם מהווים נתון רשמי, מחייב או ראיה משפטית.'
+                  : 'View counts, play counts, likes, and analytical metrics displayed on the platform are technical estimates only, subject to caching and sync delays, and do not constitute official records.'}
               </li>
             </ul>
           </div>

@@ -8,7 +8,6 @@ import {
   Heart,
   Send,
   X,
-  Sparkles,
   Loader2,
   AlertCircle,
   Share2,
@@ -250,24 +249,7 @@ export const Footer: React.FC<FooterProps> = ({
                   </span>
                 </button>
 
-                {/* 3. ARTIST PORTAL BUTTON IF AVAILABLE */}
-                {onOpenPortal && (
-                  <button
-                    type="button"
-                    onClick={onOpenPortal}
-                    className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all text-xs font-medium text-white/90 group cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <Sparkles className="w-4 h-4 text-purple-400 group-hover:scale-110 transition-transform" />
-                      <span>{isHe ? 'פורטל יוצרים והעלאת שירים' : 'Creator & Artist Studio'}</span>
-                    </div>
-                    <span className="text-[10px] text-white/40 group-hover:text-white/70">
-                      {isHe ? 'פתח' : 'Open'}
-                    </span>
-                  </button>
-                )}
-
-                {/* 4. ACCESSIBILITY STATEMENT & TOOLS BUTTON */}
+                {/* 3. ACCESSIBILITY STATEMENT & TOOLS BUTTON */}
                 {onOpenAccessibility && (
                   <button
                     type="button"
@@ -747,6 +729,27 @@ export const TermsReaderModal: React.FC<{
             <h4 className="font-semibold text-white text-sm">4. הסרת תכנים ויצירת קשר</h4>
             <p>
               הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-white font-mono">kolot.music1@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">5. כתוביות, תמלול ובינה מלאכותית (AI)</h4>
+            <p>
+              הכתוביות המסונכרנות, תמלולי השמע והתרגומים באתר מופקים בחלקם באופן אוטומטי באמצעות מנגנוני בינה מלאכותית (AI) וזיהוי דיבור בדפדפן או בשרת, ועלולים לכלול שגיאות כתיב, אי-דיוקים בתוכן, השמטות, טעויות תרגום או סטיות בתזמון. כל תכני הכתוביות מסופקים כמות שהם ("AS IS") ללא כל מצג, התחייבות או אחריות לדיוקם או שלמותם.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">6. פרטי יצירות, אמנים ואי-דיוקים במידע</h4>
+            <p>
+              פרטי השירים, האלבומים, הקרדיטים, הסיווגים לז׳אנרים, תיאורי האמנים ונתוני המטא-דאטה המופיעים באתר מוזנים על ידי משתמשים או נמשכים ממאגרי מידע חיצוניים וציבוריים, ועל כן עשויים להכיל אי-דיוקים, פערים או טעויות סופר. הנהלת האתר אינה נושאת באחריות משפטית לנכונות פרטים אלה.
+            </p>
+          </section>
+
+          <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
+            <h4 className="font-semibold text-white text-sm">7. מספרי צפיות, השמעות ונתונים סטטיסטיים</h4>
+            <p>
+              מספרי הצפיות, ההשמעות, הסימונים כמועדפים והמדדים הסטטיסטיים המוצגים בפלטפורמה הינם אומדן טכני ומשוער בלבד; הם עלולים להיות מושפעים ממנגנוני מטמון (Cache), השהיית סנכרון, סינונים טכניים או מגבלות רשת, אינם משקפים בהכרח נתון בזמן אמת ואינם מהווים נתון רשמי, מחייב או ראיה לכל עניין מסחרי או משפטי.
             </p>
           </section>
         </div>
