@@ -1686,18 +1686,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }}
-          className="fixed inset-0 z-[130] w-screen h-screen bg-[#070b14]/95 backdrop-blur-3xl overflow-y-auto text-white flex flex-col items-center justify-center p-4 sm:p-6"
+          className="fixed inset-0 z-[130] w-full h-[100dvh] bg-[#070b14]/95 backdrop-blur-3xl overflow-y-auto text-white flex flex-col items-center justify-start sm:justify-center p-4 pt-16 sm:p-6"
           dir={isHe ? 'rtl' : 'ltr'}
         >
           <button
             onClick={onClose}
-            className="absolute top-6 right-6 w-11 h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-slate-900/80 hover:bg-white/10 transition-all cursor-pointer shadow-2xl"
+            className="absolute top-5 end-5 sm:top-6 sm:end-6 w-11 h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-slate-900/80 hover:bg-white/10 transition-all cursor-pointer shadow-2xl"
             title={isHe ? 'סגור' : 'Close'}
           >
             <X className="w-5 h-5 text-white/80" />
           </button>
 
-          <div className="w-full max-w-md bg-[#0b0d12] border border-white/15 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fadeIn">
+          <div className="w-full max-w-md bg-[#0b0d12] border border-white/15 rounded-3xl p-6 sm:p-8 shadow-2xl text-center space-y-6 animate-fadeIn my-auto">
             <div className="w-20 h-20 rounded-3xl bg-neutral-900 border border-white/20 text-white flex items-center justify-center mx-auto shadow-2xl">
               <User className="w-10 h-10 text-white/60" />
             </div>
@@ -1759,7 +1759,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
-        className={`fixed inset-0 z-[140] w-screen h-screen ${
+        className={`fixed inset-0 z-[140] w-full h-[100dvh] ${
           activeTab === 'manual_upload' || activeTab === 'albums' ? 'bg-black' : 'bg-[#070b14]'
         } overflow-y-auto text-white custom-scrollbar flex flex-col`}
         dir={isHe ? 'rtl' : 'ltr'}
@@ -2119,10 +2119,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             {/* RECREATED EDIT SONG STUDIO MODAL */}
             {editingTrack && (
               <div
-                className="fixed inset-0 z-[160] bg-black/85 backdrop-blur-xl flex items-center justify-center p-3 sm:p-6"
+                className="fixed inset-0 z-[160] bg-black/85 backdrop-blur-xl flex items-start sm:items-center justify-center p-2.5 sm:p-6 pt-3 overflow-y-auto"
                 dir={isHe ? 'rtl' : 'ltr'}
               >
-                <div className="w-full max-w-3xl max-h-[90vh] bg-[#09090b] border border-white/15 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-fadeIn">
+                <div className="w-full max-w-3xl max-h-[92dvh] bg-[#09090b] border border-white/15 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-fadeIn my-auto">
                   {/* Top Studio Header */}
                   <div className="px-5 sm:px-7 py-4 border-b border-white/10 flex items-center justify-between gap-4 shrink-0 bg-[#09090b]">
                     <div className="flex items-center gap-3.5 min-w-0">
@@ -3932,8 +3932,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   />
                   <p className="text-[11px] text-neutral-500 mt-1.5">
                     {isHe
-                      ? 'כברירת מחדל כל השירים והעטיפות נשמרים אוטומטית באחסון הענן המאובטח של Kolot.'
-                      : 'By default, tracks and artwork sync automatically to Kolot secure cloud hosting.'}
+                      ? 'כברירת מחדל כל השירים והעטיפות נשמרים אוטומטית באחסון הענן של Kolot.'
+                      : 'By default, tracks and artwork sync automatically to Kolot cloud hosting.'}
                   </p>
                 </div>
 

@@ -4,7 +4,6 @@ import {
   X,
   AlertCircle,
   RefreshCw,
-  Shield,
 } from 'lucide-react';
 import { Language } from '../types';
 import { AuthUser, loginWithGoogle } from '../services/authService';
@@ -63,7 +62,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-[180] bg-black/85 backdrop-blur-xl flex items-center justify-center p-4 overflow-y-auto"
+        className="fixed inset-0 z-[180] bg-black/85 backdrop-blur-xl flex items-start sm:items-center justify-center p-4 pt-6 sm:p-6 overflow-y-auto"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         <motion.div
@@ -71,7 +70,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
           transition={{ duration: 0.2 }}
-          className="relative w-full max-w-md rounded-[32px] bg-neutral-950/95 border border-white/20 p-6 sm:p-8 shadow-2xl space-y-6 text-white text-center"
+          className="relative w-full max-w-md rounded-[28px] sm:rounded-[32px] bg-neutral-950/95 border border-white/20 p-5 sm:p-8 shadow-2xl space-y-6 text-white text-center my-2 sm:my-auto"
         >
           {/* Top Close Button */}
           <button
@@ -130,11 +129,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </>
               )}
             </button>
-          </div>
-
-          <div className="pt-2 flex items-center justify-center gap-1.5 text-[11px] text-neutral-400 font-medium">
-            <Shield className="w-3.5 h-3.5 text-white" />
-            <span>{isHe ? 'אימות מאובטח ומהיר באמצעות Google Auth' : 'Secure instant authentication via Google Auth'}</span>
           </div>
         </motion.div>
       </div>

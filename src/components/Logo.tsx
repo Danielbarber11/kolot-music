@@ -15,7 +15,7 @@ export const Logo: React.FC<LogoProps> = ({ className = 'h-10 w-auto', showText 
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox={heartOnly ? "350 110 500 460" : "0 100 1200 660"}
+      viewBox={heartOnly ? "360 100 480 480" : "0 100 1200 660"}
       className={className}
       shapeRendering="geometricPrecision"
       textRendering="geometricPrecision"

@@ -637,17 +637,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   return (
     <motion.div
-      ref={playerScrollRef}
-      initial={{ opacity: 0, scale: 0.985 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.985 }}
-      transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-[100] w-screen h-screen bg-[#09090b] overflow-y-auto text-white flex flex-col custom-scrollbar m-0 p-0 border-0"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#09090b] overflow-hidden text-white flex flex-col m-0 p-0 border-0"
       style={dynamicBgStyle}
     >
-      {/* Immersive Dynamic Artwork Background - FIXED so it continues seamlessly when scrolling down */}
+      {/* Immersive Dynamic Artwork Background — decoupled from scroll container to prevent backdrop-blur scroll banding */}
       {track.coverUrl ? (
-        <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
           <img
             src={effectiveCoverUrl}
             alt=""
@@ -658,20 +657,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           <div
             className="absolute inset-0"
             style={{
-              background: `radial-gradient(ellipse at 50% 30%, rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.25) 0%, rgba(${Math.round(extractedColor.r * 0.6)}, ${Math.round(extractedColor.g * 0.6)}, ${Math.round(extractedColor.b * 0.6)}, 0.55) 55%, rgba(${Math.round(extractedColor.r * 0.35)}, ${Math.round(extractedColor.g * 0.35)}, ${Math.round(extractedColor.b * 0.35)}, 0.8) 100%)`,
-            }}
-          />
-          {/* Seamless bottom continuation gradient matching the cover artwork colors */}
-          <div
-            className="absolute inset-x-0 bottom-0 h-1/2"
-            style={{
-              background: `linear-gradient(to bottom, transparent 0%, rgba(${Math.round(extractedColor.r * 0.35)}, ${Math.round(extractedColor.g * 0.35)}, ${Math.round(extractedColor.b * 0.35)}, 0.5) 50%, rgba(${Math.round(extractedColor.r * 0.25)}, ${Math.round(extractedColor.g * 0.25)}, ${Math.round(extractedColor.b * 0.25)}, 0.95) 100%)`,
+              background: `linear-gradient(180deg, rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.22) 0%, rgba(${Math.round(extractedColor.r * 0.52)}, ${Math.round(extractedColor.g * 0.52)}, ${Math.round(extractedColor.b * 0.52)}, 0.56) 50%, rgba(${Math.round(extractedColor.r * 0.25)}, ${Math.round(extractedColor.g * 0.25)}, ${Math.round(extractedColor.b * 0.25)}, 0.92) 100%)`,
             }}
           />
         </div>
       ) : (
         <div
-          className="fixed inset-0 pointer-events-none z-0"
+          className="absolute inset-0 pointer-events-none z-0"
           style={{
             background: `radial-gradient(circle at 50% 25%, rgb(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}) 0%, rgb(${Math.round(extractedColor.r * 0.6)}, ${Math.round(extractedColor.g * 0.6)}, ${Math.round(extractedColor.b * 0.6)}) 50%, rgb(${Math.round(extractedColor.r * 0.35)}, ${Math.round(extractedColor.g * 0.35)}, ${Math.round(extractedColor.b * 0.35)}) 100%)`,
           }}
@@ -694,7 +686,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       />
 
       {/* FLOATING TOP BAR - FROSTED GLASS BACK BUTTON */}
-      <div className="fixed top-3.5 sm:top-5 left-0 right-0 z-50 px-4 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
+      <div className="absolute top-3.5 sm:top-5 left-0 right-0 z-50 px-4 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
         <button
           onClick={handleExitPlayer}
           className="pointer-events-auto w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center text-white border border-white/25 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl transition-all cursor-pointer active:scale-95"
@@ -704,8 +696,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </button>
       </div>
 
-      {/* SCREEN 1: COMPACT PLAYER MAIN CONTROLS */}
-      <div className="relative z-10 flex flex-col items-center px-4 pt-16 pb-4 gap-4 sm:gap-5 max-w-md mx-auto w-full">
+      {/* INNER SCROLL CONTAINER */}
+      <div
+        ref={playerScrollRef}
+        className="relative z-10 flex-1 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
+      >
+        {/* SCREEN 1: COMPACT PLAYER MAIN CONTROLS */}
+        <div className="relative flex flex-col items-center px-4 pt-16 pb-4 gap-4 sm:gap-5 max-w-md mx-auto w-full shrink-0">
 
         {/* 1. COVER ARTWORK IMAGE */}
         <div
@@ -901,10 +898,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       </div>
 
       {/* SCREEN 2: SUBTITLES CARD FIRST + TRACK DETAILS & SHARE */}
-      <div className="relative z-10 max-w-xl mx-auto w-full px-4 pt-2 pb-20 space-y-5">
+      <div className="relative max-w-xl mx-auto w-full px-4 pt-2 pb-24 space-y-5 shrink-0">
         {/* COLLAPSIBLE SUBTITLES & LYRICS CARD (ONLY SHOWN WHEN SONG HAS SUBTITLES SAVED IN STORAGE) */}
         {(syncedLyrics.isWhisperSynced || syncedLyrics.lines.length > 0) && (
-          <div className="p-4 sm:p-5 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-3 shadow-2xl transition-all">
+          <div className="p-4 sm:p-5 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-3 shadow-2xl transform-gpu isolate transition-colors">
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
@@ -1058,7 +1055,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         )}
 
-        <div className="p-5 sm:p-6 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-4 shadow-2xl">
+        <div className="p-5 sm:p-6 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-4 shadow-2xl transform-gpu isolate">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/15 pb-3">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Music2 className="w-4 h-4 text-white" />
@@ -1182,6 +1179,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           </div>
         </div>
+      </div>
       </div>
 
       {/* SHARE FEEDBACK TOAST */}

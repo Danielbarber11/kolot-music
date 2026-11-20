@@ -271,11 +271,11 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
       transition={{ duration: 0.25, ease: 'easeOut' }}
-      className="fixed inset-0 z-[120] w-screen h-screen bg-[#070b14] overflow-y-auto text-white custom-scrollbar flex flex-col"
+      className="fixed inset-0 z-[120] w-full h-[100dvh] bg-[#070b14] overflow-y-auto text-white custom-scrollbar flex flex-col"
       dir={isHe ? 'rtl' : 'ltr'}
     >
         {/* BACK BUTTON */}
-        <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-50">
+        <div className="absolute top-4 start-4 sm:top-6 sm:start-6 z-50">
           <button
             onClick={onClose}
             aria-label={isHe ? 'חזור' : 'Back'}

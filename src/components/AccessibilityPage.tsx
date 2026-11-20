@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   X,
@@ -63,6 +63,23 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
   lang,
 }) => {
   const isHe = lang === 'he';
+  const [hasFinePointer, setHasFinePointer] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+    return window.matchMedia('(any-pointer: fine)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(any-pointer: fine)');
+    const syncPointer = () => setHasFinePointer(mq.matches);
+    syncPointer();
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', syncPointer);
+      return () => mq.removeEventListener('change', syncPointer);
+    }
+    mq.addListener(syncPointer);
+    return () => mq.removeListener(syncPointer);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -197,7 +214,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       aria-modal="true"
       aria-label={isHe ? 'דף והצהרת נגישות' : 'Accessibility Settings & Statement'}
       dir={isHe ? 'rtl' : 'ltr'}
-      className="fixed inset-0 z-[170] bg-black text-white font-sans font-normal overflow-y-auto custom-scrollbar"
+      className="fixed inset-0 z-[170] bg-black text-white font-sans font-normal h-[100dvh] overflow-y-auto custom-scrollbar"
     >
       {/* Top Bar */}
       <header className="sticky top-0 z-20 bg-black/95 backdrop-blur-xl border-b border-white/15">
@@ -270,18 +287,18 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
               </p>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2 shrink-0 w-full sm:w-auto">
               <button
                 type="button"
                 onClick={() => stepScale(-1)}
                 disabled={settings.fontScale === 100}
-                className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 border border-white/15 text-white flex items-center justify-center cursor-pointer disabled:cursor-not-allowed transition-colors"
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 border border-white/15 text-white flex items-center justify-center cursor-pointer disabled:cursor-not-allowed transition-colors"
                 aria-label={isHe ? 'הקטן טקסט' : 'Decrease text size'}
               >
                 <Minus className="w-4 h-4" />
               </button>
 
-              <div className="grid grid-cols-4 gap-1.5 bg-black p-1 rounded-xl border border-white/15">
+              <div className="grid grid-cols-4 gap-1 bg-black p-1 rounded-xl border border-white/15 flex-1 sm:flex-none max-w-[260px]">
                 {scales.map((scale) => {
                   const selected = settings.fontScale === scale;
                   return (
@@ -290,7 +307,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
                       type="button"
                       onClick={() => onUpdateSettings({ ...settings, fontScale: scale })}
                       aria-pressed={selected}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-normal transition-all cursor-pointer ${
+                      className={`px-2 sm:px-3 py-1.5 rounded-lg text-xs font-normal transition-all cursor-pointer ${
                         selected
                           ? 'bg-white text-black shadow-sm'
                           : 'text-neutral-300 hover:text-white hover:bg-white/10'
@@ -306,7 +323,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
                 type="button"
                 onClick={() => stepScale(1)}
                 disabled={settings.fontScale === 145}
-                className="w-10 h-10 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 border border-white/15 text-white flex items-center justify-center cursor-pointer disabled:cursor-not-allowed transition-colors"
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-35 border border-white/15 text-white flex items-center justify-center cursor-pointer disabled:cursor-not-allowed transition-colors"
                 aria-label={isHe ? 'הגדל טקסט' : 'Increase text size'}
               >
                 <Plus className="w-4 h-4" />
@@ -327,7 +344,9 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-            {featureCards.map((card) => {
+            {featureCards
+              .filter((card) => card.key !== 'largeCursor' || hasFinePointer)
+              .map((card) => {
               const isActive = Boolean(settings[card.key]);
               return (
                 <button

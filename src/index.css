@@ -230,8 +230,10 @@ html.kolot-a11y-no-motion *::after {
   scroll-behavior: auto !important;
 }
 
-/* Accessibility: Large High-Contrast Cursor */
-html.kolot-a11y-cursor,
-html.kolot-a11y-cursor * {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'%3E%3Cpath d='M4 3l12 28 4-11 11-4z' fill='%23ffffff' stroke='%23000000' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E") 4 3, auto !important;
+/* Accessibility: Large High-Contrast Cursor (Only on devices with a connected mouse/fine pointer) */
+@media (any-pointer: fine) {
+  html.kolot-a11y-cursor,
+  html.kolot-a11y-cursor * {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'%3E%3Cpath d='M4 3l12 28 4-11 11-4z' fill='%23ffffff' stroke='%23000000' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E") 4 3, auto !important;
+  }
 }

@@ -16,13 +16,13 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-3xl animate-fadeIn select-none"
+        className="fixed inset-0 z-[200] flex items-start sm:items-center justify-center p-4 pt-6 overflow-y-auto bg-slate-950/95 backdrop-blur-3xl animate-fadeIn select-none"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.9, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          className="relative w-full max-w-xl bg-[#09090b] border border-white/25 rounded-3xl p-6 sm:p-8 shadow-2xl text-white space-y-6"
+          className="relative w-full max-w-xl bg-[#09090b] border border-white/25 rounded-3xl p-5 sm:p-8 shadow-2xl text-white space-y-5 my-auto"
         >
           <div className="flex items-center gap-3 border-b border-white/10 pb-4">
             <div className="p-3 rounded-2xl bg-white/10 text-white border border-white/20">

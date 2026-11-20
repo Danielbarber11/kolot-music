@@ -5,7 +5,6 @@ import {
   Smartphone,
   Copy,
   Check,
-  ShieldCheck,
   Heart,
   Send,
   X,
@@ -205,14 +204,9 @@ export const Footer: React.FC<FooterProps> = ({
 
               <p className="text-xs text-white/70 leading-relaxed max-w-md font-normal">
                 {isHe
-                  ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול ישיר ומאובטח בענן ללא הגבלה ובאיכות סאונד גבוהה.'
-                  : 'Free music streaming and creator publishing platform powered by secure cloud storage.'}
+                  ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול ישיר בענן ללא הגבלה ובאיכות סאונד גבוהה.'
+                  : 'Free music streaming and creator publishing platform.'}
               </p>
-
-              <div className="flex items-center gap-2 text-xs text-white/50 pt-1">
-                <ShieldCheck className="w-4 h-4 text-white/80" />
-                <span>{isHe ? 'אחסון ענן מאובטח • כניסה מהירה עם Google' : 'Secure Cloud Storage • Google Auth'}</span>
-              </div>
             </div>
 
             {/* ACTION BUTTONS & LINKS */}
@@ -339,7 +333,7 @@ export const Footer: React.FC<FooterProps> = ({
           </div>
 
           {/* BOTTOM COPYRIGHT ROW */}
-          <div className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/40 font-normal">
+          <div className="pt-6 pb-8 md:pb-0 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/40 font-normal">
             <div className="flex items-center gap-2">
               <span>© {new Date().getFullYear()} Kolot Music • קולות מוזיקה. כל הזכויות שמורות.</span>
             </div>
@@ -390,10 +384,10 @@ export const Footer: React.FC<FooterProps> = ({
       {/* MODAL 1: CONTACT & COMPLAINTS MODAL (MONOCHROME) */}
       {showContactModal && (
         <div
-          className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md"
+          className="fixed inset-0 z-[180] flex items-start sm:items-center justify-center p-3 sm:p-4 pt-4 sm:pt-4 overflow-y-auto custom-scrollbar bg-black/90 backdrop-blur-md"
           dir={isHe ? 'rtl' : 'ltr'}
         >
-          <div className="relative w-full max-w-lg max-h-[92vh] overflow-y-auto custom-scrollbar bg-[#09090b] border border-white/20 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 text-start text-white">
+          <div className="relative w-full max-w-lg max-h-[92dvh] overflow-y-auto custom-scrollbar bg-[#09090b] border border-white/20 rounded-3xl p-5 sm:p-7 shadow-2xl space-y-5 text-start text-white my-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 text-white flex items-center justify-center shrink-0">
@@ -618,8 +612,8 @@ export const Footer: React.FC<FooterProps> = ({
 
       {/* MODAL 3: DEVICE-AWARE PWA INSTALL GUIDE MODAL */}
       {showIOSInstallGuide && (
-        <div className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
-          <div className="relative w-full max-w-md bg-[#09090b] border border-white/20 rounded-3xl p-6 shadow-2xl space-y-4 text-right text-white">
+        <div className="fixed inset-0 z-[180] flex items-start sm:items-center justify-center p-4 pt-6 overflow-y-auto bg-black/90 backdrop-blur-md" dir={isHe ? 'rtl' : 'ltr'}>
+          <div className="relative w-full max-w-md bg-[#09090b] border border-white/20 rounded-3xl p-6 shadow-2xl space-y-4 text-start text-white my-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <button
                 type="button"
@@ -745,7 +739,7 @@ export const TermsReaderModal: React.FC<{
           <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
             <h4 className="font-semibold text-white text-sm">3. אחסון ופרטיות מידע</h4>
             <p>
-              הקבצים, הפרופילים והשירים מאוחסנים באופן מאובטח בתשתית הענן של האתר בלבד. פרטי ההתחברות (Google OAuth) מנוהלים בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
+              הקבצים, הפרופילים והשירים מאוחסנים בתשתית הענן של האתר בלבד. ניהול ההתחברות מתבצע בצד השרת ללא שמירת סיסמאות או מידע אישי בדפדפן.
             </p>
           </section>
 
