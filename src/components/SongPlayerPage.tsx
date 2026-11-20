@@ -35,7 +35,7 @@ import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, saveGeneratedSubtitlesToCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
 import { trackEvent } from '../services/analyticsService';
 import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, removeMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
-import { generateSubtitlesWithGeminiMethod } from '../services/onDeviceWhisperService';
+import { transcribeAudioOnDevice } from '../services/onDeviceWhisperService';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
 const activePlayerSubJobs = new Map<string, Promise<JamendoTrack | null>>();
@@ -390,14 +390,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (!job) {
       job = (async (): Promise<JamendoTrack | null> => {
         try {
-          const genRes = await generateSubtitlesWithGeminiMethod({
+          const genRes = await transcribeAudioOnDevice({
             audioUrl: effectiveAudioUrl,
-            duration: track.duration || duration || 180,
-            songTitle: track.name,
-            artistName: track.artistName,
+            trackDuration: track.duration || duration || 180,
+            hintTitle: track.name,
             language: isHe ? 'he' : 'en',
           });
-          if (!genRes.success || genRes.segments.length === 0) {
+          if (!genRes.success || !genRes.segments || genRes.segments.length === 0) {
             attemptedEmptyTrackIds.add(targetTrackId);
             return null;
           }

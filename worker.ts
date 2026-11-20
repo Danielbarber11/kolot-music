@@ -998,11 +998,23 @@ export default {
         let audioBytes: Uint8Array | null = null;
         let mimeType = 'audio/mp3';
 
+        const resolvedRawPath = (() => {
+          if (audioUrl.startsWith('/api/storage/raw/')) return audioUrl;
+          try {
+            const parsedAudio = new URL(audioUrl);
+            const reqOrigin = new URL(request.url).origin;
+            if (parsedAudio.origin === reqOrigin && parsedAudio.pathname.startsWith('/api/storage/raw/')) {
+              return parsedAudio.pathname;
+            }
+          } catch {}
+          return '';
+        })();
+
         if (bodyData.file && typeof bodyData.file.arrayBuffer === 'function') {
           audioBytes = new Uint8Array(await bodyData.file.arrayBuffer());
           mimeType = bodyData.file.type || 'audio/mp3';
-        } else if (audioUrl.startsWith('/api/storage/raw/')) {
-          const r2Key = decodeURIComponent(audioUrl.replace(/^\/api\/storage\/raw\//, ''));
+        } else if (resolvedRawPath) {
+          const r2Key = decodeURIComponent(resolvedRawPath.replace(/^\/api\/storage\/raw\//, ''));
           if (env.R2_BUCKET) {
             const obj = await env.R2_BUCKET.get(r2Key);
             if (obj) {
@@ -1061,7 +1073,14 @@ export default {
         }
 
         if (!env.GEMINI_API_KEY) {
-          return jsonResponse({ success: false, error: 'נדרש מפתח GEMINI_API_KEY או OPENAI_API_KEY בהגדרות השרת.' }, 503);
+          return jsonResponse(
+            {
+              success: false,
+              missingKey: true,
+              error: 'שירות התמלול בענן אינו מוגדר עדיין — ממשיך לתמלול מקומי במכשיר.',
+            },
+            503
+          );
         }
 
         const b64 = uint8ToBase64(audioBytes);
@@ -1114,6 +1133,7 @@ export default {
 
         for (const candidate of [
           { model: 'gemini-3-flash-preview', timeoutMs: 22000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-2.5-flash', timeoutMs: 20000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
           { model: 'gemini-2.5-flash-lite', timeoutMs: 14000, genConfig: { responseMimeType: 'application/json', responseSchema: subtitleSchema } },
         ]) {
           try {
@@ -1291,6 +1311,7 @@ export default {
           provider: 'gemini-3.5-transcribe',
           segments,
           lyrics: segments.map((s) => s.text).join('\n'),
+          ...(segments.length === 0 ? { error: 'לא זוהו מילים בקובץ השמע.' } : {}),
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Transcribe error' }, 500);

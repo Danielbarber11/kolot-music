@@ -64,7 +64,7 @@ import {
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { parseSubtitleFileContent } from '../aiLyricsGenerator';
-import { sanitizeSubtitleLettersOnly, generateSubtitlesWithGeminiMethod, GeminiSubtitlesResult } from '../services/onDeviceWhisperService';
+import { sanitizeSubtitleLettersOnly, generateSubtitlesWithGeminiMethod, transcribeAudioOnDevice, GeminiSubtitlesResult } from '../services/onDeviceWhisperService';
 import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
@@ -410,45 +410,75 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsGeneratingUploadSubs(true);
     setIncludeSubtitles(true);
     setWhisperUploadNotice(
-      isHe ? 'מייצר כתוביות מסונכרנות מהשמע (16kHz WAV + Gemini)...' : 'Generating synchronized subtitles from audio...'
+      isHe ? 'מנתח שמע ומייצר כתוביות מסונכרנות...' : 'Analyzing audio and generating synchronized subtitles...'
     );
 
     try {
-      let res: GeminiSubtitlesResult | null = null;
+      let res: Partial<GeminiSubtitlesResult> | null = null;
       if (autoSubPromiseRef.current && !autoSubResultRef.current) {
         res = await autoSubPromiseRef.current.catch(() => null);
       }
-      if (!res || !res.success || res.segments.length === 0) {
+      if (!res || !res.success || !res.segments || res.segments.length === 0) {
         stopSilentAutoSubtitles();
-        res = await generateSubtitlesWithGeminiMethod({
+        res = await transcribeAudioOnDevice({
           audioFile: rawAudioFile || undefined,
           audioUrl: !rawAudioFile ? getStreamingMediaUrl(audioStreamUrl.trim()) : undefined,
-          duration: audioDurationRef.current || 180,
-          songTitle: songTitle.trim(),
-          artistName: performingArtistInput.trim() || currentArtist.name,
+          trackDuration: audioDurationRef.current || 180,
+          hintTitle: songTitle.trim(),
           language: isHe ? 'he' : 'en',
+          onProgress: (statusText) => {
+            if (statusText) setWhisperUploadNotice(statusText);
+          },
+          onPartialSegments: (partial) => {
+            if (partial.segments.length > 0) {
+              setWhisperDraftSegments(partial.segments);
+              setWhisperDraftSegmentsHe(partial.segmentsHe);
+              setWhisperDraftSegmentsEn(partial.segmentsEn);
+              setWhisperDraftLyricsHe(partial.lyricsHe);
+              setWhisperDraftLyricsEn(partial.lyricsEn);
+              const partialText = partial.lyricsHe || partial.lyricsEn || '';
+              if (partialText) {
+                setLyricsInput(partialText);
+                uploadParsedSourceRef.current = partialText.trim();
+              }
+            }
+          },
         });
       }
 
-      if (res?.success && res.segments.length > 0) {
-        autoSubResultRef.current = res;
-        setWhisperDraftSegments(res.segments);
-        setWhisperDraftSegmentsHe(res.segmentsHe);
-        setWhisperDraftSegmentsEn(res.segmentsEn);
-        setWhisperDraftSegmentsOrig(res.segmentsOrig);
-        setWhisperDraftLyricsHe(res.lyricsHe);
-        setWhisperDraftLyricsEn(res.lyricsEn);
-        setWhisperDraftLyricsOrig(res.lyricsOrig || '');
-        setDetectedSubLangCode(res.detectedLanguageCode);
-        setDetectedSubLangLabel(res.detectedLanguageLabel);
-        const primaryText = res.lyricsHe || res.lyricsEn || res.lyrics || '';
+      if (res?.success && res.segments && res.segments.length > 0) {
+        const finalizedRes: GeminiSubtitlesResult = {
+          success: true,
+          segments: res.segments,
+          segmentsHe: res.segmentsHe || res.segments,
+          segmentsEn: res.segmentsEn || res.segments,
+          segmentsOrig: res.segmentsOrig,
+          lyrics: res.lyrics || res.lyricsHe || res.lyricsEn || '',
+          lyricsHe: res.lyricsHe || res.lyrics || '',
+          lyricsEn: res.lyricsEn || '',
+          lyricsOrig: res.lyricsOrig,
+          detectedLanguageCode: res.detectedLanguageCode,
+          detectedLanguageLabel: res.detectedLanguageLabel,
+          provider: res.provider,
+        };
+        autoSubResultRef.current = finalizedRes;
+        setWhisperDraftSegments(finalizedRes.segments);
+        setWhisperDraftSegmentsHe(finalizedRes.segmentsHe);
+        setWhisperDraftSegmentsEn(finalizedRes.segmentsEn);
+        setWhisperDraftSegmentsOrig(finalizedRes.segmentsOrig);
+        setWhisperDraftLyricsHe(finalizedRes.lyricsHe);
+        setWhisperDraftLyricsEn(finalizedRes.lyricsEn);
+        setWhisperDraftLyricsOrig(finalizedRes.lyricsOrig || '');
+        setDetectedSubLangCode(finalizedRes.detectedLanguageCode);
+        setDetectedSubLangLabel(finalizedRes.detectedLanguageLabel);
+        const primaryText = finalizedRes.lyricsHe || finalizedRes.lyricsEn || finalizedRes.lyrics || '';
         setLyricsInput(primaryText);
         uploadParsedSourceRef.current = primaryText.trim();
         setUploadSubtitleLangTab('he');
         setWhisperUploadNotice(
           isHe
-            ? `נוצרו ${res.segments.length} שורות כתוביות מסונכרנות${res.detectedLanguageLabel ? ` (${res.detectedLanguageLabel})` : ''} — יישמרו עם פרסום השיר!`
-            : `Generated ${res.segments.length} synchronized subtitle lines — ready to publish!`
+            ? `נוצרו ${finalizedRes.segments.length} שורות כתוביות מסונכרנות${finalizedRes.detectedLanguageLabel ? ` (${finalizedRes.detectedLanguageLabel})` : ''} — יישמרו עם פרסום השיר!`
+            : `Generated ${finalizedRes.segments.length} synchronized subtitle lines — ready to publish!`
         );
       } else {
         setWhisperUploadNotice(
@@ -475,26 +505,47 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsGeneratingEditSubs(true);
     setEditIncludeSubtitles(true);
     setEditWhisperNotice(
-      isHe ? 'מייצר כתוביות מסונכרנות מהשיר ושומר בענן...' : 'Generating synchronized subtitles and saving to cloud...'
+      isHe ? 'מנתח שמע ומייצר כתוביות מסונכרנות לשיר...' : 'Analyzing audio and generating synchronized subtitles...'
     );
 
     try {
-      const res = await generateSubtitlesWithGeminiMethod({
+      const res = await transcribeAudioOnDevice({
         audioUrl: resolvedAudioUrl,
-        duration: editingTrack.duration || 180,
-        songTitle: editTitle.trim() || editingTrack.name,
-        artistName: editPerformingArtist.trim() || editingTrack.artistName,
+        trackDuration: editingTrack.duration || 180,
+        hintTitle: editTitle.trim() || editingTrack.name,
         language: isHe ? 'he' : 'en',
+        onProgress: (statusText) => {
+          if (statusText) setEditWhisperNotice(statusText);
+        },
+        onPartialSegments: (partial) => {
+          if (partial.segments.length > 0) {
+            setEditWhisperSegments(partial.segments);
+            setEditWhisperSegmentsHe(partial.segmentsHe);
+            setEditWhisperSegmentsEn(partial.segmentsEn);
+            setEditLyricsHe(partial.lyricsHe);
+            setEditLyricsEn(partial.lyricsEn);
+            const partialText = partial.lyricsHe || partial.lyricsEn || '';
+            if (partialText) {
+              setEditLyrics(partialText);
+              editParsedSourceRef.current = partialText.trim();
+            }
+          }
+        },
       });
 
-      if (res?.success && res.segments.length > 0) {
-        const primaryText = res.lyricsHe || res.lyricsEn || res.lyrics || '';
-        setEditWhisperSegments(res.segments);
-        setEditWhisperSegmentsHe(res.segmentsHe);
-        setEditWhisperSegmentsEn(res.segmentsEn);
+      if (res?.success && res.segments && res.segments.length > 0) {
+        const finalSegments = res.segments;
+        const finalSegmentsHe = res.segmentsHe && res.segmentsHe.length > 0 ? res.segmentsHe : finalSegments;
+        const finalSegmentsEn = res.segmentsEn && res.segmentsEn.length > 0 ? res.segmentsEn : undefined;
+        const finalLyricsHe = res.lyricsHe || res.lyrics || '';
+        const finalLyricsEn = res.lyricsEn || '';
+        const primaryText = finalLyricsHe || finalLyricsEn || res.lyrics || '';
+        setEditWhisperSegments(finalSegments);
+        setEditWhisperSegmentsHe(finalSegmentsHe);
+        setEditWhisperSegmentsEn(finalSegmentsEn);
         setEditWhisperSegmentsOrig(res.segmentsOrig);
-        setEditLyricsHe(res.lyricsHe);
-        setEditLyricsEn(res.lyricsEn);
+        setEditLyricsHe(finalLyricsHe);
+        setEditLyricsEn(finalLyricsEn);
         setEditLyricsOrig(res.lyricsOrig || '');
         setEditDetectedLangCode(res.detectedLanguageCode);
         setEditDetectedLangLabel(res.detectedLanguageLabel);
@@ -511,12 +562,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           genre: editGenre.trim() || editingTrack.genre,
           albumName: editAlbum.trim() || editingTrack.albumName,
           lyrics: primaryText || undefined,
-          lyricsHe: res.lyricsHe || undefined,
-          lyricsEn: res.lyricsEn || undefined,
+          lyricsHe: finalLyricsHe || undefined,
+          lyricsEn: finalLyricsEn || undefined,
           lyricsOrig: res.lyricsOrig || undefined,
-          subtitleSegments: res.segments,
-          subtitleSegmentsHe: res.segmentsHe && res.segmentsHe.length > 0 ? res.segmentsHe : undefined,
-          subtitleSegmentsEn: res.segmentsEn && res.segmentsEn.length > 0 ? res.segmentsEn : undefined,
+          subtitleSegments: finalSegments,
+          subtitleSegmentsHe: finalSegmentsHe,
+          subtitleSegmentsEn: finalSegmentsEn,
           subtitleSegmentsOrig: res.segmentsOrig && res.segmentsOrig.length > 0 ? res.segmentsOrig : undefined,
           detectedLanguageCode: res.detectedLanguageCode,
           detectedLanguageLabel: res.detectedLanguageLabel,
@@ -540,8 +591,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         setEditWhisperNotice(
           isHe
-            ? `נוצרו ונשמרו ${res.segments.length} שורות כתוביות בענן בהצלחה!`
-            : `Generated and saved ${res.segments.length} subtitle lines to cloud!`
+            ? `נוצרו ונשמרו ${finalSegments.length} שורות כתוביות בענן בהצלחה!`
+            : `Generated and saved ${finalSegments.length} subtitle lines to cloud!`
         );
       } else {
         setEditWhisperNotice(

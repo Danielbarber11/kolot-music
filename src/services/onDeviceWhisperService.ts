@@ -212,7 +212,13 @@ export async function decodeAudioToMono16k(
   let arrayBuffer: ArrayBuffer;
 
   if (typeof source === 'string') {
-    const res = await fetch(source, { signal: options?.signal });
+    let res: Response;
+    try {
+      res = await fetch(source, { signal: options?.signal });
+    } catch (fetchErr: any) {
+      if (fetchErr?.name === 'AbortError' || options?.signal?.aborted) throw fetchErr;
+      throw new Error('לא ניתן לטעון את קובץ השמע לתמלול מקומי — ניתן להדביק מילים וללחוץ "סנכרן כתוביות מהטקסט"');
+    }
     if (!res.ok) {
       throw new Error(`לא ניתן לטעון את קובץ השמע למכשיר (${res.status})`);
     }
@@ -652,7 +658,8 @@ async function fetchWithRetry(
   maxRetries = 3,
   signal?: AbortSignal
 ): Promise<Response> {
-  let delay = 1000;
+  let delay = 900;
+  let lastResponse: Response | null = null;
   let lastErr: any;
   for (let i = 0; i < maxRetries; i++) {
     if (signal?.aborted) {
@@ -661,10 +668,21 @@ async function fetchWithRetry(
     try {
       const response = await fetch(url, { ...init, signal });
       if (response.ok) return response;
+      lastResponse = response;
       if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
         return response;
       }
-      lastErr = new Error(`HTTP ${response.status}`);
+      if (response.status === 501 || response.status === 503) {
+        const peek = await response.clone().json().catch(() => null);
+        const errText = String(peek?.error || '');
+        if (peek?.missingKey || /GEMINI_API_KEY|OPENAI_API_KEY/i.test(errText)) {
+          return response;
+        }
+      }
+      if (i === maxRetries - 1) {
+        return response;
+      }
+      lastErr = new Error(`שגיאת שרת זמנית (${response.status})`);
     } catch (err: any) {
       if (err?.name === 'AbortError' || signal?.aborted) throw err;
       lastErr = err;
@@ -684,7 +702,8 @@ async function fetchWithRetry(
       delay *= 2;
     }
   }
-  throw lastErr || new Error('Transcription request failed');
+  if (lastResponse) return lastResponse;
+  throw lastErr || new Error('שירות התמלול בענן אינו זמין כרגע');
 }
 
 /**
@@ -822,7 +841,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
 
     let serverRes: Response;
     try {
-      const extracted = await extractFastAudioWavBlob(source, 400, controller.signal).catch(() => null);
+      const extracted = await extractFastAudioWavBlob(source, 260, controller.signal).catch(() => null);
       if (options.signal?.aborted) {
         return emptyFail('יצירת הכתוביות בוטלה', true);
       }
@@ -830,7 +849,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
       const detectedDuration = Math.max(10, Math.round(extracted?.duration || options.duration || 180));
       const langParam = options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he';
 
-      if (extracted?.blob && extracted.blob.size <= 14.5 * 1024 * 1024) {
+      if (extracted?.blob && extracted.blob.size <= 10 * 1024 * 1024) {
         const fd = new FormData();
         fd.append('file', extracted.blob, 'track-16k.wav');
         fd.append('language', langParam);
@@ -891,7 +910,13 @@ export async function generateSubtitlesWithGeminiMethod(options: {
     }
 
     if (!serverRes.ok) {
-      return emptyFail(`HTTP ${serverRes.status}`);
+      const errBody: any = await serverRes.json().catch(() => null);
+      const serverMsg = String(errBody?.error || '').trim();
+      const friendlyMsg =
+        serverRes.status === 503
+          ? (serverMsg || 'שירות התמלול בענן אינו זמין כרגע')
+          : (serverMsg || `שגיאה בשרת התמלול (${serverRes.status})`);
+      return emptyFail(friendlyMsg);
     }
 
     const sData: any = await serverRes.json().catch(() => null);
@@ -1065,7 +1090,7 @@ export async function transcribeAudioOnDevice(options: {
     }
 
     const gpuAvailable = await hasWebGpuQuick();
-    options.onProgress?.('מכין שמע לתמלול מקומי מהיר...', 6);
+    options.onProgress?.('מכין שמע לתמלול אוטומטי במכשיר...', 18);
     const { pcm, duration } = await decodeAudioToMono16k(source, gpuAvailable ? 150 : 84, {
       isolateVocals: true,
       signal: options.signal,

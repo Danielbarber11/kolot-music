@@ -1436,6 +1436,17 @@ async function resolveAudioBytesForAi(req: any): Promise<{ audioBuffer: Buffer |
   let audioBuffer: Buffer | null = null;
   let mimeType = 'audio/mp3';
 
+  const rawStoragePath = (() => {
+    if (audioUrl.startsWith('/api/storage/raw/')) return audioUrl;
+    try {
+      const parsed = new URL(audioUrl);
+      if (parsed.pathname.startsWith('/api/storage/raw/') && req?.headers?.host && parsed.host === String(req.headers.host)) {
+        return parsed.pathname;
+      }
+    } catch {}
+    return '';
+  })();
+
   if (req.file?.buffer) {
     audioBuffer = req.file.buffer;
     mimeType = guessAudioMimeType(req.file.originalname || 'track.mp3', req.file.mimetype);
@@ -1445,8 +1456,8 @@ async function resolveAudioBytesForAi(req: any): Promise<{ audioBuffer: Buffer |
       mimeType = match[1];
       audioBuffer = Buffer.from(match[2], 'base64');
     }
-  } else if (audioUrl.startsWith('/api/storage/raw/')) {
-    const r2Key = decodeURIComponent(audioUrl.replace(/^\/api\/storage\/raw\//, ''));
+  } else if (rawStoragePath) {
+    const r2Key = decodeURIComponent(rawStoragePath.replace(/^\/api\/storage\/raw\//, ''));
     const { client, bucket } = await getR2Context(req);
     const s3Item = await client.send(new GetObjectCommand({ Bucket: bucket, Key: r2Key }));
     if (s3Item.Body) {
@@ -1615,7 +1626,8 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
     if (!ai) {
       return res.status(503).json({
         success: false,
-        error: 'שירות התמלול האוטומטי דורש הגדרת מפתח GEMINI_API_KEY או OPENAI_API_KEY בשרת.',
+        missingKey: true,
+        error: 'שירות התמלול בענן אינו מוגדר עדיין — ממשיך לתמלול מקומי במכשיר.',
       });
     }
 
@@ -1678,6 +1690,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
 
     for (const candidate of [
       { model: 'gemini-3-flash-preview', timeoutMs: 22000, config: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash', timeoutMs: 20000, config: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
       { model: 'gemini-2.5-flash-lite', timeoutMs: 14000, config: { responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
     ]) {
       try {
