@@ -22,8 +22,6 @@ import {
   UserPlus,
   Wand2,
   Loader2,
-  WifiOff,
-  AlertTriangle,
   Music,
   Mic,
   Guitar,
@@ -86,7 +84,7 @@ import {
 } from '../services/audioClassificationService';
 import { saveCachedCloudTracks } from '../services/multiMusicService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
-import { useNetworkHealth, RECOMMENDED_MIN_MBPS } from '../services/networkHealthService';
+import { useNetworkHealth } from '../services/networkHealthService';
 import {
   getUserFavorites,
   toggleUserFavorite,
@@ -1262,46 +1260,24 @@ export const SongsView: React.FC<SongsViewProps> = ({
           ref={mainFeedRef}
           className="flex-1 min-h-0 bg-black border-none overflow-y-auto overscroll-y-contain custom-scrollbar flex flex-col pt-14 md:pt-0 pb-24 md:pb-0"
         >
-          {/* WEAK / OFFLINE INTERNET HEALTH NOTICE */}
+          {/* WEAK / OFFLINE INTERNET HEALTH PILL NOTICE */}
           {(networkHealth.status === 'offline' || (networkHealth.status === 'weak' && !dismissedWeakNetBanner)) && (
-            <div className="px-4 sm:px-6 pt-3">
-              <div
-                className={`rounded-2xl px-4 py-3 border backdrop-blur-xl flex items-center justify-between gap-3 shadow-lg ${
-                  networkHealth.status === 'offline'
-                    ? 'bg-rose-950/75 border-rose-500/45 text-rose-100'
-                    : 'bg-amber-950/75 border-amber-500/45 text-amber-100'
-                }`}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  {networkHealth.status === 'offline' ? (
-                    <WifiOff className="w-5 h-5 text-rose-300 shrink-0" />
-                  ) : (
-                    <AlertTriangle className="w-5 h-5 text-amber-300 shrink-0" />
-                  )}
-                  <div className="text-xs sm:text-sm leading-snug min-w-0">
-                    {networkHealth.status === 'offline' ? (
-                      <p className="font-bold">
-                        {isHe
-                          ? `אין חיבור לאינטרנט — האתר דורש חיבור יציב (מומלץ לפחות ${RECOMMENDED_MIN_MBPS}–1.5 Mbps) לטעינת שירים ותמונות.`
-                          : `You are offline — at least ${RECOMMENDED_MIN_MBPS}–1.5 Mbps is required to stream audio and load artwork.`}
-                      </p>
-                    ) : (
-                      <p className="font-bold">
-                        {isHe
-                          ? `עוצמת האינטרנט חלשה כרגע${networkHealth.speedMbps ? ` (כ-${networkHealth.speedMbps} Mbps)` : ''}. לניגון שירים חלק ולטעינת תמונות מהירה נדרשת מהירות של לפחות ${RECOMMENDED_MIN_MBPS}–1.5 Mbps.`
-                          : `Weak internet connection detected${networkHealth.speedMbps ? ` (~${networkHealth.speedMbps} Mbps)` : ''}. At least ${RECOMMENDED_MIN_MBPS}–1.5 Mbps is recommended for smooth streaming.`}
-                      </p>
-                    )}
-                  </div>
-                </div>
+            <div className="px-4 pt-3 flex justify-center">
+              <div className="inline-flex items-center gap-3 px-5 py-2 rounded-full bg-white text-black shadow-2xl border border-black/10">
+                <span className="text-xs sm:text-sm font-bold text-black">
+                  {networkHealth.status === 'offline'
+                    ? (isHe ? 'אין חיבור לאינטרנט' : 'No internet')
+                    : (isHe ? 'אינטרנט חלש' : 'Weak internet')}
+                </span>
                 {networkHealth.status === 'weak' && (
                   <button
                     type="button"
                     onClick={() => setDismissedWeakNetBanner(true)}
-                    className="p-1.5 rounded-full hover:bg-white/10 text-white/75 hover:text-white transition-colors cursor-pointer shrink-0"
+                    className="w-5 h-5 rounded-full hover:bg-black/10 flex items-center justify-center text-black transition-colors cursor-pointer shrink-0"
                     title={isHe ? 'סגור התראה' : 'Dismiss'}
+                    aria-label={isHe ? 'סגור התראה' : 'Dismiss'}
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-3.5 h-3.5 text-black" />
                   </button>
                 )}
               </div>

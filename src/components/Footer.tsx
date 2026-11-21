@@ -3,6 +3,7 @@ import {
   FileText,
   Mail,
   Smartphone,
+  Copy,
   Check,
   Heart,
   Send,
@@ -10,6 +11,7 @@ import {
   Loader2,
   AlertCircle,
   Share2,
+  ExternalLink,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
@@ -46,6 +48,7 @@ export const Footer: React.FC<FooterProps> = ({
   useEffect(() => onAuthUserChanged(setAuthUser), []);
 
   // Contact modal state
+  const [copiedEmail, setCopiedEmail] = useState(false);
   const [contactCategory, setContactCategory] = useState<ContactCategory>('complaint');
   const [contactSenderEmail, setContactSenderEmail] = useState('');
   const [contactSubject, setContactSubject] = useState('');
@@ -57,6 +60,16 @@ export const Footer: React.FC<FooterProps> = ({
     text: string;
     mailtoHref?: string;
   } | null>(null);
+
+  const contactEmail = 'kolot-music@googlegroups.com';
+
+  const handleCopyEmail = () => {
+    try {
+      navigator.clipboard.writeText(contactEmail);
+      setCopiedEmail(true);
+      setTimeout(() => setCopiedEmail(false), 2500);
+    } catch {}
+  };
 
   const handleInstallClick = async () => {
     if (isInstallable) {
@@ -131,6 +144,11 @@ export const Footer: React.FC<FooterProps> = ({
       }
 
       const emailDispatched = Boolean(data.emailDispatched);
+      const activationPending = Boolean(data.activationPending);
+
+      const mailtoSubject = encodeURIComponent(`[Kolot Music - ${categoryLabel}] ${subject}`);
+      const mailtoBody = encodeURIComponent(`מאת: ${senderEmail}\n\n${message}`);
+      const mailtoHref = `mailto:${contactEmail}?subject=${mailtoSubject}&body=${mailtoBody}`;
 
       trackEvent('contact_submit', {
         category: contactCategory,
@@ -139,13 +157,18 @@ export const Footer: React.FC<FooterProps> = ({
 
       setSentNotice({
         mode: emailDispatched ? 'email' : 'inbox',
+        mailtoHref: emailDispatched ? undefined : mailtoHref,
         text: emailDispatched
           ? (isHe
-              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה לצוות ההנהלה והתמיכה ונשמרה במערכת לטיפול.`
-              : `Your message has been delivered to the management & support team and saved for review.`)
-          : (isHe
-              ? 'פנייתך נשלחה ונשמרה בהצלחה בתיבת ההנהלה של המערכת לבדיקה וטיפול.'
-              : 'Your message has been saved cleanly to the management inbox for review.'),
+              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה ישירות לקבוצת הפניות בכתובת ${contactEmail} ונשמרה במערכת לטיפול.`
+              : `Your message has been sent directly to ${contactEmail} and saved in the system.`)
+          : activationPending
+            ? (isHe
+                ? `הפנייה נשמרה במערכת, ונשלחה הודעת אישור הפעלה לקבוצת המייל ${contactEmail}. באפשרותך גם לשלוח עותק מיידי ישירות מהמייל שלך:`
+                : `Your message was saved and an activation link was sent to ${contactEmail}. You can also send directly via your email app:`)
+            : (isHe
+                ? `הפנייה נשמרה בתיבת ההנהלה של האתר. לשליחה מיידית ישירות לקבוצת ${contactEmail} לחץ על הכפתור מטה:`
+                : `Saved in management inbox. To send directly to ${contactEmail}, use the button below:`),
       });
 
       setContactSenderEmail('');
@@ -156,8 +179,8 @@ export const Footer: React.FC<FooterProps> = ({
       if (err?.name === 'AbortError') {
         setContactError(
           isHe
-            ? 'השרת התעכב בתגובה. אנא נסה לשלוח שוב בעוד מספר רגעים.'
-            : 'Request timed out. Please try again in a moment.'
+            ? `השרת התעכב בתגובה. ניתן לנסות שוב או לשלוח ישירות לקבוצת המייל ${contactEmail}`
+            : `Request timed out. Please try again or email ${contactEmail} directly.`
         );
       } else {
         setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
@@ -230,8 +253,8 @@ export const Footer: React.FC<FooterProps> = ({
                     <Mail className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
-                  <span className="text-[10px] text-white/40 group-hover:text-white/70">
-                    {isHe ? 'פתח' : 'Open'}
+                  <span className="text-[10px] text-white/40 group-hover:text-white/70 truncate max-w-[160px] sm:max-w-none" dir="ltr">
+                    {contactEmail}
                   </span>
                 </button>
 
@@ -382,25 +405,69 @@ export const Footer: React.FC<FooterProps> = ({
             </div>
 
             <div className="space-y-4">
+              {/* 1. GOOGLE GROUPS EMAIL ADDRESS */}
+              <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <span className="text-[10px] text-white/55 block">
+                    {isHe ? 'כתובת המייל לפניות (Google Groups):' : 'Contact Email (Google Groups):'}
+                  </span>
+                  <div className="font-mono text-xs sm:text-sm text-white truncate" dir="ltr">
+                    {contactEmail}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyEmail}
+                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 border border-white/15"
+                >
+                  {copiedEmail ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-white" />
+                      <span className="text-white">{isHe ? 'הועתק!' : 'Copied!'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5 text-white" />
+                      <span>{isHe ? 'העתק מייל' : 'Copy'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
               {sentNotice ? (
                 <div className="p-6 rounded-2xl bg-white/[0.07] border border-white/25 text-center space-y-3.5">
                   <div className="w-11 h-11 rounded-full bg-white text-black flex items-center justify-center mx-auto shadow-lg">
                     <Check className="w-6 h-6" />
                   </div>
                   <p className="text-sm font-bold text-white">
-                    {isHe ? 'הפנייה נקלטה במערכת' : 'Submission Received'}
+                    {sentNotice.mode === 'email'
+                      ? (isHe ? 'הפנייה נשלחה לקבוצת המייל' : 'Email Sent')
+                      : (isHe ? 'הפנייה נשמרה במערכת' : 'Saved in System')}
                   </p>
                   <p className="text-xs text-white/80 leading-relaxed max-w-sm mx-auto">
                     {sentNotice.text}
                   </p>
-                  <div className="pt-2 flex items-center justify-center">
+                  <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-2.5">
+                    {sentNotice.mailtoHref && (
+                      <a
+                        href={sentNotice.mailtoHref}
+                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-white text-black hover:bg-neutral-200 font-bold text-xs inline-flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>{isHe ? `שלח במייל אל ${contactEmail}` : `Send via Email to ${contactEmail}`}</span>
+                      </a>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
                         setSentNotice(null);
                         setShowContactModal(false);
                       }}
-                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-white hover:bg-neutral-200 text-black font-bold text-xs transition-colors cursor-pointer"
+                      className={`w-full sm:w-auto px-6 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
+                        sentNotice.mailtoHref
+                          ? 'bg-white/15 hover:bg-white/25 text-white'
+                          : 'bg-white hover:bg-neutral-200 text-black'
+                      }`}
                     >
                       {isHe ? 'סגור' : 'Close'}
                     </button>
@@ -685,7 +752,7 @@ export const TermsReaderModal: React.FC<{
           <section className="space-y-1.5 bg-white/[0.03] p-4 rounded-xl border border-white/10">
             <h4 className="font-semibold text-white text-sm">4. הסרת תכנים ויצירת קשר</h4>
             <p>
-              הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית למייל ההנהלה: <strong className="text-white font-mono">kolot.music1@gmail.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
+              הנהלת האתר שומרת לעצמה את הזכות להסיר כל תוכן שאינו עומד בתנאי השימוש. במידה ונתקלתם בתוכן המפר זכויות יוצרים או תוכן פוגעני, ניתן לפנות מיידית לכתובת הפניות הרשמית (Google Groups): <strong className="text-white font-mono" dir="ltr">kolot-music@googlegroups.com</strong> והנושא ייבדק ויטופל בהקדם האפשרי.
             </p>
           </section>
 

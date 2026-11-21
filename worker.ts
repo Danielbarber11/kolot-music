@@ -2143,6 +2143,40 @@ export default {
           } catch {}
         }
 
+        // 4. FormSubmit.co AJAX fallback (works without API keys once 1-time activation link in Google Group is confirmed)
+        let activationPending = false;
+        if (!emailDispatched) {
+          try {
+            const originUrl = request.headers.get('origin') || url.origin;
+            const fRes = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(targetRecipient)}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                Origin: originUrl,
+                Referer: `${originUrl}/`,
+              },
+              body: JSON.stringify({
+                name: rawSenderEmail,
+                email: rawSenderEmail,
+                _replyto: rawSenderEmail,
+                _subject: fullSubject,
+                category: categoryLabel,
+                message: plainBody,
+                _captcha: 'false',
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+            const fData: any = await fRes.json().catch(() => null);
+            if (fRes.ok && (fData?.success === true || fData?.success === 'true')) {
+              emailDispatched = true;
+              emailProvider = 'formsubmit';
+            } else if (String(fData?.message || '').toLowerCase().includes('activat')) {
+              activationPending = true;
+            }
+          } catch {}
+        }
+
         if (!storedInR2 && !emailDispatched) {
           return jsonResponse({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' }, 502);
         }
@@ -2152,6 +2186,7 @@ export default {
           id: msgId,
           emailDispatched,
           emailProvider: emailProvider || undefined,
+          activationPending: activationPending || undefined,
           storedInR2,
         });
       } catch (err: any) {

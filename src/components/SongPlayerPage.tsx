@@ -17,6 +17,16 @@ import {
   Captions,
   Check,
   Copy,
+  SlidersHorizontal,
+  Moon,
+  Bluetooth,
+  Speaker,
+  Headphones,
+  Volume2,
+  VolumeX,
+  Gauge,
+  RefreshCw,
+  X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment } from '../types';
@@ -184,7 +194,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const progressFillRef = useRef<HTMLDivElement>(null);
+  const progressThumbRef = useRef<HTMLDivElement>(null);
   const elapsedTimeRef = useRef<HTMLSpanElement>(null);
+  const smoothClockRef = useRef<{
+    anchorAudioTime: number;
+    anchorPerfMs: number;
+    lastAudioTime: number;
+    lastVisualTime: number;
+  }>({ anchorAudioTime: 0, anchorPerfMs: 0, lastAudioTime: 0, lastVisualTime: 0 });
   const lastReactTimeSyncRef = useRef<number>(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -194,6 +211,35 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [shareFeedback, setShareFeedback] = useState<{ url: string; copied: boolean } | null>(null);
   const [favoriteAuthNotice, setFavoriteAuthNotice] = useState(false);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
+
+  // "כלים נוספים" (More Tools) panel state: Sleep Timer, Bluetooth & Audio Output, Speed/Volume
+  const [isMoreToolsOpen, setIsMoreToolsOpen] = useState(false);
+  const [moreToolsTab, setMoreToolsTab] = useState<'sleep' | 'bluetooth' | 'audio'>('sleep');
+
+  // Sleep Timer state
+  const [sleepEndTimestamp, setSleepEndTimestamp] = useState<number | null>(null);
+  const [sleepRemainingSec, setSleepRemainingSec] = useState<number | null>(null);
+  const [sleepStopAtTrackEnd, setSleepStopAtTrackEnd] = useState(false);
+  const [sleepFinishAction, setSleepFinishAction] = useState<'keep-open' | 'sleep-screen'>('keep-open');
+  const [customSleepMinutes, setCustomSleepMinutes] = useState('20');
+  const [sleepEndedBanner, setSleepEndedBanner] = useState(false);
+  const [sleepBlackoutOverlay, setSleepBlackoutOverlay] = useState(false);
+  const wakeLockRef = useRef<any>(null);
+
+  // Bluetooth & Audio Output state
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedSinkId, setSelectedSinkId] = useState<string>('');
+  const [audioOutputMessage, setAudioOutputMessage] = useState<string | null>(null);
+  const [bluetoothDeviceInfo, setBluetoothDeviceInfo] = useState<{
+    name: string;
+    batteryPercent?: number | null;
+    connected: boolean;
+  } | null>(null);
+  const bluetoothServerRef = useRef<any>(null);
+  const [isScanningBluetooth, setIsScanningBluetooth] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState<number>(1);
+  const [volumeLevel, setVolumeLevel] = useState<number>(1);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -242,6 +288,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setShareFeedback(null);
     setCopiedLink(false);
     setIsLyricsExpanded(false);
+    setSleepEndedBanner(false);
+    setSleepBlackoutOverlay(false);
+    smoothClockRef.current = {
+      anchorAudioTime: 0,
+      anchorPerfMs: typeof performance !== 'undefined' ? performance.now() : 0,
+      lastAudioTime: 0,
+      lastVisualTime: 0,
+    };
+    syncProgressDomImmediate(0, track.duration || 180);
 
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
     const hasEn = !!track.subtitleSegmentsEn?.length;
@@ -441,11 +496,45 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
+  const clearMediaSessionCompletely = (audioEl?: HTMLAudioElement | null, unloadAudio = false) => {
+    try {
+      if (audioEl) {
+        audioEl.pause();
+        if (unloadAudio) {
+          audioEl.currentTime = 0;
+          audioEl.removeAttribute('src');
+          audioEl.load();
+        }
+      }
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none';
+        navigator.mediaSession.metadata = null;
+        const actions: MediaSessionAction[] = [
+          'play',
+          'pause',
+          'stop',
+          'seekbackward',
+          'seekforward',
+          'seekto',
+          'previoustrack',
+          'nexttrack',
+        ];
+        actions.forEach((act) => {
+          try {
+            navigator.mediaSession.setActionHandler(act, null);
+          } catch {}
+        });
+        try {
+          if (typeof navigator.mediaSession.setPositionState === 'function') {
+            navigator.mediaSession.setPositionState();
+          }
+        } catch {}
+      }
+    } catch {}
+  };
+
   const handleExitPlayer = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
+    clearMediaSessionCompletely(audioRef.current, true);
     setIsPlaying(false);
     onBack();
   };
@@ -459,21 +548,264 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   };
 
   useEffect(() => {
+    const handlePageHide = () => {
+      clearMediaSessionCompletely(audioRef.current, true);
+    };
+    window.addEventListener('pagehide', handlePageHide);
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
+      window.removeEventListener('pagehide', handlePageHide);
+      clearMediaSessionCompletely(audioRef.current, true);
+      if (wakeLockRef.current && typeof wakeLockRef.current.release === 'function') {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
       }
+      try {
+        if (bluetoothServerRef.current?.connected) {
+          bluetoothServerRef.current.disconnect();
+        }
+      } catch {}
     };
   }, []);
 
-  const syncProgressDomImmediate = (timeSec: number, durSec: number) => {
+  // Sleep Timer Countdown & Gentle Fade-Out Engine
+  const finishSleepTimer = React.useCallback(() => {
+    const audio = audioRef.current;
+    setSleepEndTimestamp(null);
+    setSleepRemainingSec(null);
+    setSleepStopAtTrackEnd(false);
+
+    const finalizeStop = () => {
+      clearMediaSessionCompletely(audio, false);
+      setIsPlaying(false);
+      if (audio) {
+        audio.volume = isMuted ? 0 : volumeLevel;
+      }
+      if (wakeLockRef.current && typeof wakeLockRef.current.release === 'function') {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+      setSleepEndedBanner(true);
+      if (sleepFinishAction === 'sleep-screen') {
+        setSleepBlackoutOverlay(true);
+        try {
+          // Allow standalone/installed PWA to attempt clean close if OS permits; otherwise keeps darkened ready state
+          if (window.matchMedia?.('(display-mode: standalone)')?.matches) {
+            window.close();
+          }
+        } catch {}
+      }
+    };
+
+    if (!audio || audio.paused) {
+      finalizeStop();
+      return;
+    }
+
+    const startVol = audio.volume;
+    const steps = 12;
+    let step = 0;
+    const fadeTimer = setInterval(() => {
+      step += 1;
+      try {
+        audio.volume = Math.max(0, startVol * (1 - step / steps));
+      } catch {}
+      if (step >= steps) {
+        clearInterval(fadeTimer);
+        finalizeStop();
+      }
+    }, 160);
+  }, [isMuted, volumeLevel, sleepFinishAction]);
+
+  useEffect(() => {
+    if (!sleepEndTimestamp) {
+      setSleepRemainingSec(null);
+      return;
+    }
+    const updateRemaining = () => {
+      const diffSec = Math.ceil((sleepEndTimestamp - Date.now()) / 1000);
+      if (diffSec <= 0) {
+        finishSleepTimer();
+      } else {
+        setSleepRemainingSec(diffSec);
+      }
+    };
+    updateRemaining();
+    const timer = setInterval(updateRemaining, 500);
+    return () => clearInterval(timer);
+  }, [sleepEndTimestamp, finishSleepTimer]);
+
+  const startSleepTimerMinutes = (minutes: number) => {
+    const safeMin = Math.max(1, Math.min(240, Math.round(minutes)));
+    setSleepStopAtTrackEnd(false);
+    setSleepEndedBanner(false);
+    setSleepBlackoutOverlay(false);
+    setSleepEndTimestamp(Date.now() + safeMin * 60 * 1000);
+    setSleepRemainingSec(safeMin * 60);
+  };
+
+  const cancelSleepTimer = () => {
+    setSleepEndTimestamp(null);
+    setSleepRemainingSec(null);
+    setSleepStopAtTrackEnd(false);
+    setSleepEndedBanner(false);
+    setSleepBlackoutOverlay(false);
+  };
+
+  // Enumerate & Manage Audio Output Devices (Speakers / Headphones / Bluetooth)
+  const refreshAudioOutputs = React.useCallback(async () => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter((d) => d.kind === 'audiooutput');
+      setAudioOutputs(outputs);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    refreshAudioOutputs();
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    if (!md || typeof md.addEventListener !== 'function') return;
+    md.addEventListener('devicechange', refreshAudioOutputs);
+    return () => {
+      md.removeEventListener('devicechange', refreshAudioOutputs);
+    };
+  }, [refreshAudioOutputs]);
+
+  const handleSelectAudioOutputPicker = async () => {
+    setAudioOutputMessage(null);
+    try {
+      const md: any = navigator.mediaDevices;
+      const audio: any = audioRef.current;
+      if (md && typeof md.selectAudioOutput === 'function') {
+        const picked: MediaDeviceInfo = await md.selectAudioOutput();
+        if (picked?.deviceId && audio && typeof audio.setSinkId === 'function') {
+          await audio.setSinkId(picked.deviceId);
+          setSelectedSinkId(picked.deviceId);
+          setAudioOutputMessage(
+            isHe
+              ? `השמע הועבר אל: ${picked.label || 'התקן חיצוני'}`
+              : `Audio routed to: ${picked.label || 'External device'}`
+          );
+          refreshAudioOutputs();
+          return;
+        }
+      }
+      await refreshAudioOutputs();
+      setAudioOutputMessage(
+        isHe
+          ? 'במכשיר זה ניתן לבחור אוזניות/רמקול בלוטוס מתוך הרשימה מטה או מווילון פלט השמע של המכשיר.'
+          : 'Select an output below or via your device Media Output / Bluetooth quick panel.'
+      );
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+        setAudioOutputMessage(
+          isHe
+            ? 'בחירת פלט שמע ישירה אינה נתמכת בדפדפן זה — השתמש בפלט המדיה של המכשיר.'
+            : 'Direct output picker is unavailable in this browser; use your OS media output tray.'
+        );
+      }
+    }
+  };
+
+  const handleSetSinkId = async (deviceId: string, label?: string) => {
+    setAudioOutputMessage(null);
+    try {
+      const audio: any = audioRef.current;
+      if (audio && typeof audio.setSinkId === 'function') {
+        await audio.setSinkId(deviceId);
+        setSelectedSinkId(deviceId);
+        setAudioOutputMessage(
+          isHe
+            ? `השמע מחובר ל: ${label || 'ברירת מחדל'}`
+            : `Routed to: ${label || 'Default'}`
+        );
+      } else {
+        setAudioOutputMessage(
+          isHe
+            ? 'בדפדפן נייד זה חיבור הבלוטוס מנוהל אוטומטית על ידי מערכת ההפעלה בעת חיבור האוזניות או הרמקול.'
+            : 'Audio routing is managed automatically by your OS when Bluetooth devices connect.'
+        );
+      }
+    } catch {
+      setAudioOutputMessage(isHe ? 'לא ניתן להעביר שמע להתקן זה כרגע' : 'Could not route audio to this device.');
+    }
+  };
+
+  const handleScanBluetoothDevice = async () => {
+    setAudioOutputMessage(null);
+    const navAny: any = typeof navigator !== 'undefined' ? navigator : null;
+    if (!navAny?.bluetooth || typeof navAny.bluetooth.requestDevice !== 'function') {
+      setAudioOutputMessage(
+        isHe
+          ? 'סריקת Web Bluetooth אינה נתמכת בדפדפן זה. חבר את האוזניות או הרמקול בהגדרות ה-Bluetooth של המכשיר והשמע יעבור אוטומטית.'
+          : 'Web Bluetooth is not supported in this browser. Pair in OS Bluetooth settings to stream automatically.'
+      );
+      return;
+    }
+
+    setIsScanningBluetooth(true);
+    try {
+      const device = await navAny.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ['battery_service', 'device_information'],
+      });
+      let batteryPercent: number | null = null;
+      if (device?.gatt) {
+        try {
+          const server = await device.gatt.connect();
+          bluetoothServerRef.current = server;
+          try {
+            const batterySvc = await server.getPrimaryService('battery_service');
+            const batteryChar = await batterySvc.getCharacteristic('battery_level');
+            const val = await batteryChar.readValue();
+            batteryPercent = val.getUint8(0);
+          } catch {}
+        } catch {}
+      }
+      setBluetoothDeviceInfo({
+        name: device?.name || (isHe ? 'התקן Bluetooth' : 'Bluetooth Device'),
+        batteryPercent,
+        connected: true,
+      });
+      setAudioOutputMessage(
+        isHe
+          ? `מחובר להתקן: ${device?.name || 'Bluetooth'}`
+          : `Connected to: ${device?.name || 'Bluetooth'}`
+      );
+      await refreshAudioOutputs();
+    } catch (err: any) {
+      if (err?.name !== 'NotFoundError' && err?.name !== 'AbortError') {
+        setAudioOutputMessage(
+          isHe ? 'לא הושלם חיבור Bluetooth.' : 'Bluetooth connection did not complete.'
+        );
+      }
+    } finally {
+      setIsScanningBluetooth(false);
+    }
+  };
+
+  const syncProgressDomImmediate = (timeSec: number, durSec: number, updateAnchor = false) => {
     const safeDur = durSec > 0 && Number.isFinite(durSec) ? durSec : 1;
-    const pct = Math.min(100, Math.max(0, (timeSec / safeDur) * 100));
+    const clampedTime = Math.max(0, Math.min(safeDur, Number.isFinite(timeSec) ? timeSec : 0));
+    const ratio = Math.min(1, Math.max(0, clampedTime / safeDur));
+    const pct = ratio * 100;
     if (progressFillRef.current) {
-      progressFillRef.current.style.width = `${pct}%`;
+      progressFillRef.current.style.transform = `scaleX(${ratio})`;
+    }
+    if (progressThumbRef.current) {
+      progressThumbRef.current.style.left = `${pct}%`;
     }
     if (elapsedTimeRef.current) {
-      elapsedTimeRef.current.textContent = formatClockTime(timeSec);
+      elapsedTimeRef.current.textContent = formatClockTime(clampedTime);
+    }
+    if (updateAnchor) {
+      const now = typeof performance !== 'undefined' ? performance.now() : 0;
+      smoothClockRef.current = {
+        anchorAudioTime: clampedTime,
+        anchorPerfMs: now,
+        lastAudioTime: clampedTime,
+        lastVisualTime: clampedTime,
+      };
     }
   };
 
@@ -488,7 +820,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       ) {
         navigator.mediaSession.setPositionState({
           duration: durSec,
-          playbackRate: 1,
+          playbackRate: playbackRate || 1,
           position: Math.max(0, Math.min(durSec, Number.isFinite(timeSec) ? timeSec : 0)),
         });
       }
@@ -503,7 +835,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         Math.min(effectiveDur, audioRef.current.currentTime + seconds)
       );
       audioRef.current.currentTime = targetTime;
-      syncProgressDomImmediate(targetTime, effectiveDur);
+      syncProgressDomImmediate(targetTime, effectiveDur, true);
       syncMediaSessionPosition(targetTime, effectiveDur);
       setCurrentTime(targetTime);
     }
@@ -518,7 +850,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     const ratio = clickX / width;
     const effectiveDur = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : (duration || 1);
     const newTime = ratio * effectiveDur;
-    syncProgressDomImmediate(newTime, effectiveDur);
+    syncProgressDomImmediate(newTime, effectiveDur, true);
     syncMediaSessionPosition(newTime, effectiveDur);
     setCurrentTime(newTime);
     if (audioRef.current) {
@@ -526,42 +858,133 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
-  // Native Mobile / OS Media Notification Controls (Lock screen & Notification shade show Song Cover + Song Title + Artist)
+  // Sync dynamic <meta name="theme-color"> so Chrome / Samsung One UI notification & status bar absorb track colors
+  useEffect(() => {
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (!metaTheme) return;
+    const rgbColor = `rgb(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b})`;
+    metaTheme.setAttribute('content', rgbColor);
+    return () => {
+      metaTheme.setAttribute('content', '#000000');
+    };
+  }, [extractedColor.r, extractedColor.g, extractedColor.b]);
+
+  // Native Mobile / Samsung OS Media Notification Controls (Lock screen & Colored Notification Shade)
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') {
       return;
     }
-    try {
-      const origin = window.location.origin;
+    let cancelled = false;
+    const origin = window.location.origin;
+
+    const guessMimeType = (urlStr: string): string => {
+      const clean = urlStr.split('?')[0].toLowerCase();
+      if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) return 'image/jpeg';
+      if (clean.endsWith('.webp')) return 'image/webp';
+      return 'image/png';
+    };
+
+    const createTintedArtworkPng = async (): Promise<string | null> => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 512;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const grad = ctx.createLinearGradient(0, 0, 512, 512);
+        grad.addColorStop(0, `rgb(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b})`);
+        grad.addColorStop(
+          1,
+          `rgb(${Math.max(12, Math.round(extractedColor.r * 0.45))}, ${Math.max(12, Math.round(extractedColor.g * 0.45))}, ${Math.max(18, Math.round(extractedColor.b * 0.45))})`
+        );
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 512, 512);
+
+        if (effectiveCoverUrl && !effectiveCoverUrl.startsWith('blob:')) {
+          const loaded = await new Promise<HTMLImageElement | null>((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.referrerPolicy = 'no-referrer';
+            img.onload = () => resolve(img);
+            img.onerror = () => resolve(null);
+            img.src = new URL(effectiveCoverUrl, origin).toString();
+          });
+          if (loaded && loaded.naturalWidth > 0 && loaded.naturalHeight > 0) {
+            const scale = Math.max(512 / loaded.naturalWidth, 512 / loaded.naturalHeight);
+            const w = loaded.naturalWidth * scale;
+            const h = loaded.naturalHeight * scale;
+            ctx.drawImage(loaded, (512 - w) / 2, (512 - h) / 2, w, h);
+            return canvas.toDataURL('image/png');
+          }
+        }
+
+        // Stylized fallback emblem on dynamic gradient color so Samsung still extracts song palette
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+        ctx.beginPath();
+        ctx.arc(256, 256, 150, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 132px system-ui, -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('♪', 256, 260);
+        return canvas.toDataURL('image/png');
+      } catch {
+        return null;
+      }
+    };
+
+    const applyMediaMetadata = async () => {
       const artwork: MediaImage[] = [];
       if (effectiveCoverUrl && !effectiveCoverUrl.startsWith('blob:')) {
         try {
           const absCover = new URL(effectiveCoverUrl, origin).toString();
+          const mime = guessMimeType(absCover);
           artwork.push(
-            { src: absCover, sizes: '512x512', type: 'image/png' },
-            { src: absCover, sizes: '192x192', type: 'image/png' }
+            { src: absCover, sizes: '512x512', type: mime },
+            { src: absCover, sizes: '192x192', type: mime }
           );
         } catch {}
       }
-      if (artwork.length === 0) {
+
+      const rasterPng = await createTintedArtworkPng();
+      if (cancelled) return;
+      if (rasterPng) {
+        // Put verified raster PNG first so Android/Samsung Bitmap decoder always extracts cover + palette colors
+        artwork.unshift(
+          { src: rasterPng, sizes: '512x512', type: 'image/png' },
+          { src: rasterPng, sizes: '192x192', type: 'image/png' }
+        );
+      } else if (artwork.length === 0) {
         artwork.push(
           { src: `${origin}/pwa-512x512.png`, sizes: '512x512', type: 'image/png' },
           { src: `${origin}/pwa-192x192.png`, sizes: '192x192', type: 'image/png' }
         );
       }
 
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.name || 'Kolot Music',
-        artist: track.artistName || 'Kolot Music',
-        album: track.albumName || 'Kolot Music',
-        artwork,
-      });
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.name || 'Kolot Music',
+          artist: track.artistName || 'Kolot Music',
+          album: track.albumName || 'Kolot Music',
+          artwork,
+        });
+      } catch {}
+    };
 
+    void applyMediaMetadata();
+
+    try {
       navigator.mediaSession.setActionHandler('play', () => {
         audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => {});
       });
       navigator.mediaSession.setActionHandler('pause', () => {
         audioRef.current?.pause();
+        setIsPlaying(false);
+      });
+      navigator.mediaSession.setActionHandler('stop', () => {
+        clearMediaSessionCompletely(audioRef.current, false);
         setIsPlaying(false);
       });
       navigator.mediaSession.setActionHandler('seekbackward', (details) => {
@@ -575,7 +998,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
           const t = Math.max(0, Math.min(d, details.seekTime));
           audioRef.current.currentTime = t;
-          syncProgressDomImmediate(t, d);
+          syncProgressDomImmediate(t, d, true);
           syncMediaSessionPosition(t, d);
           setCurrentTime(t);
         }
@@ -598,29 +1021,44 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     } catch {}
 
     return () => {
-      try {
-        if ('mediaSession' in navigator) {
-          navigator.mediaSession.setActionHandler('play', null);
-          navigator.mediaSession.setActionHandler('pause', null);
-          navigator.mediaSession.setActionHandler('seekbackward', null);
-          navigator.mediaSession.setActionHandler('seekforward', null);
-          navigator.mediaSession.setActionHandler('seekto', null);
-          navigator.mediaSession.setActionHandler('previoustrack', null);
-          navigator.mediaSession.setActionHandler('nexttrack', null);
-        }
-      } catch {}
+      cancelled = true;
     };
-  }, [track.id, track.name, track.artistName, track.albumName, effectiveCoverUrl, allTracks.length]);
+  }, [
+    track.id,
+    track.name,
+    track.artistName,
+    track.albumName,
+    effectiveCoverUrl,
+    allTracks.length,
+    extractedColor.r,
+    extractedColor.g,
+    extractedColor.b,
+  ]);
 
   useEffect(() => {
     try {
       if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        if (!audioRef.current?.getAttribute('src')) {
+          navigator.mediaSession.playbackState = 'none';
+          return;
+        }
         navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
       }
     } catch {}
   }, [isPlaying]);
 
-  const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate]);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = isMuted ? 0 : volumeLevel;
+      audioRef.current.muted = isMuted;
+    }
+  }, [volumeLevel, isMuted]);
 
   const buildTrackShareUrl = (): string => {
     const shareUrl = new URL(window.location.origin + window.location.pathname);
@@ -722,10 +1160,32 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       if (!active) return;
       const audio = audioRef.current;
       if (audio && !isScrubbing) {
-        const audioDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : duration;
+        const audioDur =
+          audio.duration && Number.isFinite(audio.duration) && audio.duration > 0
+            ? audio.duration
+            : duration;
         const audioCur = audio.currentTime || 0;
-        syncProgressDomImmediate(audioCur, audioDur);
-        if (nowMs - lastReactTimeSyncRef.current >= 75) {
+        const sc = smoothClockRef.current;
+
+        if (Math.abs(audioCur - sc.lastAudioTime) > 0.001) {
+          sc.anchorAudioTime = audioCur;
+          sc.anchorPerfMs = nowMs;
+          sc.lastAudioTime = audioCur;
+        }
+
+        let visualTime = audioCur;
+        if (!audio.paused && !audio.ended && audio.readyState >= 2 && sc.anchorPerfMs > 0) {
+          const rate = audio.playbackRate || 1;
+          const extrapolated = sc.anchorAudioTime + ((nowMs - sc.anchorPerfMs) / 1000) * rate;
+          visualTime = Math.max(audioCur, Math.min(audioDur, Math.min(audioCur + 0.16, extrapolated)));
+          if (visualTime < sc.lastVisualTime && sc.lastVisualTime - visualTime < 0.05) {
+            visualTime = sc.lastVisualTime;
+          }
+        }
+        sc.lastVisualTime = visualTime;
+
+        syncProgressDomImmediate(visualTime, audioDur, false);
+        if (nowMs - lastReactTimeSyncRef.current >= 150) {
           lastReactTimeSyncRef.current = nowMs;
           setCurrentTime(audioCur);
         }
@@ -736,6 +1196,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
 
     if (isPlaying && !isScrubbing) {
+      smoothClockRef.current.anchorPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
+      smoothClockRef.current.anchorAudioTime = audioRef.current?.currentTime || smoothClockRef.current.lastAudioTime || 0;
       requestRef.current = requestAnimationFrame(tick);
     } else if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
@@ -792,12 +1254,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         onLoadedMetadata={() => {
           if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
+            syncProgressDomImmediate(audioRef.current.currentTime || 0, audioRef.current.duration, true);
             syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
           }
         }}
         onDurationChange={() => {
           if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
+            syncProgressDomImmediate(audioRef.current.currentTime || 0, audioRef.current.duration, true);
             syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
           }
         }}
@@ -816,17 +1280,17 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           }
         }}
         onTimeUpdate={() => {
-          if (audioRef.current && !isScrubbing) {
+          if (audioRef.current && !isScrubbing && audioRef.current.paused) {
             const t = audioRef.current.currentTime;
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
-            syncProgressDomImmediate(t, d);
+            syncProgressDomImmediate(t, d, true);
           }
         }}
         onSeeking={() => {
           if (audioRef.current) {
             const t = audioRef.current.currentTime;
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
-            syncProgressDomImmediate(t, d);
+            syncProgressDomImmediate(t, d, true);
             syncMediaSessionPosition(t, d);
             setCurrentTime(t);
           }
@@ -835,14 +1299,20 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           if (audioRef.current) {
             const t = audioRef.current.currentTime;
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
-            syncProgressDomImmediate(t, d);
+            syncProgressDomImmediate(t, d, true);
             syncMediaSessionPosition(t, d);
             setCurrentTime(t);
           }
         }}
         onEnded={() => {
+          const d = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+          syncProgressDomImmediate(d, d, true);
+          setCurrentTime(d);
           setIsPlaying(false);
           if (requestRef.current) cancelAnimationFrame(requestRef.current);
+          if (sleepStopAtTrackEnd) {
+            finishSleepTimer();
+          }
         }}
       />
 
@@ -912,11 +1382,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             <div className="w-full h-2 group-hover:h-2.5 rounded-full bg-white/20 relative shadow-inner overflow-visible">
               <div
                 ref={progressFillRef}
-                className="h-full bg-white rounded-full relative will-change-[width]"
-                style={{ width: `${progressPercent}%` }}
-              >
-                <div className="w-4 h-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9),0_2px_4px_rgba(0,0,0,0.5)] absolute top-1/2 -translate-y-1/2 left-full -translate-x-1/2 group-hover:scale-125 transition-transform duration-100 ring-2 ring-black/10" />
-              </div>
+                className="w-full h-full bg-white rounded-full origin-left will-change-transform"
+                style={{ transform: 'scaleX(0)' }}
+              />
+              <div
+                ref={progressThumbRef}
+                className="w-4 h-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9),0_2px_4px_rgba(0,0,0,0.5)] absolute top-1/2 -translate-y-1/2 -translate-x-1/2 group-hover:scale-125 transition-transform duration-100 ring-2 ring-black/10 will-change-[left]"
+                style={{ left: '0%' }}
+              />
             </div>
           </div>
 
@@ -1064,6 +1537,41 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           )}
 
+          {/* MORE TOOLS TAB BUTTON ("כלים נוספים" - Sleep Timer, Bluetooth, Sound) */}
+          <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsMoreToolsOpen(true)}
+              className="px-4 py-1.5 rounded-full bg-white/12 hover:bg-white/22 border border-white/25 backdrop-blur-xl text-xs font-bold text-white inline-flex items-center gap-2 shadow-lg transition-all cursor-pointer active:scale-95"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-white" />
+              <span>{isHe ? 'כלים נוספים' : 'More Tools'}</span>
+              {(sleepRemainingSec !== null || sleepStopAtTrackEnd) && (
+                <span className="px-2 py-0.5 rounded-full bg-white text-black text-[10px] font-mono tabular-nums">
+                  {sleepStopAtTrackEnd ? (isHe ? 'סוף שיר' : 'Track End') : formatClockTime(sleepRemainingSec || 0)}
+                </span>
+              )}
+              {bluetoothDeviceInfo?.connected && (
+                <Bluetooth className="w-3.5 h-3.5 text-sky-300" />
+              )}
+            </button>
+          </div>
+
+          {sleepEndedBanner && (
+            <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/70 border border-white/25 backdrop-blur-xl flex items-center justify-between gap-2 shadow-xl text-xs">
+              <span className="font-semibold text-white">
+                {isHe ? 'טיימר השינה הסתיים — הניגון נעצר' : 'Sleep timer finished — playback paused'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSleepEndedBanner(false)}
+                className="p-1 rounded-full hover:bg-white/15 text-white/80 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
         </div>
 
         {/* SUBTLE BOTTOM SCROLL BUTTON TO SCREEN 2 (SUBTITLES & DETAILS) */}
@@ -1203,7 +1711,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                           if (audioRef.current) {
                             const effectiveDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
                             audioRef.current.currentTime = line.startTime;
-                            syncProgressDomImmediate(line.startTime, effectiveDur);
+                            syncProgressDomImmediate(line.startTime, effectiveDur, true);
                             syncMediaSessionPosition(line.startTime, effectiveDur);
                             setCurrentTime(line.startTime);
                           }
@@ -1384,6 +1892,416 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] px-5 py-2.5 rounded-full bg-white text-black font-black text-xs shadow-2xl flex items-center gap-2 animate-bounce">
           <Share2 className="w-4 h-4 text-black" />
           <span>{isHe ? 'הקישור לשיר הועתק בהצלחה! ✓' : 'Song link copied! ✓'}</span>
+        </div>
+      )}
+
+      {/* MORE TOOLS DRAWER / TAB ("כלים נוספים": טיימר שינה, בלוטוס ורמקולים, שמע ומהירות) */}
+      <AnimatePresence>
+        {isMoreToolsOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsMoreToolsOpen(false)}
+            className="fixed inset-0 z-[155] bg-black/80 backdrop-blur-md flex items-end sm:items-center justify-center p-3 sm:p-4"
+            dir={isHe ? 'rtl' : 'ltr'}
+          >
+            <motion.div
+              initial={{ y: 40, opacity: 0, scale: 0.98 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 40, opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg max-h-[88dvh] overflow-y-auto custom-scrollbar rounded-3xl bg-[#09090b] border border-white/20 p-5 sm:p-6 shadow-2xl space-y-5 text-white text-start"
+            >
+              {/* HEADER */}
+              <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center">
+                    <SlidersHorizontal className="w-4 h-4 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">
+                      {isHe ? 'כלים נוספים' : 'More Tools'}
+                    </h3>
+                    <p className="text-[11px] text-white/55">
+                      {isHe ? 'טיימר שינה, חיבור Bluetooth והגדרות שמע' : 'Sleep Timer, Bluetooth & Audio Controls'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsMoreToolsOpen(false)}
+                  className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-colors cursor-pointer"
+                  aria-label={isHe ? 'סגור' : 'Close'}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* TABS INSIDE "כלים נוספים" */}
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-white/[0.05] border border-white/10 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setMoreToolsTab('sleep')}
+                  className={`py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    moreToolsTab === 'sleep' ? 'bg-white text-black shadow' : 'text-white/75 hover:text-white'
+                  }`}
+                >
+                  <Moon className="w-3.5 h-3.5" />
+                  <span>{isHe ? 'טיימר שינה' : 'Sleep Timer'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreToolsTab('bluetooth');
+                    refreshAudioOutputs();
+                  }}
+                  className={`py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    moreToolsTab === 'bluetooth' ? 'bg-white text-black shadow' : 'text-white/75 hover:text-white'
+                  }`}
+                >
+                  <Bluetooth className="w-3.5 h-3.5" />
+                  <span>{isHe ? 'בלוטוס ושמע' : 'Bluetooth'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMoreToolsTab('audio')}
+                  className={`py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    moreToolsTab === 'audio' ? 'bg-white text-black shadow' : 'text-white/75 hover:text-white'
+                  }`}
+                >
+                  <Gauge className="w-3.5 h-3.5" />
+                  <span>{isHe ? 'מהירות ועוצמה' : 'Sound & Speed'}</span>
+                </button>
+              </div>
+
+              {/* TAB 1: SLEEP TIMER */}
+              {moreToolsTab === 'sleep' && (
+                <div className="space-y-4">
+                  {(sleepRemainingSec !== null || sleepStopAtTrackEnd) && (
+                    <div className="p-3.5 rounded-2xl bg-white/10 border border-white/25 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <Moon className="w-4 h-4 text-white" />
+                        <div className="text-xs">
+                          <div className="font-bold text-white">
+                            {sleepStopAtTrackEnd
+                              ? isHe ? 'השיר ייעצר בסיום השיר הנוכחי' : 'Stops at end of track'
+                              : isHe
+                                ? `זמן שנותר לכיבוי: ${formatClockTime(sleepRemainingSec || 0)}`
+                                : `Remaining: ${formatClockTime(sleepRemainingSec || 0)}`}
+                          </div>
+                          <div className="text-[11px] text-white/60">
+                            {isHe ? 'הניגון ייעצר בהדרגה עם תום הטיימר' : 'Music fades out cleanly when finished'}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={cancelSleepTimer}
+                        className="px-3 py-1.5 rounded-xl bg-white text-black text-xs font-bold hover:bg-neutral-200 transition-colors cursor-pointer shrink-0"
+                      >
+                        {isHe ? 'בטל' : 'Cancel'}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {[5, 10, 15, 30, 45, 60].map((mins) => (
+                      <button
+                        key={mins}
+                        type="button"
+                        onClick={() => startSleepTimerMinutes(mins)}
+                        className="py-2.5 px-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.14] border border-white/15 text-xs font-semibold text-white transition-all cursor-pointer"
+                      >
+                        {isHe ? `${mins} דקות` : `${mins} min`}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSleepEndTimestamp(null);
+                      setSleepRemainingSec(null);
+                      setSleepEndedBanner(false);
+                      setSleepBlackoutOverlay(false);
+                      setSleepStopAtTrackEnd(true);
+                    }}
+                    className={`w-full py-2.5 px-4 rounded-xl border text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                      sleepStopAtTrackEnd
+                        ? 'bg-white text-black border-white'
+                        : 'bg-white/[0.06] hover:bg-white/[0.14] border-white/15 text-white'
+                    }`}
+                  >
+                    <Moon className="w-3.5 h-3.5" />
+                    <span>{isHe ? 'עצור אוטומטית בסיום השיר הנוכחי' : 'Stop at end of current song'}</span>
+                  </button>
+
+                  {/* Custom Minutes */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={240}
+                      value={customSleepMinutes}
+                      onChange={(e) => setCustomSleepMinutes(e.target.value)}
+                      className="w-24 px-3 py-2 rounded-xl bg-white/[0.06] border border-white/15 text-xs text-white text-center focus:outline-none focus:border-white/50"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => startSleepTimerMinutes(Number(customSleepMinutes) || 15)}
+                      className="flex-1 py-2 px-4 rounded-xl bg-white hover:bg-neutral-200 text-black text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      {isHe ? 'הפעל טיימר מותאם אישית (דקות)' : 'Start Custom Timer (min)'}
+                    </button>
+                  </div>
+
+                  {/* Action when Timer Ends */}
+                  <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2">
+                    <p className="text-[11px] font-semibold text-white/80">
+                      {isHe ? 'פעולה בסיום הטיימר:' : 'When timer ends:'}
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSleepFinishAction('keep-open')}
+                        className={`p-2.5 rounded-xl border text-xs text-start transition-all cursor-pointer ${
+                          sleepFinishAction === 'keep-open'
+                            ? 'bg-white text-black border-white'
+                            : 'bg-white/[0.04] text-white/80 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="font-bold">
+                          {isHe ? 'עצור שיר והשאר פתוח (מומלץ)' : 'Stop & Keep App Ready'}
+                        </div>
+                        <div className={`text-[10px] mt-0.5 ${sleepFinishAction === 'keep-open' ? 'text-black/75' : 'text-white/55'}`}>
+                          {isHe ? 'השיר נעצר, ההתראה נסגרת, והמכשיר נרדם — וכשקמים האפליקציה מחכה פתוחה.' : 'Stops music cleanly so your device sleeps and app stays ready.'}
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSleepFinishAction('sleep-screen')}
+                        className={`p-2.5 rounded-xl border text-xs text-start transition-all cursor-pointer ${
+                          sleepFinishAction === 'sleep-screen'
+                            ? 'bg-white text-black border-white'
+                            : 'bg-white/[0.04] text-white/80 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="font-bold">
+                          {isHe ? 'עצור + סגירה / מסך שינה מוחשך' : 'Stop + Close / Blackout'}
+                        </div>
+                        <div className={`text-[10px] mt-0.5 ${sleepFinishAction === 'sleep-screen' ? 'text-black/75' : 'text-white/55'}`}>
+                          {isHe ? 'מנקה התראה ומחשיך את המסך או סוגר חלון במצב אפליקציה.' : 'Dims screen or closes standalone window when supported.'}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: BLUETOOTH & AUDIO OUTPUT */}
+              {moreToolsTab === 'bluetooth' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleScanBluetoothDevice}
+                      disabled={isScanningBluetooth}
+                      className="py-3 px-4 rounded-2xl bg-white hover:bg-neutral-200 disabled:opacity-60 text-black font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <Bluetooth className="w-4 h-4" />
+                      <span>
+                        {isScanningBluetooth
+                          ? isHe ? 'מחפש התקנים...' : 'Scanning...'
+                          : isHe ? 'חבר התקן Bluetooth (אוזניות / רמקול)' : 'Connect Bluetooth'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSelectAudioOutputPicker}
+                      className="py-3 px-4 rounded-2xl bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <Speaker className="w-4 h-4" />
+                      <span>{isHe ? 'בחר פלט רמקול / אוזניות' : 'Select Audio Output'}</span>
+                    </button>
+                  </div>
+
+                  {bluetoothDeviceInfo && (
+                    <div className="p-3.5 rounded-2xl bg-white/[0.07] border border-white/20 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <Headphones className="w-5 h-5 text-white" />
+                        <div className="text-xs">
+                          <div className="font-bold text-white">{bluetoothDeviceInfo.name}</div>
+                          <div className="text-[11px] text-white/65">
+                            {typeof bluetoothDeviceInfo.batteryPercent === 'number'
+                              ? isHe
+                                ? `מחובר • סוללה ${bluetoothDeviceInfo.batteryPercent}%`
+                                : `Connected • Battery ${bluetoothDeviceInfo.batteryPercent}%`
+                              : isHe ? 'התקן Bluetooth פעיל' : 'Bluetooth Device Connected'}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          try {
+                            bluetoothServerRef.current?.disconnect();
+                          } catch {}
+                          bluetoothServerRef.current = null;
+                          setBluetoothDeviceInfo(null);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-xs text-white cursor-pointer"
+                      >
+                        {isHe ? 'נתק' : 'Disconnect'}
+                      </button>
+                    </div>
+                  )}
+
+                  {audioOutputMessage && (
+                    <div className="p-3 rounded-xl bg-white/[0.06] border border-white/15 text-xs text-white/85 leading-relaxed">
+                      {audioOutputMessage}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-white/75">
+                        {isHe ? 'התקני שמע מזוהים במכשיר:' : 'Detected Audio Outputs:'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={refreshAudioOutputs}
+                        className="text-[11px] text-white/70 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>{isHe ? 'רענן' : 'Refresh'}</span>
+                      </button>
+                    </div>
+
+                    {audioOutputs.length > 0 ? (
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto custom-scrollbar">
+                        {audioOutputs.map((dev, i) => {
+                          const isSelected = selectedSinkId === dev.deviceId || (!selectedSinkId && dev.deviceId === 'default');
+                          const label = dev.label || (isHe ? `פלט שמע ${i + 1}` : `Audio Output ${i + 1}`);
+                          return (
+                            <button
+                              key={dev.deviceId || i}
+                              type="button"
+                              onClick={() => handleSetSinkId(dev.deviceId, label)}
+                              className={`w-full px-3.5 py-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-white text-black border-white font-bold'
+                                  : 'bg-white/[0.04] hover:bg-white/[0.1] border-white/10 text-white'
+                              }`}
+                            >
+                              <span className="truncate">{label}</span>
+                              {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-white/55 leading-relaxed bg-white/[0.03] p-3 rounded-xl border border-white/10">
+                        {isHe
+                          ? 'חיבור אוזניות ורמקולי Bluetooth פועל מיידית גם דרך הגדרות השמע של המכשיר או וילון פלט המדיה.'
+                          : 'Connect Bluetooth headphones or speakers via your device Bluetooth / Media Output settings and audio switches seamlessly.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: PLAYBACK SPEED & VOLUME */}
+              {moreToolsTab === 'audio' && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-white flex items-center gap-2">
+                        {isMuted || volumeLevel === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        <span>{isHe ? 'עוצמת שמע' : 'Volume'}</span>
+                      </span>
+                      <span className="font-mono text-white/80">
+                        {isMuted ? '0%' : `${Math.round(volumeLevel * 100)}%`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setIsMuted((prev) => !prev)}
+                        className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs text-white cursor-pointer"
+                      >
+                        {isMuted ? (isHe ? 'בטל השתקה' : 'Unmute') : (isHe ? 'השתק' : 'Mute')}
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.02}
+                        dir="ltr"
+                        value={isMuted ? 0 : volumeLevel}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setVolumeLevel(v);
+                          if (v > 0 && isMuted) setIsMuted(false);
+                        }}
+                        className="flex-1 accent-white cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-white flex items-center gap-2">
+                        <Gauge className="w-4 h-4" />
+                        <span>{isHe ? 'מהירות ניגון' : 'Playback Speed'}</span>
+                      </span>
+                      <span className="font-mono text-white/80">{playbackRate}x</span>
+                    </div>
+                    <div className="grid grid-cols-6 gap-1.5">
+                      {[0.75, 0.9, 1, 1.15, 1.25, 1.5].map((rate) => (
+                        <button
+                          key={rate}
+                          type="button"
+                          onClick={() => setPlaybackRate(rate)}
+                          className={`py-2 rounded-xl text-xs font-mono border transition-all cursor-pointer ${
+                            playbackRate === rate
+                              ? 'bg-white text-black border-white font-bold'
+                              : 'bg-white/[0.05] text-white/80 border-white/10 hover:bg-white/15'
+                          }`}
+                        >
+                          {rate}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* DARK SLEEP MODE SCREEN OVERLAY (when "מסך שינה מוחשך" option was chosen) */}
+      {sleepBlackoutOverlay && (
+        <div
+          onClick={() => {
+            setSleepBlackoutOverlay(false);
+            setSleepEndedBanner(false);
+          }}
+          className="fixed inset-0 z-[250] bg-black flex flex-col items-center justify-center p-6 text-center cursor-pointer select-none"
+          dir={isHe ? 'rtl' : 'ltr'}
+        >
+          <Moon className="w-10 h-10 text-white/35 mb-4" />
+          <p className="text-sm font-semibold text-white/60">
+            {isHe ? 'טיימר השינה הסתיים • הנגינה נעצרה' : 'Sleep timer ended • Music stopped'}
+          </p>
+          <p className="text-xs text-white/35 mt-2">
+            {isHe ? 'לחץ בכל מקום על המסך כדי לחזור לאפליקציה' : 'Tap anywhere to return to the player'}
+          </p>
         </div>
       )}
 

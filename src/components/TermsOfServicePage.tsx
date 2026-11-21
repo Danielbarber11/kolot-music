@@ -52,7 +52,7 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
         <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
             <Mail className="w-4 h-4 text-indigo-600" />
-            <span>פניות בנושאי תוכן וזכויות: <b>kolot.music1@gmail.com</b></span>
+            <span>פניות בנושאי תוכן וזכויות (Google Groups): <b dir="ltr">kolot-music@googlegroups.com</b></span>
           </div>
 
           <span className="text-[11px] font-mono text-slate-400">Cloud-Native Architecture</span>

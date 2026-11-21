@@ -78,6 +78,11 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
                   ? 'מספרי הצפיות, ההשמעות, האהבות והמדדים הסטטיסטיים המוצגים באתר מהווים אומדן טכני ומשוער בלבד, מושפעים משמירה במטמון (Cache) והשהיית סנכרון, ואינם מהווים נתון רשמי, מחייב או ראיה משפטית.'
                   : 'View counts, play counts, likes, and analytical metrics displayed on the platform are technical estimates only, subject to caching and sync delays, and do not constitute official records.'}
               </li>
+              <li>
+                {isHe
+                  ? 'פניות להנהלה, תלונות ודיווחי זכויות יוצרים מתקבלים באמצעות טופס יצירת הקשר ובכתובת קבוצת המייל הרשמית (Google Groups): kolot-music@googlegroups.com'
+                  : 'Management inquiries, complaints, and copyright reports are handled via Contact Us and Google Groups at: kolot-music@googlegroups.com'}
+              </li>
             </ul>
           </div>
 
