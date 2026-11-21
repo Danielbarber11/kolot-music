@@ -3150,7 +3150,7 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
   }
 });
 
-// 4i-3. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches directly to kolot.music1@gmail.com)
+// 4i-3. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches behind the scenes to kolot-music@googlegroups.com)
 app.post('/api/contact', async (req, res) => {
   try {
     const { sessionSecret } = getGoogleOAuthCreds();
@@ -3177,7 +3177,7 @@ app.post('/api/contact', async (req, res) => {
     const categoryLabel = categoryLabels[category] || category || 'פנייה';
 
     const msgId = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    const targetRecipient = 'kolot.music1@gmail.com';
+    const targetRecipient = 'kolot-music@googlegroups.com';
     const record = {
       id: msgId,
       to: targetRecipient,
@@ -3254,7 +3254,7 @@ app.post('/api/contact', async (req, res) => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            sender: { name: 'Kolot Music', email: targetRecipient },
+            sender: { name: 'Kolot Music', email: sanitizeKey(process.env.BREVO_SENDER_EMAIL) || 'kolot.music1@gmail.com' },
             to: [{ email: targetRecipient, name: 'Kolot Music' }],
             replyTo: { email: rawSenderEmail, name: record.senderName || rawSenderEmail },
             subject: fullSubject,
@@ -3295,7 +3295,7 @@ app.post('/api/contact', async (req, res) => {
 
     const sendViaGmailSmtp = async (): Promise<boolean> => {
       const smtpPass = sanitizeKey(process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS);
-      const smtpUser = sanitizeKey(process.env.SMTP_USER) || targetRecipient;
+      const smtpUser = sanitizeKey(process.env.SMTP_USER) || 'kolot.music1@gmail.com';
       if (!smtpPass || !smtpUser) return false;
 
       return new Promise<boolean>((resolve) => {
@@ -3389,7 +3389,6 @@ app.post('/api/contact', async (req, res) => {
     return res.json({
       success: true,
       id: msgId,
-      recipient: targetRecipient,
       emailDispatched,
       emailProvider: emailProvider || undefined,
       storedInR2,

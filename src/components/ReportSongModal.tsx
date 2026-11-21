@@ -77,7 +77,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         credentials: 'include',
         body: JSON.stringify({
           category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
-          senderEmail: currentUser?.email || 'kolot.music1@gmail.com',
+          senderEmail: currentUser?.email || 'anonymous-report@kolot-music.app',
           subject: `דיווח על שיר: ${track.name} (${track.artistName})`,
           message: `סיבת הדיווח: ${reason}\nשיר: ${track.name} (ID: ${track.id})\nאמן: ${track.artistName}${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`,
         }),

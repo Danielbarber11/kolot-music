@@ -2013,7 +2013,7 @@ export default {
       }
     }
 
-    // 13c. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches directly to kolot.music1@gmail.com)
+    // 13c. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches behind the scenes to kolot-music@googlegroups.com)
     if (pathname === '/api/contact' && request.method === 'POST') {
       try {
         const body: any = await request.json().catch(() => ({}));
@@ -2043,7 +2043,7 @@ export default {
         crypto.getRandomValues(randBytes);
         const randHex = Array.from(randBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
         const msgId = `msg_${Date.now()}_${randHex}`;
-        const targetRecipient = 'kolot.music1@gmail.com';
+        const targetRecipient = 'kolot-music@googlegroups.com';
         const record = {
           id: msgId,
           to: targetRecipient,
@@ -2105,7 +2105,7 @@ export default {
               method: 'POST',
               headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                sender: { name: 'Kolot Music', email: targetRecipient },
+                sender: { name: 'Kolot Music', email: ((env as any).BREVO_SENDER_EMAIL || '').trim() || 'kolot.music1@gmail.com' },
                 to: [{ email: targetRecipient, name: 'Kolot Music' }],
                 replyTo: { email: rawSenderEmail },
                 subject: fullSubject,
@@ -2150,7 +2150,6 @@ export default {
         return jsonResponse({
           success: true,
           id: msgId,
-          recipient: targetRecipient,
           emailDispatched,
           emailProvider: emailProvider || undefined,
           storedInR2,

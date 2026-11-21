@@ -3,7 +3,6 @@ import {
   FileText,
   Mail,
   Smartphone,
-  Copy,
   Check,
   Heart,
   Send,
@@ -47,7 +46,6 @@ export const Footer: React.FC<FooterProps> = ({
   useEffect(() => onAuthUserChanged(setAuthUser), []);
 
   // Contact modal state
-  const [copiedEmail, setCopiedEmail] = useState(false);
   const [contactCategory, setContactCategory] = useState<ContactCategory>('complaint');
   const [contactSenderEmail, setContactSenderEmail] = useState('');
   const [contactSubject, setContactSubject] = useState('');
@@ -59,18 +57,6 @@ export const Footer: React.FC<FooterProps> = ({
     text: string;
     mailtoHref?: string;
   } | null>(null);
-
-  const contactEmail = 'kolot.music1@gmail.com';
-
-  const handleCopyEmail = () => {
-    try {
-      navigator.clipboard.writeText(contactEmail);
-      setCopiedEmail(true);
-      setTimeout(() => setCopiedEmail(false), 2500);
-    } catch {
-      // Fallback
-    }
-  };
 
   const handleInstallClick = async () => {
     if (isInstallable) {
@@ -155,11 +141,11 @@ export const Footer: React.FC<FooterProps> = ({
         mode: emailDispatched ? 'email' : 'inbox',
         text: emailDispatched
           ? (isHe
-              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה ישירות אל ${contactEmail} ונשמרה באחסון ובתיבת ההנהלה של האתר.`
-              : `Your message has been delivered to ${contactEmail} and saved cleanly to site storage.`)
+              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה לצוות ההנהלה והתמיכה ונשמרה במערכת לטיפול.`
+              : `Your message has been delivered to the management & support team and saved for review.`)
           : (isHe
-              ? 'פנייתך נשלחה ונשמרה בהצלחה באחסון האתר ובתיבת ההנהלה לבדיקה.'
-              : 'Your message has been saved to site storage and the management inbox.'),
+              ? 'פנייתך נשלחה ונשמרה בהצלחה בתיבת ההנהלה של המערכת לבדיקה וטיפול.'
+              : 'Your message has been saved cleanly to the management inbox for review.'),
       });
 
       setContactSenderEmail('');
@@ -170,8 +156,8 @@ export const Footer: React.FC<FooterProps> = ({
       if (err?.name === 'AbortError') {
         setContactError(
           isHe
-            ? 'השרת התעכב בתגובה. אנא נסה שוב או שלח ישירות לכתובת kolot.music1@gmail.com'
-            : 'Request timed out. Please try again or email kolot.music1@gmail.com directly.'
+            ? 'השרת התעכב בתגובה. אנא נסה לשלוח שוב בעוד מספר רגעים.'
+            : 'Request timed out. Please try again in a moment.'
         );
       } else {
         setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
@@ -244,8 +230,8 @@ export const Footer: React.FC<FooterProps> = ({
                     <Mail className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
-                  <span className="text-[10px] text-white/40 group-hover:text-white/70 truncate max-w-[140px] sm:max-w-none">
-                    {contactEmail}
+                  <span className="text-[10px] text-white/40 group-hover:text-white/70">
+                    {isHe ? 'פתח' : 'Open'}
                   </span>
                 </button>
 
@@ -396,35 +382,6 @@ export const Footer: React.FC<FooterProps> = ({
             </div>
 
             <div className="space-y-4">
-              {/* 1. SITE EMAIL ADDRESS */}
-              <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <span className="text-[10px] text-white/50 block">
-                    {isHe ? 'כתובת המייל של האתר:' : 'Site Email:'}
-                  </span>
-                  <div className="font-mono text-sm text-white truncate" dir="ltr">
-                    {contactEmail}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCopyEmail}
-                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 border border-white/15"
-                >
-                  {copiedEmail ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-white" />
-                      <span className="text-white">{isHe ? 'הועתק!' : 'Copied!'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-white" />
-                      <span>{isHe ? 'העתק מייל' : 'Copy'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
               {sentNotice ? (
                 <div className="p-6 rounded-2xl bg-white/[0.07] border border-white/25 text-center space-y-3.5">
                   <div className="w-11 h-11 rounded-full bg-white text-black flex items-center justify-center mx-auto shadow-lg">
@@ -574,7 +531,7 @@ export const Footer: React.FC<FooterProps> = ({
                       <span>
                         {isSendingContact
                           ? isHe
-                            ? 'שולח פנייה למייל ההנהלה...'
+                            ? 'שולח פנייה להנהלה...'
                             : 'Sending...'
                           : isHe
                             ? 'שלח פנייה להנהלה'
