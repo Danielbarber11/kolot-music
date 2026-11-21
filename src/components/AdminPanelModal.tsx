@@ -35,6 +35,7 @@ interface AdminPanelModalProps {
   allTracks: JamendoTrack[];
   artistProfiles: ArtistProfile[];
   onAccountDeleted?: (uid: string) => void;
+  initialTab?: 'accounts' | 'storage' | 'stats' | 'reports' | 'messages';
 }
 
 export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
@@ -44,10 +45,11 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   allTracks,
   artistProfiles,
   onAccountDeleted,
+  initialTab = 'messages',
 }) => {
   const isHe = lang === 'he';
 
-  const [activeTab, setActiveTab] = useState<'storage' | 'accounts' | 'stats' | 'reports' | 'messages'>('accounts');
+  const [activeTab, setActiveTab] = useState<'storage' | 'accounts' | 'stats' | 'reports' | 'messages'>(initialTab);
   const [accountFilter, setAccountFilter] = useState<'all' | 'empty'>('all');
   const [reports, setReports] = useState<TrackReport[]>([]);
   const [contactMessages, setContactMessages] = useState<ContactMessageRecord[]>([]);
@@ -56,6 +58,12 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [accountActionError, setAccountActionError] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const adminScrollRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   useEffect(() => {
     if (adminScrollRef.current) {

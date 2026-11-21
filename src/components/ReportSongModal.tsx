@@ -64,9 +64,13 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       status: 'pending',
     };
 
-    // Save strictly to Cloudflare R2 backend + notify management contact inbox
+    // Save to Cloudflare R2 backend + in-app admin inbox + kolot-music@googlegroups.com (no email sent back to reporter)
     const currentUser = getCurrentAuthUser();
-    await Promise.allSettled([
+    const senderLabel = currentUser?.email || currentUser?.displayName || 'משתמש מהאפליקציה';
+    const subjectLine = `דיווח על שיר: ${track.name} (${track.artistName})`;
+    const bodyDetails = `סיבת הדיווח: ${reason}\nשיר: ${track.name} (ID: ${track.id})\nאמן: ${track.artistName}${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
+
+    const [, contactResult] = await Promise.allSettled([
       saveTrackReportToR2(report),
       fetch('/api/contact', {
         method: 'POST',
@@ -77,12 +81,34 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         credentials: 'include',
         body: JSON.stringify({
           category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
-          senderEmail: currentUser?.email || 'anonymous-report@kolot-music.app',
-          subject: `דיווח על שיר: ${track.name} (${track.artistName})`,
-          message: `סיבת הדיווח: ${reason}\nשיר: ${track.name} (ID: ${track.id})\nאמן: ${track.artistName}${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`,
+          senderContact: senderLabel,
+          subject: subjectLine,
+          message: bodyDetails,
         }),
-      }),
+      }).then((r) => r.json().catch(() => null)),
     ]);
+
+    const dispatchedByServer =
+      contactResult.status === 'fulfilled' && Boolean(contactResult.value?.emailDispatched);
+    if (!dispatchedByServer) {
+      void fetch(`https://formsubmit.co/ajax/${encodeURIComponent('kolot-music@googlegroups.com')}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          email: 'noreply@kolot-music.app',
+          _replyto: 'noreply@kolot-music.app',
+          name: senderLabel,
+          category: reason,
+          _subject: `[Kolot Music - דיווח שיר] ${subjectLine}`,
+          message: bodyDetails,
+          _captcha: 'false',
+          _template: 'table',
+        }),
+      }).catch(() => {});
+    }
 
     setIsSubmitting(false);
     setIsSubmitted(true);

@@ -35,9 +35,10 @@ import {
   Loader2,
   Wand2,
   Mail,
+  ShieldAlert,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, CURRENT_TERMS_VERSION } from '../types';
+import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, TrackReport, CURRENT_TERMS_VERSION } from '../types';
 import {
   AuthUser,
   getCurrentAuthUser,
@@ -54,6 +55,8 @@ import {
   ContactMessageRecord,
   getContactMessagesInAdmin,
   dismissContactMessageInAdmin,
+  getTrackReportsFromR2,
+  dismissTrackReportInR2,
 } from '../services/authService';
 import {
   uploadTrackToCloud,
@@ -113,6 +116,7 @@ interface ArtistPortalModalProps {
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
   onAccountDeleted?: (deletedUid: string) => void;
+  onOpenAdminPanel?: (tab?: 'accounts' | 'reports' | 'messages') => void;
 }
 
 export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
@@ -131,6 +135,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   onRemoveTrack,
   onArtistUpdated,
   onAccountDeleted,
+  onOpenAdminPanel,
 }) => {
   const isHe = lang === 'he';
 
@@ -184,7 +189,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [artistNameInput, setArtistNameInput] = useState(
     () => initialCachedProfile?.name || initialAuthUser?.displayName || ''
   );
-  const [genreInput, setGenreInput] = useState(() => initialCachedProfile?.genre || 'ללא סגנון מוזיקלי');
+  const [genreInput, setGenreInput] = useState('ללא סגנון מוזיקלי');
   const [artistBioInput, setArtistBioInput] = useState(() => initialCachedProfile?.bio || '');
   const [isPairing, setIsPairing] = useState(false);
 
@@ -259,11 +264,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [albumErrorMessage, setAlbumErrorMessage] = useState<string | null>(null);
   const [rawAlbumCoverFile, setRawAlbumCoverFile] = useState<File | null>(null);
   const [albumCoverFileName, setAlbumCoverFileName] = useState<string>('');
+  const [isAlbumCoverDragging, setIsAlbumCoverDragging] = useState<boolean>(false);
 
 
   // File upload refs & drag-and-drop states
   const audioInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const albumCoverInputRef = useRef<HTMLInputElement>(null);
   const [rawAudioFile, setRawAudioFile] = useState<File | null>(null);
   const [rawCoverFile, setRawCoverFile] = useState<File | null>(null);
   const [isAudioDragging, setIsAudioDragging] = useState(false);
@@ -316,12 +323,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editKaraokeNotice, setEditKaraokeNotice] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [editSaveProgressText, setEditSaveProgressText] = useState<string>('');
+  const [editProgressPercent, setEditProgressPercent] = useState<number>(0);
   const [deletedTrackIds, setDeletedTrackIds] = useState<string[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
   const [adminMessages, setAdminMessages] = useState<ContactMessageRecord[]>([]);
+  const [adminReports, setAdminReports] = useState<TrackReport[]>([]);
 
   useEffect(() => {
     if (isOpen) {
@@ -348,9 +357,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   }, [includeKaraoke]);
 
   useEffect(() => {
-    if (isOpen && activeTab === 'account_settings' && currentUser?.isAdmin) {
-      getContactMessagesInAdmin()
-        .then((msgs) => setAdminMessages(msgs))
+    if (isOpen && currentUser?.isAdmin) {
+      Promise.all([
+        getContactMessagesInAdmin().catch(() => []),
+        getTrackReportsFromR2().catch(() => []),
+      ])
+        .then(([msgs, reps]) => {
+          setAdminMessages(msgs);
+          setAdminReports(reps);
+        })
         .catch(() => {});
     }
   }, [isOpen, activeTab, currentUser?.isAdmin]);
@@ -549,6 +564,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsGeneratingEditSubs(false);
     setIsGeneratingEditKaraoke(false);
     setEditSaveProgressText('');
+    setEditProgressPercent(0);
     setEditIncludeSubtitles(track.subtitlesDisabled !== true);
     setEditWhisperNotice(null);
     setEditKaraokeNotice(null);
@@ -711,9 +727,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const handleSaveEditTrack = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingTrack || !canManageTrack(editingTrack)) return;
+    if (!editingTrack || !canManageTrack(editingTrack) || isSavingEdit) return;
     setIsSavingEdit(true);
-    setEditSaveProgressText(isHe ? 'מעדכן ושומר שינויים...' : 'Saving changes...');
+    setEditProgressPercent(10);
+    setEditSaveProgressText(isHe ? 'שומר שינויים...' : 'Saving changes...');
 
     let nextSegments = editWhisperSegments;
     let nextSegmentsHe = editWhisperSegmentsHe;
@@ -738,12 +755,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       const needsKaraoke = editIncludeKaraoke && !nextKaraokeUrl;
 
       if (needsFullSubs || needsKaraoke) {
+        setEditProgressPercent(22);
         const tasks: Promise<void>[] = [];
 
         if (needsFullSubs) {
           tasks.push(
             (async () => {
-              setEditSaveProgressText(isHe ? 'משלים כתוביות מלאות (100% מהשיר)...' : 'Completing full-song subtitles...');
               await startProgressiveTrackSubtitleJob({
                 track: {
                   ...editingTrack,
@@ -753,8 +770,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 },
                 language: isHe ? 'he' : 'en',
                 forceRestart: !(nextSegments?.length || nextSegmentsHe?.length || nextSegmentsEn?.length),
-                onProgress: (txt) => {
-                  if (txt) setEditSaveProgressText(txt);
+                onProgress: () => {
+                  setEditProgressPercent((p) => (p < 68 ? p + 6 : p));
                 },
                 onBatchSaved: (savedTrack, snap) => {
                   nextSegments = savedTrack.subtitleSegments;
@@ -767,6 +784,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   nextDetectedCode = savedTrack.detectedLanguageCode;
                   nextDetectedLabel = savedTrack.detectedLanguageLabel;
                   if (snap.isComplete) completedFullSubs = true;
+                  setEditProgressPercent((p) => Math.max(p, snap.isComplete ? 72 : 45));
                 },
               });
             })()
@@ -776,12 +794,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         if (needsKaraoke) {
           tasks.push(
             (async () => {
-              setEditSaveProgressText(isHe ? 'מייצר פסקול קריוקי ללא זמר...' : 'Generating karaoke instrumental...');
               const kRes = await generateAndUploadKaraokeToR2({
                 trackId: editingTrack.id,
                 audioUrl: resolvedAudioUrl,
-                onProgress: (_pct, stageTxt) => {
-                  if (stageTxt) setEditSaveProgressText(stageTxt);
+                onProgress: (pct) => {
+                  setEditProgressPercent((p) => Math.max(p, Math.min(82, Math.round(25 + pct * 0.55))));
                 },
               });
               if (kRes.success && kRes.karaokeAudioUrl) {
@@ -793,6 +810,25 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
         await Promise.allSettled(tasks);
       }
+    }
+
+    setEditProgressPercent((p) => Math.max(p, 82));
+
+    let nextGenre = editGenre.trim() || editingTrack.genre;
+    if (!nextGenre || nextGenre === 'ללא סגנון מוזיקלי') {
+      const combinedSubLyrics = [nextLyricsOrig, nextLyricsHe, nextLyricsEn].filter(Boolean).join('\n').trim();
+      try {
+        const cls = await classifyTrackAudio({
+          audioUrl: !editIncludeSubtitles ? resolvedAudioUrl : undefined,
+          songTitle: editTitle.trim() || editingTrack.name,
+          artistName: editPerformingArtist.trim() || editingTrack.artistName,
+          lyrics: editIncludeSubtitles ? combinedSubLyrics : '',
+          deepClassify: !editIncludeSubtitles,
+        });
+        if (cls.success && cls.genre) {
+          nextGenre = cls.genre;
+        }
+      } catch {}
     }
 
     const hasSubSegments =
@@ -808,7 +844,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       artistName: editPerformingArtist.trim() || editingTrack.artistName,
       featuredArtist: editFeaturedArtist.trim() || undefined,
       writers: editWriters.trim() || undefined,
-      genre: editGenre.trim() || editingTrack.genre,
+      genre: nextGenre,
       albumName: editAlbum.trim() || editingTrack.albumName,
       lyrics: editIncludeSubtitles ? (nextLyricsHe || nextLyricsEn || undefined) : undefined,
       lyricsHe: editIncludeSubtitles ? (nextLyricsHe || undefined) : undefined,
@@ -833,16 +869,20 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     upsertTrackInMemory(updatedTrack);
     onTrackPublished(updatedTrack);
 
-    setEditSaveProgressText(isHe ? 'שומר שינויים בענן...' : 'Saving changes to cloud...');
+    setEditProgressPercent(92);
     try {
       await uploadTrackToCloud(updatedTrack);
     } catch (err) {
       console.warn('Cloud edit sync notice:', err);
     }
 
-    setEditSaveProgressText('');
-    setIsSavingEdit(false);
-    setEditingTrack(null);
+    setEditProgressPercent(100);
+    setTimeout(() => {
+      setEditSaveProgressText('');
+      setEditProgressPercent(0);
+      setIsSavingEdit(false);
+      setEditingTrack(null);
+    }, 350);
   };
 
   const handleDeleteTrack = async (track: JamendoTrack, e: React.MouseEvent) => {
@@ -949,7 +989,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     const hydrateFields = (artist: ArtistProfile, user: AuthUser) => {
       setArtistNameInput(artist.name || user.displayName || '');
       if (artist.bio) setArtistBioInput(artist.bio);
-      if (artist.genre) setGenreInput(artist.genre);
       if (artist.audiusHandle || artist.connectionCode) {
         setConnectionCodeInput(artist.audiusHandle || artist.connectionCode || '');
       }
@@ -1168,11 +1207,79 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     reader.readAsDataURL(file);
   };
 
+  const processAlbumCoverFile = (file: File) => {
+    if (!file) return;
+    setAlbumErrorMessage(null);
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setAlbumErrorMessage(isHe ? 'קובץ התמונה חורג מ-1GB. יש לבחור תמונה קטנה יותר.' : 'Album cover file exceeds limit.');
+      return;
+    }
+    setRawAlbumCoverFile(file);
+    setAlbumCoverFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 600;
+        let w = img.width;
+        let h = img.height;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          setNewAlbumCover(canvas.toDataURL('image/jpeg', 0.85));
+        } else {
+          setNewAlbumCover(typeof e.target?.result === 'string' ? e.target.result : '');
+        }
+      };
+      img.onerror = () => {
+        setNewAlbumCover(typeof e.target?.result === 'string' ? e.target.result : '');
+      };
+      img.src = typeof e.target?.result === 'string' ? e.target.result : '';
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAlbumCoverFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processAlbumCoverFile(file);
+  };
+
+  const handleAlbumCoverDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsAlbumCoverDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(file.name))) {
+      processAlbumCoverFile(file);
+    }
+  };
+
+  const handleResetAlbumCover = () => {
+    setRawAlbumCoverFile(null);
+    setAlbumCoverFileName('');
+    setNewAlbumCover('');
+    if (albumCoverInputRef.current) albumCoverInputRef.current.value = '';
+  };
+
   const handleStartEditAlbum = (album: Album) => {
     if (!canManageAlbum(album)) return;
     setEditingAlbum(album);
     setNewAlbumTitle(album.title);
     setNewAlbumCover(album.coverUrl || '');
+    setRawAlbumCoverFile(null);
+    setAlbumCoverFileName('');
     setNewAlbumDescription(album.description || '');
     setSelectedTrackIdsForAlbum(album.trackIds || []);
     setActiveTab('albums');
@@ -1182,8 +1289,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setEditingAlbum(null);
     setNewAlbumTitle('');
     setNewAlbumCover('');
+    setRawAlbumCoverFile(null);
+    setAlbumCoverFileName('');
+    if (albumCoverInputRef.current) albumCoverInputRef.current.value = '';
     setNewAlbumDescription('');
     setSelectedTrackIdsForAlbum([]);
+    setAlbumErrorMessage(null);
   };
 
   const handleDeleteAlbum = async (albumId: string) => {
@@ -1205,6 +1316,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!currentUser?.uid) return;
     if (editingAlbum && !canManageAlbum(editingAlbum)) return;
     if (!newAlbumTitle.trim()) return;
+    if (!newAlbumCover.trim() && !rawAlbumCoverFile) {
+      setAlbumErrorMessage(isHe ? 'חובה להעלות תמונת עטיפה לאלבום מהמכשיר' : 'Album cover image upload is required');
+      return;
+    }
 
     setIsSavingAlbum(true);
     setAlbumErrorMessage(null);
@@ -1228,7 +1343,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           artistName: currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist'),
           artistId: currentUser.uid,
           uploadedByUid: currentUser.uid,
-          coverUrl: newAlbumCover.trim() || coverArtUrl || undefined,
+          coverUrl: newAlbumCover.trim() || undefined,
           description: newAlbumDescription.trim() || undefined,
           trackIds: selectedTrackIdsForAlbum,
           createdDate: new Date().toISOString().split('T')[0],
@@ -1258,6 +1373,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setNewAlbumDescription('');
       setRawAlbumCoverFile(null);
       setAlbumCoverFileName('');
+      if (albumCoverInputRef.current) albumCoverInputRef.current.value = '';
       setSelectedTrackIdsForAlbum([]);
       setPublishSuccess(true);
       setTimeout(() => setPublishSuccess(false), 2000);
@@ -1368,18 +1484,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const handleSaveArtistAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    const finalName = artistNameInput.trim() || currentArtist.name || currentUser?.displayName || 'אמן מוזיקלי';
+    const finalName = currentArtist.name || currentUser?.displayName || artistNameInput.trim() || 'אמן מוזיקלי';
     if (!finalName) return;
 
     setIsPairing(true);
     setAuthError(null);
 
     try {
-      const cleanHandle = connectionCodeInput.trim().replace(/^@/, '');
-      const accountUrl = cleanHandle
-        ? (cleanHandle.startsWith('http') ? cleanHandle : `https://audius.co/${cleanHandle}`)
-        : undefined;
-
       const freshUser = getCurrentAuthUser() || currentUser;
       const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
       const previewOrCurrent = artistAvatarPreview || currentArtist.avatarUrl || googlePhoto || undefined;
@@ -1394,11 +1505,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         ...currentArtist,
         id: artistIdForUpload,
         name: finalName,
-        bio: artistBioInput.trim() || currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
+        bio: currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
         avatarUrl: previewOrCurrent,
-        genre: genreInput || currentArtist.genre,
-        audiusHandle: cleanHandle || currentArtist.audiusHandle,
-        archiveAccountUrl: accountUrl || currentArtist.archiveAccountUrl,
+        genre: currentArtist.genre || 'Pop',
         googleUid: currentUser?.uid || currentArtist.googleUid || artistIdForUpload,
         isConnected: true,
         hasAcceptedTerms: true,
@@ -1406,7 +1515,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         acceptedTermsAt: currentArtist.acceptedTermsAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         isPrivate: false,
-        customServerUrl: customServerUrlInput.trim() || undefined,
       };
 
       const saveRes = await saveArtistAccountToR2(
@@ -1507,12 +1615,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setIsClassifyingGenre(true);
     setGenreProgressText(isHe ? 'מנתח שמע על המכשיר (100% חינם)...' : 'Analyzing audio on device...');
     setGenreDetectionNotice(null);
+    const combinedSubLyrics = includeSubtitles
+      ? [whisperDraftLyricsOrig, whisperDraftLyricsHe, whisperDraftLyricsEn].filter(Boolean).join('\n').trim()
+      : '';
     const result = await classifyTrackAudio({
       audioFile: rawAudioFile || undefined,
       audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
       songTitle: songTitle.trim(),
       artistName: performingArtistInput.trim() || currentArtist.name,
-      lyrics: whisperDraftLyricsHe || whisperDraftLyricsEn || '',
+      lyrics: combinedSubLyrics,
       deepClassify: true,
       onProgress: (txt) => setGenreProgressText(txt),
     });
@@ -1524,15 +1635,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     }
   };
 
-  // Publish Track -> Direct, Verified Fast Commit to Public Cloud Storage (< 10s)
+  // Publish Track -> Direct, Verified Fast Commit to Public Cloud Storage
   const handlePublishTrack = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim() || !hasCertifiedRights) return;
+    if (isPublishing || !currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim() || !hasCertifiedRights) return;
 
     setIsPublishing(true);
     setPublishErrorMessage(null);
-    setUploadProgressPercent(4);
-    setPublishProgressStep(isHe ? 'מכין העלאה לאחסון האתר...' : 'Preparing cloud upload...');
+    setUploadProgressPercent(5);
+    setPublishProgressStep('');
 
     let verifiedUser = getCurrentAuthUser() || currentUser;
     if (!verifiedUser?.uid) {
@@ -1546,13 +1657,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setUploadProgressPercent(0);
       setPublishErrorMessage(
         isHe
-          ? 'לא זוהה חיבור פעיל לחשבון. אנא התחבר מחדש עם Google ונסה לפרסם שוב.'
-          : 'No active account session found. Please sign in with Google again and retry.'
+          ? 'לא זוהה חיבור פעיל לחשבון. אנא התחבר מחדש ונסה לפרסם שוב.'
+          : 'No active account session found. Please sign in again and retry.'
       );
       return;
     }
 
     let effectiveGenre = genreInput === 'אחר' ? (customGenreText.trim() || (isHe ? 'שונות' : 'Other')) : genreInput;
+    const isAutoGenreSelected = !effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי';
 
     const trackId = `artist_track_${Date.now()}`;
     const tempTrackForColor: JamendoTrack = {
@@ -1566,62 +1678,21 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
     };
 
-    // Run lightweight genre resolution + cover color extraction in parallel, strictly capped at <= 400ms so upload begins immediately
+    // Cover color extraction (capped at <= 250ms)
     let computedColor = getTrackInstantColor(tempTrackForColor);
-    const prepPromises: Promise<void>[] = [];
-
-    if (!effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי') {
-      prepPromises.push(
-        (async () => {
-          try {
-            const autoCls = await Promise.race([
-              classifyTrackAudio({
-                audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
-                songTitle: songTitle.trim(),
-                artistName: performingArtistInput.trim() || currentArtist.name,
-                lyrics: (whisperDraftLyricsHe || whisperDraftLyricsEn || '').trim(),
-                deepClassify: false,
-              }),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
-            ]);
-            if (autoCls?.success && autoCls.genre) {
-              effectiveGenre = autoCls.genre;
-            } else {
-              const fastMetaCls = await classifyTrackAudio({
-                songTitle: songTitle.trim(),
-                artistName: performingArtistInput.trim() || currentArtist.name,
-                lyrics: (whisperDraftLyricsHe || whisperDraftLyricsEn || '').trim(),
-                deepClassify: false,
-              });
-              if (fastMetaCls.success && fastMetaCls.genre) {
-                effectiveGenre = fastMetaCls.genre;
-              }
-            }
-          } catch {}
-        })()
-      );
-    }
-
     if (coverArtUrl.trim()) {
-      prepPromises.push(
-        (async () => {
-          try {
-            const extractedBefore = await Promise.race([
-              extractImageColor(coverArtUrl.trim()),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
-            ]);
-            if (extractedBefore) {
-              computedColor = extractedBefore;
-            }
-          } catch {}
-        })()
-      );
+      try {
+        const extractedBefore = await Promise.race([
+          extractImageColor(coverArtUrl.trim()),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+        ]);
+        if (extractedBefore) {
+          computedColor = extractedBefore;
+        }
+      } catch {}
     }
 
-    if (prepPromises.length > 0) {
-      await Promise.all(prepPromises);
-    }
-
+    setUploadProgressPercent(10);
     const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.8) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
 
     const updatedArtist: ArtistProfile = {
@@ -1641,7 +1712,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let finalDraftLyricsHe = whisperDraftLyricsHe;
     let finalDraftLyricsEn = whisperDraftLyricsEn;
     const trackDurationSeconds = Math.max(10, Math.round(audioDurationRef.current || 180));
-    let progressFloor = 12;
+    let progressFloor = 15;
 
     let finalDraftSegmentsOrig: JamendoTrack['subtitleSegmentsOrig'] = whisperDraftSegmentsOrig;
     let finalDraftLyricsOrig = whisperDraftLyricsOrig;
@@ -1671,11 +1742,42 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       finalDraftLyricsOrig = '';
       finalDetectedLangCode = undefined;
       finalDetectedLangLabel = undefined;
+
+      // When AI Subtitles are OFF, keep the existing audio genre engine
+      if (isAutoGenreSelected) {
+        setUploadProgressPercent(18);
+        try {
+          const audioOnlyCls = await Promise.race([
+            classifyTrackAudio({
+              audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
+              audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
+              songTitle: songTitle.trim(),
+              artistName: finalArtistName,
+              lyrics: '',
+              deepClassify: true,
+            }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+          ]);
+          if (audioOnlyCls?.success && audioOnlyCls.genre) {
+            effectiveGenre = audioOnlyCls.genre;
+          } else {
+            const fastAudioCls = await classifyTrackAudio({
+              songTitle: songTitle.trim(),
+              artistName: finalArtistName,
+              lyrics: '',
+              deepClassify: false,
+            });
+            if (fastAudioCls.success && fastAudioCls.genre) {
+              effectiveGenre = fastAudioCls.genre;
+            }
+          }
+        } catch {}
+      }
+      progressFloor = 28;
+      setUploadProgressPercent(28);
     } else {
-      setPublishProgressStep(
-        isHe ? 'מסיים יצירת כתוביות מלאות ומסונכרנות...' : 'Finalizing full-song subtitles...'
-      );
-      setUploadProgressPercent(12);
+      // Wait for AI Subtitles Model first so we have transcribed lyrics for Automatic Genre inference
+      setUploadProgressPercent(14);
 
       let subPromise = autoSubPromiseRef.current;
       const existingSnap =
@@ -1705,12 +1807,48 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         uploadJobIsComplete = !!resolvedSnap.isComplete;
         uploadCompletedUpTo = resolvedSnap.completedUpTo || trackDurationSeconds;
       }
-      progressFloor = 20;
+
+      setUploadProgressPercent(40);
+
+      // Automatic Genre via the AI Subtitles Model output (+ audio fallback if lyrics empty)
+      if (isAutoGenreSelected) {
+        const aiSubtitlesText = [finalDraftLyricsOrig, finalDraftLyricsHe, finalDraftLyricsEn]
+          .filter(Boolean)
+          .join('\n')
+          .trim();
+        try {
+          const subGenreCls = await Promise.race([
+            classifyTrackAudio({
+              audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
+              songTitle: songTitle.trim(),
+              artistName: finalArtistName,
+              lyrics: aiSubtitlesText,
+              deepClassify: !aiSubtitlesText,
+            }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
+          ]);
+          if (subGenreCls?.success && subGenreCls.genre) {
+            effectiveGenre = subGenreCls.genre;
+          } else {
+            const subLyricsOnlyCls = await classifyTrackAudio({
+              songTitle: songTitle.trim(),
+              artistName: finalArtistName,
+              lyrics: aiSubtitlesText,
+              deepClassify: false,
+            });
+            if (subLyricsOnlyCls.success && subLyricsOnlyCls.genre) {
+              effectiveGenre = subLyricsOnlyCls.genre;
+            }
+          }
+        } catch {}
+      }
+
+      progressFloor = 45;
+      setUploadProgressPercent(45);
     }
 
     if (includeKaraoke) {
-      setPublishProgressStep(isHe ? 'מכין ומעלה פסקול קריוקי ללא זמר...' : 'Preparing & uploading karaoke instrumental...');
-      setUploadProgressPercent(Math.max(progressFloor, 18));
+      setUploadProgressPercent(Math.max(progressFloor, 48));
       let karaokeBlob = uploadKaraokeBlobRef.current;
       if (!karaokeBlob && uploadKaraokePromiseRef.current) {
         karaokeBlob = await uploadKaraokePromiseRef.current.catch(() => null);
@@ -1732,7 +1870,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           uploadedKaraokeAudioUrl = kUpload.url;
         }
       }
-      progressFloor = 28;
+      progressFloor = 58;
+      setUploadProgressPercent(58);
     } else {
       uploadKaraokeAbortRef.current?.abort();
       uploadKaraokeBlobRef.current = null;
@@ -2003,9 +2142,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             {activeTab !== 'profile' ? (
               <button
                 onClick={() => setActiveTab('profile')}
-                className="px-3.5 sm:px-4 py-2 rounded-full flex items-center gap-2 text-xs sm:text-sm font-normal text-white border border-white/20 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl cursor-pointer active:scale-95 transition-all"
+                className="px-4 py-2 rounded-full flex items-center gap-2 text-xs sm:text-sm font-semibold text-white border border-white/20 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl cursor-pointer active:scale-95 transition-all"
               >
-                <span>{isHe ? `חזור לפרופיל של ${resolvedArtistName}` : `Back to ${resolvedArtistName}`}</span>
+                {isHe ? <ArrowRight className="w-4 h-4 text-white" /> : <ArrowLeft className="w-4 h-4 text-white" />}
+                <span>{isHe ? 'חזור' : 'Back'}</span>
               </button>
             ) : (
               <button
@@ -2019,17 +2159,34 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
 
           <div className="pointer-events-auto flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={() => setActiveTab('account_settings')}
-              className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-lg backdrop-blur-xl border ${
-                activeTab === 'account_settings'
-                  ? 'bg-white/25 text-white border-white/40'
-                  : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
-              }`}
-              title={isHe ? 'הגדרות' : 'Settings'}
-            >
-              <Settings className="w-5 h-5 text-white" />
-            </button>
+            {currentUser?.isAdmin && onOpenAdminPanel && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenAdminPanel(adminReports.length > 0 && adminMessages.length === 0 ? 'reports' : 'messages');
+                }}
+                className="h-10 sm:h-11 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold text-white border border-white/25 bg-white/15 hover:bg-white/25 backdrop-blur-xl shadow-lg cursor-pointer transition-all"
+                title={isHe ? 'דיווחים והודעות (מנהל בלבד)' : 'Reports & Messages (Admin Only)'}
+              >
+                <ShieldAlert className="w-4 h-4 text-white" />
+                <span>{isHe ? 'דיווחים והודעות' : 'Reports'}</span>
+                {adminMessages.length + adminReports.length > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-white text-black text-[10px] font-mono leading-none">
+                    {adminMessages.length + adminReports.length}
+                  </span>
+                )}
+              </button>
+            )}
+            {activeTab !== 'account_settings' && (
+              <button
+                onClick={() => setActiveTab('account_settings')}
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-lg backdrop-blur-xl border bg-white/10 hover:bg-white/20 text-white border-white/20"
+                title={isHe ? 'הגדרות' : 'Settings'}
+              >
+                <Settings className="w-5 h-5 text-white" />
+              </button>
+            )}
           </div>
         </div>
         )}
@@ -2374,10 +2531,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                     <button
                       type="button"
+                      disabled={isSavingEdit}
                       onClick={() => {
-                        setEditingTrack(null);
+                        if (!isSavingEdit) setEditingTrack(null);
                       }}
-                      className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 text-neutral-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                      className="w-9 h-9 rounded-full bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 text-neutral-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                       aria-label={isHe ? 'סגור' : 'Close'}
                     >
                       <X className="w-4 h-4" />
@@ -2674,9 +2832,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       disabled={isSavingEdit}
                       className="px-6 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-black text-xs font-bold cursor-pointer shadow-lg transition-colors disabled:opacity-50"
                     >
-                      {isSavingEdit
-                        ? (editSaveProgressText || (isHe ? 'שומר שינויים...' : 'Saving...'))
-                        : (isHe ? 'שמור שינויים' : 'Save Changes')}
+                      {isHe ? 'שמור שינויים' : 'Save Changes'}
                     </button>
                   </div>
                 </div>
@@ -3039,7 +3195,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
-                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'זיהוי אוטומטי' : 'Auto Detect' },
+                      { id: 'ללא סגנון מוזיקלי', label: isHe ? 'אוטומטי' : 'Automatic' },
                       ...CANONICAL_GENRES.map((g) => ({
                         id: g.id,
                         label: isHe ? g.labelHe : g.labelEn,
@@ -3311,27 +3467,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </div>
                 )}
 
-                {/* Live Progress Bar */}
-                {isPublishing && (
-                  <div className="p-4 rounded-2xl bg-neutral-950 border border-white/30 text-white text-xs space-y-2.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <RefreshCw className="w-4 h-4 text-white animate-spin shrink-0" />
-                        <span className="font-bold text-white text-xs truncate">{publishProgressStep}</span>
-                      </div>
-                      <span className="font-bold text-white text-xs shrink-0">
-                        {uploadProgressPercent}%
-                      </span>
-                    </div>
-                    <div className="w-full h-2 rounded-full bg-black overflow-hidden border border-white/20">
-                      <div
-                        className="h-full bg-white transition-all duration-150"
-                        style={{ width: `${Math.max(4, uploadProgressPercent)}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-
                 {/* 6. BOTTOM ACTION ROW: CANCEL + PUBLISH */}
                 <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-3 pt-1">
                   <button
@@ -3348,17 +3483,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     disabled={isPublishing || !audioStreamUrl || !songTitle || !coverArtUrl || !hasCertifiedRights}
                     className="flex-1 py-4 rounded-2xl bg-white hover:bg-neutral-200 active:scale-[0.99] text-black font-black text-sm transition-all cursor-pointer shadow-[0_0_30px_rgba(255,255,255,0.16)] flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    {isPublishing ? (
-                      <span className="flex items-center gap-2">
-                        <RefreshCw className="w-5 h-5 animate-spin text-black" />
-                        <span>{publishProgressStep || (isHe ? 'מפרסם שיר...' : 'Publishing...')}</span>
-                      </span>
-                    ) : (
-                      <>
-                        <Upload className="w-5 h-5 text-black" />
-                        <span>{isHe ? 'פרסם שיר' : 'Publish Song'}</span>
-                      </>
-                    )}
+                    <Upload className="w-5 h-5 text-black" />
+                    <span>{isHe ? 'פרסם שיר' : 'Publish Song'}</span>
                   </button>
                 </div>
               </form>
@@ -3509,15 +3635,77 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                 <div>
                   <label className="block text-white font-bold mb-1.5 text-xs sm:text-sm">
-                    {isHe ? 'תמונת עטיפה לאלבום (URL אופציונלי)' : 'Album Cover URL'}
+                    {isHe ? 'תמונת עטיפה לאלבום (חובה) *' : 'Album Cover Image (Required) *'}
                   </label>
                   <input
-                    type="url"
-                    value={newAlbumCover}
-                    onChange={(e) => setNewAlbumCover(e.target.value)}
-                    placeholder="https://..."
-                    className="w-full px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-700 text-white font-mono text-xs focus:outline-none focus:border-white transition-all placeholder-neutral-500"
+                    ref={albumCoverInputRef}
+                    type="file"
+                    accept="image/*,.jpg,.jpeg,.png,.webp,.gif"
+                    onChange={handleAlbumCoverFileSelect}
+                    className="hidden"
                   />
+
+                  {newAlbumCover ? (
+                    <div className="p-3.5 rounded-2xl bg-neutral-900 border border-white/25 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <img
+                          src={newAlbumCover}
+                          alt="Album Cover Preview"
+                          className="w-16 h-16 rounded-xl object-cover border border-white/20 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <span className="block text-xs font-bold text-white truncate">
+                            {albumCoverFileName || (isHe ? 'תמונת עטיפה נבחרה' : 'Cover image selected')}
+                          </span>
+                          <span className="block text-[11px] text-neutral-400">
+                            {isHe ? 'מוכנה לשמירה בענן' : 'Ready for cloud upload'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => albumCoverInputRef.current?.click()}
+                          className="px-3 py-1.5 rounded-lg bg-black hover:bg-white hover:text-black text-white text-[11px] font-bold border border-white/25 cursor-pointer transition-all flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>{isHe ? 'החלף תמונה' : 'Replace'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleResetAlbumCover}
+                          className="p-1.5 rounded-lg bg-black hover:bg-neutral-800 text-neutral-300 hover:text-white border border-white/20 cursor-pointer transition-all"
+                          title={isHe ? 'הסר תמונה' : 'Remove'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setIsAlbumCoverDragging(true);
+                      }}
+                      onDragLeave={() => setIsAlbumCoverDragging(false)}
+                      onDrop={handleAlbumCoverDrop}
+                      onClick={() => albumCoverInputRef.current?.click()}
+                      className={`p-6 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+                        isAlbumCoverDragging
+                          ? 'border-white bg-white/10 scale-[1.01]'
+                          : 'border-white/20 hover:border-white bg-neutral-900/70 hover:bg-neutral-900'
+                      }`}
+                    >
+                      <FileImage className="w-8 h-8 text-white mb-2" />
+                      <span className="text-xs font-bold text-white">
+                        {isHe ? 'גרור תמונת עטיפה או לחץ לבחירה מהמכשיר *' : 'Drag album cover image or click to browse *'}
+                      </span>
+                      <span className="text-[11px] text-neutral-400 mt-1">
+                        JPG, PNG, WEBP (חובה לבחור תמונה)
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -3594,7 +3782,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 <div className="flex items-center gap-3 pt-2">
                   <button
                     type="submit"
-                    disabled={isSavingAlbum || !newAlbumTitle.trim()}
+                    disabled={isSavingAlbum || !newAlbumTitle.trim() || (!newAlbumCover.trim() && !rawAlbumCoverFile)}
                     className="flex-1 py-4 rounded-2xl bg-white hover:bg-neutral-200 text-black font-black text-xs sm:text-sm transition-all shadow-xl cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {isSavingAlbum ? (
@@ -3744,48 +3932,37 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
         )}
 
-        {/* 4. RECREATED STUDIO ACCOUNT & PROFILE SETTINGS VIEW */}
+        {/* 4. SIMPLIFIED ACCOUNT SETTINGS VIEW (Photo, Terms Confirmed, Sign Out, Delete Account — No Google text, No Bio/Style/Handle/Server) */}
         {activeTab === 'account_settings' && (
           <div key="portal-tab-settings" className="w-full min-h-screen bg-[#070b14]">
             <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
             {/* Editorial Header */}
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/10 pb-5">
-              <div className="space-y-1.5">
-                <p className="text-[11px] font-semibold tracking-widest uppercase text-neutral-400">
-                  {isHe ? 'KOLOT STUDIO · ניהול אמן' : 'KOLOT STUDIO · ARTIST WORKSPACE'}
-                </p>
-                <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                  {isHe ? 'הגדרות חשבון ופרופיל' : 'Account & Profile Settings'}
-                </h2>
-                <p className="text-xs sm:text-sm text-neutral-400">
-                  {isHe
-                    ? 'זהות הבמה, תמונת הפרופיל, חיבור Google והגדרות שידור והפצה.'
-                    : 'Stage identity, profile photo, Google connection, and distribution settings.'}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('profile')}
-                className="self-start sm:self-auto px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-white flex items-center gap-2 transition-colors cursor-pointer"
-              >
-                {isHe ? <ArrowRight className="w-3.5 h-3.5" /> : <ArrowLeft className="w-3.5 h-3.5" />}
-                <span>{isHe ? 'חזרה לפרופיל' : 'Back to Profile'}</span>
-              </button>
+            <div className="border-b border-white/10 pb-5 space-y-1.5">
+              <p className="text-[11px] font-semibold tracking-widest uppercase text-neutral-400">
+                {isHe ? 'KOLOT STUDIO · הגדרות' : 'KOLOT STUDIO · SETTINGS'}
+              </p>
+              <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                {isHe ? 'הגדרות חשבון' : 'Account Settings'}
+              </h2>
+              <p className="text-xs sm:text-sm text-neutral-400">
+                {isHe
+                  ? 'תמונת פרופיל, אישור תנאי שימוש וניהול החשבון.'
+                  : 'Profile photo, terms confirmation, and account management.'}
+              </p>
             </div>
 
-            {/* Unified Elevated Studio Container (Single-surface hairline separation, zero nested cards) */}
+            {/* Unified Elevated Container */}
             <form
               onSubmit={handleSaveArtistAccount}
               className="rounded-2xl bg-[#09090b] border border-white/12 divide-y divide-white/8 overflow-hidden shadow-2xl"
             >
-              {/* Row 1: Google Account Connection */}
+              {/* Row 1: Connected Account & Sign Out (Zero "Google" branding) */}
               <div className="p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-center gap-3.5 min-w-0">
-                  {currentUser?.photoURL ? (
+                  {activeAvatar ? (
                     <img
-                      src={upgradeGooglePhotoQuality(currentUser.photoURL) || currentUser.photoURL}
-                      alt={currentUser.displayName || 'User'}
+                      src={activeAvatar}
+                      alt={resolvedArtistName}
                       referrerPolicy="no-referrer"
                       loading="eager"
                       decoding="async"
@@ -3800,7 +3977,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-white truncate">
-                        {currentUser?.displayName || (isHe ? 'חשבון Google לא מחובר' : 'Google Account Disconnected')}
+                        {resolvedArtistName}
                       </span>
                       {currentUser && (
                         <span className="text-[11px] font-medium text-neutral-400">
@@ -3810,8 +3987,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </div>
                     <p className="text-xs text-neutral-400 truncate mt-0.5">
                       {currentUser
-                        ? (isHe ? 'מחובר באמצעות Google · השירים והפרופיל מסונכרנים בענן' : 'Connected with Google · Synced to cloud')
-                        : (isHe ? 'התחבר כדי לשמור שירים ולערוך את הפרופיל שלך' : 'Sign in to publish tracks and save profile')}
+                        ? (isHe ? 'חשבון מחובר · השירים והפרופיל מסונכרנים בענן' : 'Account connected · Synced to cloud')
+                        : (isHe ? 'התחבר כדי לשמור שירים ולנהל את החשבון' : 'Sign in to publish tracks and manage account')}
                     </p>
                   </div>
                 </div>
@@ -3824,7 +4001,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       className="w-full sm:w-auto px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-neutral-200 border border-white/15 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors"
                     >
                       <LogOut className="w-3.5 h-3.5" />
-                      <span>{isHe ? 'התנתק מ-Google' : 'Sign Out'}</span>
+                      <span>{isHe ? 'התנתק מהחשבון' : 'Sign Out'}</span>
                     </button>
                   ) : (
                     <button
@@ -3833,14 +4010,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       disabled={isAuthLoading}
                       className="w-full sm:w-auto px-5 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      <span>{isHe ? 'המשך עם Google' : 'Continue with Google'}</span>
+                      <span>{isHe ? 'התחבר לחשבון' : 'Sign In'}</span>
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Row 2: Avatar & Artist Stage Identity */}
-              <div className="p-5 sm:p-7 space-y-6">
+              {/* Row 2: Profile Photo Change Only */}
+              <div className="p-5 sm:p-7">
                 <div className="flex flex-col sm:flex-row items-center gap-5">
                   <div className="relative group shrink-0">
                     <div
@@ -3884,17 +4061,17 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </div>
 
                   <div className="flex-1 text-center sm:text-start space-y-1.5 min-w-0">
-                    <h3 className="text-sm font-semibold text-white">{isHe ? 'תמונת פרופיל' : 'Profile Photo'}</h3>
+                    <h3 className="text-sm font-semibold text-white">{isHe ? 'שינוי תמונת פרופיל' : 'Change Profile Photo'}</h3>
                     <p className="text-xs text-neutral-400 leading-relaxed">
                       {isHe
-                        ? 'לחץ על המסגרת כדי לבחור תמונה חדשה, שתישמר בפרופיל ובכל השירים שלך.'
-                        : 'Click the circular glass frame to upload a photo synced across your profile and releases.'}
+                        ? 'לחץ על התמונה כדי לבחור תמונת פרופיל חדשה, ולחץ שמור שינויים לעדכון בענן.'
+                        : 'Click the frame to pick a new photo and click Save to update.'}
                     </p>
                     <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
                       {(() => {
                         const freshUser = getCurrentAuthUser() || currentUser;
-                        const googlePhoto = getGoogleAccountPhotoUrl(freshUser);
-                        if (!googlePhoto) return null;
+                        const accountPhoto = getGoogleAccountPhotoUrl(freshUser);
+                        if (!accountPhoto) return null;
                         return (
                           <button
                             type="button"
@@ -3904,122 +4081,37 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           >
                             {isRestoringGoogleAvatar
                               ? (isHe ? 'משחזר...' : 'Restoring...')
-                              : (isHe ? 'שחזר תמונת Google' : 'Use Google Photo')}
+                              : (isHe ? 'שחזר תמונת חשבון' : 'Restore Account Photo')}
                           </button>
                         );
                       })()}
                     </div>
                   </div>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div className="sm:col-span-2">
-                    <label className="block text-neutral-300 font-medium mb-1.5">
-                      {isHe ? 'שם האמן / שם הבמה *' : 'Artist / Stage Name *'}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={artistNameInput || currentArtist.name}
-                      onChange={(e) => setArtistNameInput(e.target.value)}
-                      placeholder={currentUser?.displayName || (isHe ? 'שם אמן' : 'Artist Name')}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-neutral-300 font-medium mb-1.5">
-                      {isHe ? 'סגנון מוזיקלי מוביל' : 'Primary Musical Style'}
-                    </label>
-                    <select
-                      value={genreInput}
-                      onChange={(e) => setGenreInput(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors cursor-pointer"
-                    >
-                      <option value="ללא סגנון מוזיקלי">{isHe ? 'ללא סגנון מוזיקלי' : 'No Style'}</option>
-                      <option value="Pop">{isHe ? 'פופ (Pop)' : 'Pop'}</option>
-                      <option value="Electronic">{isHe ? 'אלקטרוני (Electronic)' : 'Electronic'}</option>
-                      <option value="Rock">{isHe ? 'רוק (Rock)' : 'Rock'}</option>
-                      <option value="Mizrahi">{isHe ? 'מזרחית (Mizrahi)' : 'Mizrahi'}</option>
-                      <option value="Chill">{isHe ? 'צ׳יל / רגוע (Chill)' : 'Chill'}</option>
-                      <option value="Hip Hop">{isHe ? 'היפ הופ / ראפ (Hip Hop)' : 'Hip Hop'}</option>
-                      <option value="Classical">{isHe ? 'קלאסי (Classical)' : 'Classical'}</option>
-                      <option value="Jazz">{isHe ? 'ג׳אז (Jazz)' : 'Jazz'}</option>
-                      <option value="Acoustic">{isHe ? 'אקוסטי (Acoustic)' : 'Acoustic'}</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-neutral-300 font-medium mb-1.5">
-                      {isHe ? 'כינוי / קישור אמן' : 'Artist Handle'}
-                    </label>
-                    <input
-                      type="text"
-                      value={connectionCodeInput}
-                      onChange={(e) => setConnectionCodeInput(e.target.value)}
-                      placeholder="@artist_handle"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white font-mono text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-neutral-300 font-medium mb-1.5">
-                      {isHe ? 'תיאור אמן וביוגרפיה (Bio)' : 'Artist Bio'}
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={artistBioInput}
-                      onChange={(e) => setArtistBioInput(e.target.value)}
-                      placeholder={isHe ? 'ספר בקצרה על היצירה והסגנון שלך...' : 'Short bio about you and your music...'}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm leading-relaxed focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
-                    />
-                  </div>
-                </div>
               </div>
 
-              {/* Row 3: Custom Server & Distribution Agreement */}
-              <div className="p-5 sm:p-7 space-y-5 text-xs">
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-neutral-300 font-medium">
-                      {isHe ? 'כתובת שרת הזרמה פרטי' : 'Custom Streaming Endpoint'}
-                    </label>
-                    <span className="text-[11px] text-neutral-500">
-                      {isHe ? 'אופציונלי' : 'Optional'}
-                    </span>
-                  </div>
-                  <input
-                    type="url"
-                    value={customServerUrlInput}
-                    onChange={(e) => setCustomServerUrlInput(e.target.value)}
-                    placeholder="https://your-music-server.com/api/tracks"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white font-mono text-xs focus:outline-none focus:border-white/50 transition-colors placeholder-neutral-600"
-                  />
-                  <p className="text-[11px] text-neutral-500 mt-1.5">
-                    {isHe
-                      ? 'כברירת מחדל כל השירים והעטיפות נשמרים אוטומטית באחסון הענן של Kolot.'
-                      : 'By default, tracks and artwork sync automatically to Kolot cloud hosting.'}
-                  </p>
-                </div>
-
-                <label htmlFor="termsSettingsCheckPortal" className="flex items-start gap-3 cursor-pointer select-none pt-1">
+              {/* Row 3: Locked Terms Accepted Indicator (Cannot be cancelled) */}
+              <div className="p-5 sm:p-7 space-y-4 text-xs">
+                <div className="flex items-start gap-3 select-none opacity-95">
                   <input
                     type="checkbox"
                     id="termsSettingsCheckPortal"
-                    required
-                    checked={hasAcceptedTerms}
-                    onChange={(e) => setHasAcceptedTerms(e.target.checked)}
-                    className="mt-0.5 w-4.5 h-4.5 rounded border-white/30 bg-black accent-white cursor-pointer flex-shrink-0"
+                    checked={true}
+                    disabled={true}
+                    readOnly
+                    className="mt-0.5 w-4.5 h-4.5 rounded border-white/40 bg-white accent-white cursor-not-allowed flex-shrink-0"
                   />
-                  <span className="text-xs leading-relaxed text-neutral-300">
+                  <div className="text-xs leading-relaxed text-neutral-300">
                     <span className="font-semibold text-white block mb-0.5">
-                      {isHe ? 'תנאי שימוש והרשאת הפצה *' : 'Terms of Use & Distribution Rights *'}
+                      {isHe ? 'תנאי השימוש אושרו' : 'Terms of Service Accepted'}
                     </span>
-                    {isHe
-                      ? 'אני מאשר/ת כי תכני האמן מועלים בהתאם לתנאי האתר ובאחריותי המלאה לזכויות היוצרים.'
-                      : 'I confirm all releases comply with platform terms and I hold valid distribution rights.'}
-                  </span>
-                </label>
+                    <span className="text-neutral-400">
+                      {isHe
+                        ? 'אישור תנאי השימוש ומדיניות הפלטפורמה קבוע לחשבון זה ואינו ניתן לביטול.'
+                        : 'Acceptance of platform terms is permanent for this account and cannot be revoked.'}
+                    </span>
+                  </div>
+                </div>
 
                 {authError && (
                   <p className="text-xs text-rose-300 font-medium bg-rose-500/10 border border-rose-500/25 px-3.5 py-2.5 rounded-xl">
@@ -4031,15 +4123,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               {/* Row 4: Footer Submit Bar */}
               <div className="px-5 sm:px-7 py-4 bg-white/[0.02] flex items-center justify-end gap-3">
                 <button
-                  type="button"
-                  onClick={() => setActiveTab('profile')}
-                  className="px-5 py-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white text-xs font-medium cursor-pointer transition-colors"
-                >
-                  {isHe ? 'ביטול' : 'Cancel'}
-                </button>
-                <button
                   type="submit"
-                  disabled={isPairing || !hasAcceptedTerms}
+                  disabled={isPairing}
                   className="px-7 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs sm:text-sm transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
                 >
                   {isPairing ? (
@@ -4050,37 +4135,78 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-black" />
-                      <span>{isHe ? 'שמור שינויים והגדרות' : 'Save Settings'}</span>
+                      <span>{isHe ? 'שמור שינויים' : 'Save Changes'}</span>
                     </>
                   )}
                 </button>
               </div>
             </form>
 
-            {/* Admin Contact Inbox Preview in Settings */}
+            {/* Admin Reports & Messages Inbox Preview in Settings (STRICTLY ADMIN ONLY) */}
             {currentUser?.isAdmin && (
-              <div className="rounded-2xl bg-[#09090b] border border-white/12 p-5 sm:p-7 space-y-4 shadow-xl">
-                <div className="flex items-center justify-between gap-3">
+              <div className="rounded-2xl bg-[#09090b] border border-white/15 p-5 sm:p-7 space-y-4 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2.5">
-                    <Mail className="w-4 h-4 text-white shrink-0" />
+                    <ShieldAlert className="w-4 h-4 text-white shrink-0" />
                     <div>
                       <h3 className="text-sm font-bold text-white">
-                        {isHe ? 'תיבת פניות ותלונות (מנהל)' : 'Contact Inbox (Admin)'}
+                        {isHe ? 'תיבת דיווחים והודעות (למנהל בלבד)' : 'Reports & Messages Inbox (Admin Only)'}
                       </h3>
                       <p className="text-[11px] text-neutral-400">
-                        {isHe ? 'פניות שנשמרו מהטופס באתר במקביל לשליחה לקבוצה kolot-music@googlegroups.com' : 'Saved contact submissions'}
+                        {isHe
+                          ? 'כל ההודעות והדיווחים מהמשתמשים בתוך האפליקציה — חשופים אך ורק לחשבון המנהל שלך.'
+                          : 'All user reports and messages inside the app — strictly visible to your admin account only.'}
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs font-mono text-white/70">{adminMessages.length}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono text-white/70">
+                      {adminMessages.length + adminReports.length}
+                    </span>
+                    {onOpenAdminPanel && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onOpenAdminPanel('messages');
+                        }}
+                        className="px-3 py-1.5 rounded-full bg-white text-black text-[11px] font-bold hover:bg-neutral-200 transition-colors cursor-pointer"
+                      >
+                        {isHe ? 'פתח לוח ניהול מלא' : 'Open Admin Panel'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {adminMessages.length === 0 ? (
+                {adminMessages.length === 0 && adminReports.length === 0 ? (
                   <p className="text-xs text-neutral-500">
-                    {isHe ? 'אין כרגע פניות פתוחות בתיבת ההנהלה.' : 'No open contact messages.'}
+                    {isHe ? 'אין כרגע דיווחים או הודעות פתוחות.' : 'No open reports or messages.'}
                   </p>
                 ) : (
-                  <div className="space-y-2.5 max-h-64 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-2.5 max-h-72 overflow-y-auto custom-scrollbar">
+                    {adminReports.map((rep) => (
+                      <div key={rep.id} className="p-3.5 rounded-xl bg-black border border-rose-500/30 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-white truncate">
+                            {isHe ? `דיווח על שיר: ${rep.trackName}` : `Report: ${rep.trackName}`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdminReports((prev) => prev.filter((r) => r.id !== rep.id));
+                              void dismissTrackReportInR2(rep.id);
+                            }}
+                            className="text-[11px] text-neutral-400 hover:text-white cursor-pointer shrink-0"
+                          >
+                            {isHe ? 'טופל / מחק' : 'Dismiss'}
+                          </button>
+                        </div>
+                        <div className="text-[11px] text-neutral-400">
+                          {rep.artistName} · {rep.reason}
+                        </div>
+                        {rep.details && <p className="text-xs text-neutral-200 whitespace-pre-wrap">{rep.details}</p>}
+                      </div>
+                    ))}
                     {adminMessages.map((msg) => (
                       <div key={msg.id} className="p-3.5 rounded-xl bg-black border border-white/12 space-y-1.5 text-xs">
                         <div className="flex items-center justify-between gap-2">
@@ -4093,10 +4219,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             }}
                             className="text-[11px] text-neutral-400 hover:text-white cursor-pointer shrink-0"
                           >
-                            {isHe ? 'סמן כטופל' : 'Dismiss'}
+                            {isHe ? 'טופל / מחק' : 'Dismiss'}
                           </button>
                         </div>
-                        <div className="text-[11px] text-neutral-400" dir="ltr">
+                        <div className="text-[11px] text-neutral-400">
                           {msg.senderEmail} · {msg.categoryLabel || msg.category}
                         </div>
                         <p className="text-xs text-neutral-200 whitespace-pre-wrap leading-relaxed">{msg.message}</p>
@@ -4215,6 +4341,62 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             }}
           />
         )}
+
+        {/* BLOCKING CENTERED FLOATING SQUARE PROGRESS OVERLAY ("מפרסם..." / "שומר שינויים...") */}
+        {(isPublishing || isSavingEdit) && (() => {
+          const rawPct = isPublishing ? uploadProgressPercent : editProgressPercent;
+          const pct = Math.max(0, Math.min(100, Math.round(rawPct || 0)));
+          const radius = 44;
+          const circumference = 2 * Math.PI * radius;
+          const dashOffset = circumference - (pct / 100) * circumference;
+
+          return (
+            <div
+              className="fixed inset-0 z-[260] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 select-none"
+              aria-modal="true"
+              role="dialog"
+              dir={isHe ? 'rtl' : 'ltr'}
+            >
+              <div className="w-56 h-56 sm:w-64 sm:h-64 rounded-3xl bg-[#09090b] border border-white/25 shadow-[0_24px_80px_rgba(0,0,0,0.95)] flex flex-col items-center justify-center gap-4 p-6 text-center">
+                <div className="relative w-28 h-28 flex items-center justify-center">
+                  <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={radius}
+                      fill="none"
+                      stroke="rgba(255,255,255,0.14)"
+                      strokeWidth="6"
+                    />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={radius}
+                      fill="none"
+                      stroke="#ffffff"
+                      strokeWidth="6"
+                      strokeLinecap="round"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={dashOffset}
+                      className="transition-[stroke-dashoffset] duration-300 ease-out"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-xl font-black text-white font-mono tabular-nums">
+                      {pct}%
+                    </span>
+                  </div>
+                </div>
+
+                <p className="text-sm sm:text-base font-bold text-white tracking-tight">
+                  {isPublishing
+                    ? (isHe ? 'מפרסם...' : 'Publishing...')
+                    : (isHe ? 'שומר שינויים...' : 'Saving changes...')}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
       </motion.div>
     </AnimatePresence>

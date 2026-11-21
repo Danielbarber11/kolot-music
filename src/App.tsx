@@ -410,6 +410,7 @@ export default function App() {
                 lang={lang}
                 allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
                 allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
+                allAlbums={allAlbums}
                 onPlayTrack={handleEnterTrack}
               />
             )}

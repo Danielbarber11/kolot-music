@@ -284,35 +284,53 @@ function mapAudioSetLabelsToGenre(
     }
   }
 
-  // 3. Language/Title context boost
+  // 3. Language/Title/AI-Subtitles context boost (stronger when subtitle lyrics exist)
+  const hasRichLyrics = (lyricsHint || '').trim().length > 25;
+  const lyricsWeight = hasRichLyrics ? 0.68 : 0.48;
   if (/[\u0590-\u05FF]/.test(combinedText)) {
-    // Israeli/Hebrew vocals boost Mizrahi vs Pop naturally
-    if (/מזרח|חפלה|סלסול|דרבוקה|בוזוקי|נשמה|עיניים|כפרה|לב|יאללה|אהבה|שמח/.test(combinedText)) {
-      scores.Mizrahi += 0.45;
-    } else if (/ראפ|ביט|היפ|טראפ|חרוז/.test(combinedText)) {
-      scores['Hip Hop'] += 0.55;
-    } else if (/רוק|גיטרה|מטאל/.test(combinedText)) {
-      scores.Rock += 0.55;
-    } else if (/טראנס|האוס|אלקטרו|רמיקס/.test(combinedText)) {
-      scores.Electronic += 0.55;
-    } else if (/אקוסט|שקט|מדורה/.test(combinedText)) {
-      scores.Acoustic += 0.50;
-    } else if (/צ׳יל|צ'יל|רגיעה|לילה/.test(combinedText)) {
-      scores.Chill += 0.50;
-    } else {
-      scores.Pop += 0.18;
+    // Israeli/Hebrew vocals & AI subtitle keywords
+    if (/מזרח|חפלה|סלסול|דרבוקה|בוזוקי|נשמה|עיניים|כפרה|לב|יאללה|אהבה|שמח|חלום|יפה שלי|מתוקה|מלך|בוכה|לילה טוב|דמעה/.test(combinedText)) {
+      scores.Mizrahi += lyricsWeight;
+    }
+    if (/ראפ|ביט|היפ|טראפ|חרוז|מיקרופון|שכונה|כסף|רחוב|במה|פאנץ|גטו|זורם/.test(combinedText)) {
+      scores['Hip Hop'] += lyricsWeight + 0.08;
+    }
+    if (/רוק|גיטרה|מטאל|תופים|חשמל|זעקה|אש|צעקה|שבור/.test(combinedText)) {
+      scores.Rock += lyricsWeight + 0.05;
+    }
+    if (/טראנס|האוס|אלקטרו|רמיקס|מסיבה|קצב|באס|מועדון|לרקוד|רחבה/.test(combinedText)) {
+      scores.Electronic += lyricsWeight + 0.05;
+    }
+    if (/אקוסט|שקט|מדורה|פסנתר|עץ|מנגן|ציפור|גשם|שלווה/.test(combinedText)) {
+      scores.Acoustic += lyricsWeight;
+    }
+    if (/צ׳יל|צ'יל|רגיעה|רוגע|שקיעה|עננים|ים|שקט/.test(combinedText)) {
+      scores.Chill += lyricsWeight;
+    }
+    if (/קלאס|תזמורת|כינור|צ׳לו/.test(combinedText)) {
+      scores.Classical += lyricsWeight;
+    }
+    if (/בלוז|כאב|בדידות|גשם בלילה/.test(combinedText)) {
+      scores.Blues += lyricsWeight * 0.85;
+    }
+    if (/סרט|פסקול|דרמה|קולנוע/.test(combinedText)) {
+      scores.Cinematic += lyricsWeight;
+    }
+    if (/לרקוד|שיר|פופ|עולם|כוכב|קיץ|שמש/.test(combinedText)) {
+      scores.Pop += 0.28;
     }
   } else {
-    if (/rap|hip hop|trap|drill|flow/.test(combinedText)) scores['Hip Hop'] += 0.55;
-    if (/rock|metal|punk|guitar|indie/.test(combinedText)) scores.Rock += 0.55;
-    if (/edm|house|techno|trance|remix|electro|synth/.test(combinedText)) scores.Electronic += 0.55;
-    if (/lofi|lo-fi|chill|ambient|relax/.test(combinedText)) scores.Chill += 0.55;
-    if (/acoustic|unplugged|folk/.test(combinedText)) scores.Acoustic += 0.50;
-    if (/classic|piano|violin|orchestra/.test(combinedText)) scores.Classical += 0.50;
-    if (/jazz|sax/.test(combinedText)) scores.Jazz += 0.55;
-    if (/blues|soul/.test(combinedText)) scores.Blues += 0.55;
-    if (/soundtrack|cinematic|epic/.test(combinedText)) scores.Cinematic += 0.55;
-    if (/mizrahi|oriental/.test(combinedText)) scores.Mizrahi += 0.55;
+    if (/rap|hip hop|trap|drill|flow|mic|street|hustle|bars|beat|hood|drip/.test(combinedText)) scores['Hip Hop'] += lyricsWeight + 0.08;
+    if (/rock|metal|punk|guitar|indie|scream|rebel|fire|thunder/.test(combinedText)) scores.Rock += lyricsWeight + 0.05;
+    if (/edm|house|techno|trance|remix|electro|synth|club|bass|party|dance floor|rave/.test(combinedText)) scores.Electronic += lyricsWeight + 0.05;
+    if (/lofi|lo-fi|chill|ambient|relax|sunset|calm|dream|breeze/.test(combinedText)) scores.Chill += lyricsWeight;
+    if (/acoustic|unplugged|folk|whisper|candle|camp|wood|rain/.test(combinedText)) scores.Acoustic += lyricsWeight;
+    if (/classic|piano|violin|orchestra|symphony/.test(combinedText)) scores.Classical += lyricsWeight;
+    if (/jazz|sax|swing|brass/.test(combinedText)) scores.Jazz += lyricsWeight;
+    if (/blues|soul|lonely|tears|midnight|heartache/.test(combinedText)) scores.Blues += lyricsWeight;
+    if (/soundtrack|cinematic|epic|theme/.test(combinedText)) scores.Cinematic += lyricsWeight;
+    if (/mizrahi|oriental|habibi|yalla/.test(combinedText)) scores.Mizrahi += lyricsWeight;
+    if (/baby|love|tonight|yeah|heart|dance|feel/.test(combinedText)) scores.Pop += 0.25;
   }
 
   let bestGenre = 'Pop';

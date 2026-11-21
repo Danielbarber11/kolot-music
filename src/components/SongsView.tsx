@@ -186,6 +186,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [adminPanelInitialTab, setAdminPanelInitialTab] = useState<'accounts' | 'reports' | 'messages'>('messages');
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showLegalTermsModal, setShowLegalTermsModal] = useState(false);
   const [showPromoBanner, setShowPromoBanner] = useState(true);
@@ -990,24 +991,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
       {/* FLOATING TOP NAVIGATION BAR (Desktop & Tablet md+) */}
       <div className="hidden md:block px-6 pt-2.5 pb-1 shrink-0 z-40">
-        {/* DESKTOP & LARGE TABLET HEADER (md:flex) — Logo on Start, Controls on End */}
+        {/* DESKTOP & LARGE TABLET HEADER (md:flex) — Logo + Search on Start, Action Controls on End */}
         <header className="flex h-15 w-full rounded-full bg-[#101010]/90 backdrop-blur-2xl border border-white/15 shadow-[0_8px_30px_rgba(0,0,0,0.7)] px-4 lg:px-7 items-center justify-between gap-3 lg:gap-4 select-none">
-          {/* Logo (Start Side in RTL) - Sleek Metallic Heart Only */}
-          <div
-            className="flex items-center shrink-0 cursor-pointer py-1"
-            onClick={() => {
-              setSearchQuery('');
-              setArtistFilter(null);
-              setSelectedGenre(null);
-              setActiveTab('all');
-            }}
-          >
-            <Logo className="h-8 lg:h-8.5 w-auto" heartOnly={true} />
-          </div>
+          {/* Logo + Search Input Side-by-Side (Start Side in RTL) */}
+          <div className="flex items-center gap-3 lg:gap-4 flex-1 max-w-lg min-w-0">
+            <div
+              className="flex items-center shrink-0 cursor-pointer py-1"
+              onClick={() => {
+                setSearchQuery('');
+                setArtistFilter(null);
+                setSelectedGenre(null);
+                setActiveTab('all');
+              }}
+            >
+              <Logo className="h-8 lg:h-8.5 w-auto" heartOnly={true} />
+            </div>
 
-          {/* Controls: Search Keyboard + Favorites + Accessibility + Profile (End Side in RTL) */}
-          <div className="flex items-center gap-2.5 lg:gap-3 flex-1 max-w-2xl justify-end min-w-0">
-            {/* Search Input (Keyboard) */}
+            {/* Search Input (Keyboard) right beside Logo */}
             <div className="relative flex-1 min-w-[140px] max-w-xs lg:max-w-sm">
               <div className="absolute inset-y-0 start-3 flex items-center pointer-events-none text-white/60">
                 <Search className="w-4 h-4 text-white/60" />
@@ -1029,6 +1029,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 </button>
               )}
             </div>
+          </div>
+
+          {/* Controls: Favorites + Accessibility + Admin + Profile (End Side in RTL) */}
+          <div className="flex items-center gap-2 lg:gap-2.5 shrink-0">
 
             {/* Favorites Button (Pure circle icon-only, matching Accessibility button) */}
             <button
@@ -1088,22 +1092,38 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 <span className="whitespace-nowrap lg:hidden">{isHe ? 'התחברות' : 'Sign in'}</span>
               </button>
             ) : (
-              <button
-                onClick={handleProfileClick}
-                className="w-9.5 h-9.5 aspect-square rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
-                title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
-              >
-                {(() => {
-                  const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
-                  return avatar ? (
-                    <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-xs font-bold text-white">
-                      {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
-                    </span>
-                  );
-                })()}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {authUser.isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminPanelInitialTab('messages');
+                      setIsAdminPanelOpen(true);
+                    }}
+                    className="h-9.5 px-3 rounded-full bg-white/15 hover:bg-white/25 border border-white/30 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-md shrink-0"
+                    title={isHe ? 'תיבת דיווחים והודעות (מנהל בלבד)' : 'Admin Reports & Messages'}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-white" />
+                    <span className="hidden lg:inline">{isHe ? 'דיווחים והודעות' : 'Reports'}</span>
+                  </button>
+                )}
+                <button
+                  onClick={handleProfileClick}
+                  className="w-9.5 h-9.5 aspect-square rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+                  title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
+                >
+                  {(() => {
+                    const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
+                    return avatar ? (
+                      <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-xs font-bold text-white">
+                        {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
+                      </span>
+                    );
+                  })()}
+                </button>
+              </div>
             )}
           </div>
         </header>
@@ -1626,13 +1646,13 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         />
                       </div>
 
-                      <div className="space-y-0.5 max-w-xs w-full px-1">
+                      <div className="space-y-1 max-w-xs w-full px-1">
+                        <span className="text-[11px] font-semibold text-white/70 block">
+                          {isHe ? 'מומלץ' : 'Featured'}
+                        </span>
                         <h1 className="text-xl font-black text-white tracking-tight leading-tight line-clamp-1">
                           {featuredTrack.name}
                         </h1>
-                        <p className="text-xs text-white/65 truncate">
-                          {featuredTrack.artistName}
-                        </p>
                       </div>
 
                       <div className="flex items-center justify-center gap-2.5 pt-0.5">
@@ -1640,7 +1660,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           type="button"
                           onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
                           className="w-10 h-10 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition-all shadow-md"
-                          title={featuredTrack.artistName}
+                          title={isHe ? 'פרופיל אמן' : 'Artist Profile'}
                           aria-label={featuredTrack.artistName}
                         >
                           {artistAvatarImg ? (
@@ -1685,7 +1705,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       <div className="flex-1 text-start space-y-3">
                         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-xs font-medium text-white/90 backdrop-blur-md shadow-sm">
                           <Sparkles className="w-3.5 h-3.5 text-white" />
-                          <span>{isHe ? 'שיר השבוע' : 'Track of the Week'}</span>
+                          <span>{isHe ? 'מומלץ' : 'Featured'}</span>
                         </div>
 
                         <h1 className="text-4xl lg:text-5xl font-black text-white tracking-tight leading-tight">
@@ -1693,13 +1713,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         </h1>
 
                         <div className="flex flex-wrap items-center justify-start gap-3 text-sm text-white/70">
-                          <button
-                            onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
-                            className="font-medium text-white hover:underline flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <span>{featuredTrack.artistName}</span>
-                            <span className="w-1.5 h-1.5 rounded-full bg-white/40" />
-                          </button>
                           <span>{getGenreDisplayLabel(featuredTrack.genre, isHe)}</span>
                           {featuredTrack.albumName && (
                             <>
@@ -1734,19 +1747,19 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             />
                           </button>
 
-                          {/* Artist Profile Avatar Button */}
+                          {/* Artist Circular Avatar Button (Image Only, No Name Text) */}
                           <button
+                            type="button"
                             onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
-                            className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-sm font-medium text-white transition-all cursor-pointer shadow-md active:scale-95"
+                            className="w-11 h-11 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer shadow-md active:scale-95 transition-all"
+                            title={isHe ? 'פרופיל אמן' : 'Artist Profile'}
+                            aria-label={featuredTrack.artistName}
                           >
-                            <div className="w-6 h-6 rounded-full overflow-hidden bg-white/20 shrink-0 border border-white/30 flex items-center justify-center">
-                              {artistAvatarImg ? (
-                                <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
-                              ) : (
-                                <User className="w-3.5 h-3.5 text-white" />
-                              )}
-                            </div>
-                            <span>{featuredTrack.artistName}</span>
+                            {artistAvatarImg ? (
+                              <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
+                            ) : (
+                              <User className="w-4.5 h-4.5 text-white" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -2435,6 +2448,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             lang={lang}
             allTracks={allTracks}
             allArtists={allArtists}
+            allAlbums={popularAlbums}
             onPlayTrack={(track) => setPlayerTrack(track)}
             onRemoveTrack={async (trackId) => {
               markSongAsDeleted(trackId);
@@ -2493,6 +2507,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setIsArtistPortalOpen(false);
         }}
         lang={lang}
+        onOpenAdminPanel={(tab) => {
+          setAdminPanelInitialTab(tab || 'messages');
+          setIsAdminPanelOpen(true);
+        }}
         onTrackPublished={async (newTrack) => {
           setAllTracks((prev) => {
             const replaced = prev.some((t) => t.id === newTrack.id)
@@ -2592,13 +2610,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
         onOpenArtistProfile={(artistName) => openArtistProfile(artistName)}
       />
 
-      {/* SECRET 10-CLICK ADMIN PANEL MODAL */}
+      {/* ADMIN-ONLY PANEL MODAL */}
       <AdminPanelModal
         isOpen={isAdminPanelOpen && !!authUser?.isAdmin}
         onClose={() => setIsAdminPanelOpen(false)}
         lang={lang}
         allTracks={allTracks}
         artistProfiles={allArtists}
+        initialTab={adminPanelInitialTab}
         onAccountDeleted={(deletedUid) => {
           const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
           removeMemoryArtistProfile(deletedUid);

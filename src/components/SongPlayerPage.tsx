@@ -28,9 +28,10 @@ import {
   RefreshCw,
   Mic2,
   X,
+  Disc,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, SubtitleSegment } from '../types';
+import { JamendoTrack, Language, ArtistProfile, SubtitleSegment, Album } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistProfileModal } from './ArtistProfileModal';
 import { ArtistPortalModal } from './ArtistPortalModal';
@@ -173,6 +174,7 @@ interface SongPlayerPageProps {
   lang: Language;
   allTracks?: JamendoTrack[];
   allArtists?: ArtistProfile[];
+  allAlbums?: Album[];
   onPlayTrack?: (track: JamendoTrack) => void;
   onRemoveTrack?: (trackId: string) => void;
 }
@@ -187,6 +189,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   lang,
   allTracks = [],
   allArtists = [],
+  allAlbums = [],
   onPlayTrack,
   onRemoveTrack,
 }) => {
@@ -2205,6 +2208,126 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           </div>
         </div>
+
+        {/* MORE SONGS FROM THIS ALBUM (Always displayed at bottom if track belongs to an album) */}
+        {(() => {
+          const invalidAlbumNames = new Set([
+            '',
+            'single',
+            'single release',
+            'unknown album',
+            'סינגל',
+            'סינגל עצמאי',
+            'ללא אלבום',
+            'independent single',
+            'none',
+          ]);
+          const cleanAlbumName = (track.albumName || '').trim();
+          const lowerAlbum = cleanAlbumName.toLowerCase();
+          const hasRealAlbumName =
+            Boolean(cleanAlbumName) &&
+            !invalidAlbumNames.has(lowerAlbum) &&
+            !lowerAlbum.startsWith('סינגל') &&
+            !lowerAlbum.startsWith('single');
+
+          const matchedAlbum = (allAlbums || []).find((alb) => {
+            if (Array.isArray(alb.trackIds) && alb.trackIds.includes(track.id)) return true;
+            if (!hasRealAlbumName) return false;
+            const albTitleLower = (alb.title || '').trim().toLowerCase();
+            if (albTitleLower !== lowerAlbum) return false;
+            const albArtistLower = (alb.artistName || '').trim().toLowerCase();
+            const trkArtistLower = (track.artistName || '').trim().toLowerCase();
+            return !albArtistLower || !trkArtistLower || albArtistLower === trkArtistLower || (alb.uploadedByUid && alb.uploadedByUid === track.uploadedByUid);
+          });
+
+          const siblingMap = new Map<string, JamendoTrack>();
+          if (matchedAlbum && Array.isArray(matchedAlbum.trackIds)) {
+            const idSet = new Set(matchedAlbum.trackIds);
+            (allTracks || []).forEach((candidate) => {
+              if (candidate.id !== track.id && idSet.has(candidate.id)) {
+                siblingMap.set(candidate.id, candidate);
+              }
+            });
+          }
+
+          if (hasRealAlbumName) {
+            const trkOwner = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+            const trkArtist = (track.artistName || '').trim().toLowerCase();
+            (allTracks || []).forEach((candidate) => {
+              if (candidate.id === track.id || siblingMap.has(candidate.id)) return;
+              const candAlb = (candidate.albumName || '').trim().toLowerCase();
+              if (candAlb !== lowerAlbum) return;
+              const candOwner = (candidate.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+              const candArtist = (candidate.artistName || '').trim().toLowerCase();
+              if ((trkOwner && candOwner && trkOwner === candOwner) || (trkArtist && candArtist && trkArtist === candArtist)) {
+                siblingMap.set(candidate.id, candidate);
+              }
+            });
+          }
+
+          const albumSiblingTracks = Array.from(siblingMap.values());
+          const displayAlbumTitle = matchedAlbum?.title || (hasRealAlbumName ? cleanAlbumName : '');
+          if (albumSiblingTracks.length === 0 || !displayAlbumTitle) return null;
+
+          return (
+            <div className="bg-black/45 backdrop-blur-md border border-white/15 rounded-2xl p-4 sm:p-5 space-y-3 text-start mt-4">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Disc className="w-4 h-4 text-white shrink-0" />
+                  <h4 className="font-bold text-white text-xs sm:text-sm truncate">
+                    {isHe ? `שירים נוספים מהאלבום: ${displayAlbumTitle}` : `More from Album: ${displayAlbumTitle}`}
+                  </h4>
+                </div>
+                <span className="text-[11px] font-mono text-white/60 shrink-0 tabular-nums">
+                  {albumSiblingTracks.length}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {albumSiblingTracks.map((sib) => (
+                  <button
+                    key={sib.id}
+                    type="button"
+                    onClick={() => {
+                      if (onPlayTrack) {
+                        onPlayTrack(sib);
+                        playerScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                      }
+                    }}
+                    className="w-full p-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.12] border border-white/10 hover:border-white/25 transition-all flex items-center gap-3 text-start cursor-pointer group"
+                  >
+                    <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 border border-white/15 bg-black">
+                      <TrackCoverArt
+                        coverUrl={sib.coverUrl}
+                        artistName={sib.artistName}
+                        trackName={sib.name}
+                        genre={sib.genre}
+                        showHoverPlay={false}
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate group-hover:text-white/90">
+                        {sib.name}
+                      </div>
+                      <div className="text-[11px] text-white/60 truncate flex items-center gap-1.5">
+                        <span className="truncate">{sib.artistName}</span>
+                        {sib.duration > 0 && (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono tabular-nums">{formatClockTime(sib.duration)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="w-8 h-8 rounded-full bg-white/10 group-hover:bg-white text-white group-hover:text-black flex items-center justify-center shrink-0 transition-colors">
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
       </div>
 

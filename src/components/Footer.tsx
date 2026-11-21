@@ -3,7 +3,6 @@ import {
   FileText,
   Mail,
   Smartphone,
-  Copy,
   Check,
   Heart,
   Send,
@@ -11,6 +10,7 @@ import {
   Loader2,
   AlertCircle,
   Share2,
+  Copy,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
@@ -47,27 +47,19 @@ export const Footer: React.FC<FooterProps> = ({
   useEffect(() => onAuthUserChanged(setAuthUser), []);
 
   // Contact modal state
-  const [copiedEmail, setCopiedEmail] = useState(false);
   const [contactCategory, setContactCategory] = useState<ContactCategory>('complaint');
   const [contactSenderEmail, setContactSenderEmail] = useState('');
   const [contactSubject, setContactSubject] = useState('');
   const [contactMessage, setContactMessage] = useState('');
   const [isSendingContact, setIsSendingContact] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
+  const [copiedGroupEmail, setCopiedGroupEmail] = useState(false);
   const [sentNotice, setSentNotice] = useState<{
     mode: 'email' | 'inbox';
     text: string;
   } | null>(null);
 
-  const contactEmail = 'kolot-music@googlegroups.com';
-
-  const handleCopyEmail = () => {
-    try {
-      navigator.clipboard.writeText(contactEmail);
-      setCopiedEmail(true);
-      setTimeout(() => setCopiedEmail(false), 2500);
-    } catch {}
-  };
+  const GROUP_EMAIL = 'kolot-music@googlegroups.com';
 
   const handleInstallClick = async () => {
     if (isInstallable) {
@@ -89,17 +81,11 @@ export const Footer: React.FC<FooterProps> = ({
     e.preventDefault();
     setContactError(null);
 
-    const accountEmail = (authUser?.email || '').trim();
-    const senderEmail = (accountEmail || contactSenderEmail).trim();
+    const accountContact = (authUser?.email || authUser?.displayName || '').trim();
+    const senderContact = (accountContact || contactSenderEmail).trim();
     const subject = contactSubject.trim();
     const message = contactMessage.trim();
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(senderEmail)) {
-      setContactError(
-        isHe ? 'יש להזין כתובת מייל אמיתית ותקינה' : 'Please enter a valid email address'
-      );
-      return;
-    }
     if (!subject || !message) {
       setContactError(
         isHe ? 'נא למלא נושא ותוכן הודעה' : 'Please fill in both subject and message'
@@ -131,77 +117,47 @@ export const Footer: React.FC<FooterProps> = ({
         signal: controller.signal,
         body: JSON.stringify({
           category: contactCategory,
-          senderEmail,
+          senderContact,
           subject,
           message,
         }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.success) {
-        throw new Error(data?.error || (isHe ? 'שליחת הפנייה נכשלה, נסה שוב' : 'Failed to send message'));
+        throw new Error(data?.error || (isHe ? 'שליחת הדיווח נכשלה, נסה שוב' : 'Failed to send report'));
       }
 
-      let emailDispatched = Boolean(data.emailDispatched);
-      let activationPending = Boolean(data.activationPending);
-
-      // Browser-side FormSubmit fallback when backend environment has no SMTP/API key or datacenter IP was blocked
-      if (!emailDispatched) {
-        try {
-          const directController = new AbortController();
-          const directTimer = setTimeout(() => directController.abort(), 8000);
-          try {
-            const fsRes = await fetch(`https://formsubmit.co/ajax/${contactEmail}`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-              },
-              signal: directController.signal,
-              body: JSON.stringify({
-                name: authUser?.displayName || senderEmail.split('@')[0] || 'Kolot Music User',
-                email: senderEmail,
-                _replyto: senderEmail,
-                _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
-                category: categoryLabel,
-                message: `סוג פנייה: ${categoryLabel}\nשולח: ${senderEmail}\n\n${message}`,
-                _captcha: 'false',
-                _template: 'table',
-              }),
-            });
-            const fsJson = await fsRes.json().catch(() => null);
-            const fsMsg = String(fsJson?.message || '');
-            if (fsRes.ok && (fsJson?.success === true || fsJson?.success === 'true')) {
-              emailDispatched = true;
-              activationPending = false;
-            } else if (/activat/i.test(fsMsg)) {
-              activationPending = true;
-            }
-          } finally {
-            clearTimeout(directTimer);
-          }
-        } catch {
-          // Non-fatal fallback; submission is already persisted in R2 admin inbox
-        }
+      // If datacenter IP dispatch to FormSubmit was skipped/blocked, also fire directly from browser
+      // WITHOUT _autoresponse so the sender NEVER receives any email back
+      if (!data?.emailDispatched) {
+        void fetch(`https://formsubmit.co/ajax/${encodeURIComponent(GROUP_EMAIL)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            email: 'noreply@kolot-music.app',
+            _replyto: 'noreply@kolot-music.app',
+            name: senderContact || 'משתמש מהאפליקציה',
+            category: categoryLabel,
+            _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
+            message: `סוג פנייה: ${categoryLabel}\nשולח: ${senderContact || 'אנונימי מהאפליקציה'}\nנושא: ${subject}\n\n${message}`,
+            _captcha: 'false',
+            _template: 'table',
+          }),
+        }).catch(() => {});
       }
 
       trackEvent('contact_submit', {
         category: contactCategory,
-        email_dispatched: emailDispatched,
       });
 
       setSentNotice({
-        mode: emailDispatched ? 'email' : 'inbox',
-        text: emailDispatched
-          ? (isHe
-              ? `פנייתך (${categoryLabel}) נשלחה בהצלחה ישירות לקבוצת הפניות בכתובת ${contactEmail} ונשמרה במערכת לטיפול.`
-              : `Your message has been sent directly to ${contactEmail} and saved in the system.`)
-          : activationPending
-            ? (isHe
-                ? `הפנייה נשמרה במערכת ההנהלה. נשלח מייל הפעלה חד-פעמי אל ${contactEmail} — יש לפתוח את קבוצת Google Groups (תחת "שיחות" / "בהמתנה") או את ספאם המייל של בעל הקבוצה ולאשר פעם אחת את Activation כדי שהמיילים יגיעו אוטומטית.`
-                : `Saved in management inbox. Please click the one-time FormSubmit activation link sent to ${contactEmail} (check Google Groups pending messages or owner spam) to enable automatic forwarding.`)
-            : (isHe
-                ? `הפנייה נשמרה בתיבת ההנהלה של האתר (זמינה להנהלה בפורטל האמן), ותועבר גם לקבוצת ${contactEmail}.`
-                : `Saved in management inbox and queued for ${contactEmail}.`),
+        mode: 'inbox',
+        text: isHe
+          ? `הפנייה (${categoryLabel}) נשלחה בהצלחה ישירות אל מייל הקבוצה (${GROUP_EMAIL}) ואל תיבת הדיווחים של המנהל באפליקציה.`
+          : `Your inquiry (${categoryLabel}) was sent directly to ${GROUP_EMAIL} and the in-app admin inbox.`,
       });
 
       setContactSenderEmail('');
@@ -212,8 +168,8 @@ export const Footer: React.FC<FooterProps> = ({
       if (err?.name === 'AbortError') {
         setContactError(
           isHe
-            ? `השרת התעכב בתגובה. ניתן לנסות שוב או לשלוח ישירות לקבוצת המייל ${contactEmail}`
-            : `Request timed out. Please try again or email ${contactEmail} directly.`
+            ? 'השרת התעכב בתגובה. אנא נסה לשלוח שוב בעוד רגע.'
+            : 'Request timed out. Please try again.'
         );
       } else {
         setContactError(err?.message || (isHe ? 'שגיאה בשליחת הפנייה' : 'Failed to send message'));
@@ -287,7 +243,7 @@ export const Footer: React.FC<FooterProps> = ({
                     <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
                   <span className="text-[10px] text-white/40 group-hover:text-white/70 truncate max-w-[160px] sm:max-w-none" dir="ltr">
-                    {contactEmail}
+                    kolot-music@googlegroups.com
                   </span>
                 </button>
 
@@ -437,33 +393,27 @@ export const Footer: React.FC<FooterProps> = ({
               </button>
             </div>
 
-            <div className="space-y-4">
-              {/* 1. GOOGLE GROUPS EMAIL ADDRESS */}
-              <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
+              <div className="space-y-4">
+              <div className="px-3.5 py-2.5 rounded-2xl bg-white/[0.05] border border-white/15 flex items-center justify-between gap-2 text-xs">
+                <div className="min-w-0">
                   <span className="text-[10px] text-white/55 block">
-                    {isHe ? 'כתובת המייל לפניות (Google Groups):' : 'Contact Email (Google Groups):'}
+                    {isHe ? 'כתובת פניות ותלונות רשמית (Google Groups):' : 'Official Complaints & Groups Address:'}
                   </span>
-                  <div className="font-mono text-xs sm:text-sm text-white truncate" dir="ltr">
-                    {contactEmail}
-                  </div>
+                  <span className="font-mono text-white font-semibold select-all truncate block" dir="ltr">
+                    {GROUP_EMAIL}
+                  </span>
                 </div>
                 <button
                   type="button"
-                  onClick={handleCopyEmail}
-                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 border border-white/15"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(GROUP_EMAIL).catch(() => {});
+                    setCopiedGroupEmail(true);
+                    setTimeout(() => setCopiedGroupEmail(false), 1800);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-medium flex items-center gap-1 cursor-pointer shrink-0 transition-colors"
                 >
-                  {copiedEmail ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-white" />
-                      <span className="text-white">{isHe ? 'הועתק!' : 'Copied!'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-white" />
-                      <span>{isHe ? 'העתק מייל' : 'Copy'}</span>
-                    </>
-                  )}
+                  {copiedGroupEmail ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedGroupEmail ? (isHe ? 'הועתק' : 'Copied') : (isHe ? 'העתק' : 'Copy')}</span>
                 </button>
               </div>
 
@@ -473,9 +423,7 @@ export const Footer: React.FC<FooterProps> = ({
                     <Check className="w-6 h-6" />
                   </div>
                   <p className="text-sm font-bold text-white">
-                    {sentNotice.mode === 'email'
-                      ? (isHe ? 'הפנייה נשלחה לקבוצת המייל' : 'Email Sent')
-                      : (isHe ? 'הפנייה נשמרה במערכת' : 'Saved in System')}
+                    {isHe ? 'הדיווח / הפנייה נשלחו בהצלחה' : 'Inquiry Sent Successfully'}
                   </p>
                   <p className="text-xs text-white/80 leading-relaxed max-w-sm mx-auto">
                     {sentNotice.text}
@@ -529,36 +477,31 @@ export const Footer: React.FC<FooterProps> = ({
                     </div>
                   </div>
 
-                  {/* 2. SENDER EMAIL ADDRESS */}
+                  {/* 2. OPTIONAL SENDER NAME / IDENTIFIER */}
                   <div className="space-y-1">
                     <label className="text-xs text-white/75 block font-medium">
-                      {authUser?.email
+                      {authUser?.displayName || authUser?.email
                         ? isHe
-                          ? 'המייל שלך לחזרה (מהחשבון המחובר):'
-                          : 'Your Reply Email (from signed-in account):'
+                          ? 'שולח (מהחשבון המחובר):'
+                          : 'Sender (Signed-in account):'
                         : isHe
-                          ? 'כתובת המייל שלך לחזרה *:'
-                          : 'Your Real Email Address *:'}
+                          ? 'שם / כינוי (אופציונלי):'
+                          : 'Name / Contact (Optional):'}
                     </label>
-                    {authUser?.email ? (
-                      <div
-                        dir="ltr"
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/25 text-sm text-white font-mono text-left flex items-center justify-between gap-2"
-                      >
-                        <span className="truncate">{authUser.email}</span>
-                        <span className="text-[10px] font-sans text-white/75 shrink-0">
-                          {isHe ? 'חשבון מחובר' : 'Verified'}
+                    {authUser?.displayName || authUser?.email ? (
+                      <div className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/25 text-sm text-white flex items-center justify-between gap-2">
+                        <span className="truncate">{authUser.displayName || authUser.email}</span>
+                        <span className="text-[10px] text-white/75 shrink-0">
+                          {isHe ? 'חשבון מחובר' : 'Signed In'}
                         </span>
                       </div>
                     ) : (
                       <input
-                        type="email"
-                        required
-                        dir="ltr"
-                        placeholder="name@example.com"
+                        type="text"
+                        placeholder={isHe ? 'שם או כינוי (אפשר להשאיר ריק)' : 'Optional name'}
                         value={contactSenderEmail}
                         onChange={(e) => setContactSenderEmail(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35 text-left font-mono"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35"
                       />
                     )}
                   </div>

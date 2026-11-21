@@ -1658,8 +1658,14 @@ export default {
 
     if (pathname === '/api/storage/reports' && request.method === 'GET') {
       try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, reports: [], error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
         const keys = (await r2ListKeys('reports/')).filter((k) => k.endsWith('.json'));
-        const reports = (await Promise.all(keys.map((k) => r2ReadJson(k)))).filter(Boolean);
+        const reports = (await Promise.all(keys.map((k) => r2ReadJson(k))))
+          .filter(Boolean)
+          .sort((a: any, b: any) => String(b?.reportedAt || '').localeCompare(String(a?.reportedAt || '')));
         return jsonResponse({ success: true, reports });
       } catch (err: any) {
         return jsonResponse({ success: false, reports: [], error: err?.message || 'Reports list failed' }, 500);
@@ -1668,6 +1674,10 @@ export default {
 
     if (pathname.startsWith('/api/storage/reports/') && request.method === 'DELETE') {
       try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
         const cleanId = pathname.replace(/^\/api\/storage\/reports\//, '').replace(/[^a-zA-Z0-9_\-]/g, '');
         if (!cleanId) return jsonResponse({ success: false, error: 'Missing report id' }, 400);
         await r2DeleteKey(`reports/${cleanId}.json`);
@@ -2044,57 +2054,54 @@ export default {
       }
     }
 
-    // 13c. Direct Contact Us Email Endpoint (saves to R2 contact_messages/ + dispatches behind the scenes to kolot-music@googlegroups.com)
+    // 13c. In-App Contact & Reports Submission Endpoint (saves to R2 contact_messages/ for admin-only viewing + dispatches to kolot-music@googlegroups.com without emailing reporter)
     if (pathname === '/api/contact' && request.method === 'POST') {
       try {
         const body: any = await request.json().catch(() => ({}));
         const sess = await extractSessionTop();
-        const rawSenderEmail = String(sess?.email || body?.senderEmail || '').trim();
+        const optionalSender = String(
+          sess?.email ||
+            body?.senderContact ||
+            body?.senderEmail ||
+            ''
+        )
+          .trim()
+          .slice(0, 160);
         const category = String(body?.category || 'general').trim().slice(0, 48);
-        const subject = String(body?.subject || '').trim().slice(0, 200);
+        const rawSubject = String(body?.subject || '').trim().slice(0, 200);
         const message = String(body?.message || '').trim().slice(0, 5000);
 
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(rawSenderEmail)) {
-          return jsonResponse({ success: false, error: 'יש להזין כתובת מייל אמיתית ותקינה' }, 400);
-        }
-        if (!subject || !message) {
-          return jsonResponse({ success: false, error: 'יש למלא נושא ותוכן להודעה' }, 400);
+        if (!message && !rawSubject) {
+          return jsonResponse({ success: false, error: 'יש להזין נושא או תוכן להודעה' }, 400);
         }
 
         const categoryLabels: Record<string, string> = {
-          complaint: 'תלונה',
+          complaint: 'תלונה / דיווח',
           request: 'בקשה / הצעה',
           support: 'תקלה טכנית',
           copyright: 'זכויות יוצרים',
           general: 'פנייה כללית',
         };
         const categoryLabel = categoryLabels[category] || category || 'פנייה';
+        const subject = rawSubject || categoryLabel;
+        const targetGroupEmail = 'kolot-music@googlegroups.com';
 
         const randBytes = new Uint8Array(4);
         crypto.getRandomValues(randBytes);
         const randHex = Array.from(randBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
         const msgId = `msg_${Date.now()}_${randHex}`;
-        const targetRecipient = 'kolot-music@googlegroups.com';
         const record = {
           id: msgId,
-          to: targetRecipient,
+          to: targetGroupEmail,
           category,
           categoryLabel,
-          senderEmail: rawSenderEmail,
+          senderEmail: optionalSender || 'משתמש אנונימי מהאפליקציה',
           senderUid: sess?.uid || undefined,
           subject,
-          message,
+          message: message || subject,
           createdAt: new Date().toISOString(),
           status: 'new',
         };
-
-        const fullSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
-        const plainBody =
-          `פנייה חדשה מאתר Kolot Music\n` +
-          `סוג הפנייה: ${categoryLabel}\n` +
-          `מאת: ${rawSenderEmail}\n` +
-          `נושא: ${subject}\n\n` +
-          `${message}`;
 
         let storedInR2 = false;
         try {
@@ -2102,9 +2109,11 @@ export default {
           storedInR2 = true;
         } catch {}
 
+        // Dispatch silently to kolot-music@googlegroups.com (NEVER email reporter back)
         let emailDispatched = false;
-        let emailProvider = '';
-        const resendKey = (env.RESEND_API_KEY || '').trim();
+        const emailSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
+        const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}\nנושא: ${subject}\n\nתוכן:\n${record.message}\n\nמזהה: ${msgId}`;
+        const resendKey = String((env as any).RESEND_API_KEY || '').trim();
         if (resendKey && !emailDispatched) {
           try {
             const resendRes = await fetch('https://api.resend.com/emails', {
@@ -2114,111 +2123,56 @@ export default {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                from: env.RESEND_FROM_EMAIL || 'Kolot Music <onboarding@resend.dev>',
-                to: [targetRecipient],
-                reply_to: rawSenderEmail,
-                subject: fullSubject,
-                text: plainBody,
+                from: 'Kolot Music <onboarding@resend.dev>',
+                to: [targetGroupEmail],
+                subject: emailSubject,
+                text: emailBodyText,
               }),
-              signal: AbortSignal.timeout(4500),
             });
-            if (resendRes.ok) {
-              emailDispatched = true;
-              emailProvider = 'resend';
-            }
+            if (resendRes.ok) emailDispatched = true;
           } catch {}
         }
 
-        const brevoKey = ((env as any).BREVO_API_KEY || '').trim();
-        if (brevoKey && !emailDispatched) {
-          try {
-            const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
-              method: 'POST',
-              headers: { 'api-key': brevoKey, 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                sender: { name: 'Kolot Music', email: ((env as any).BREVO_SENDER_EMAIL || '').trim() || 'kolot.music1@gmail.com' },
-                to: [{ email: targetRecipient, name: 'Kolot Music' }],
-                replyTo: { email: rawSenderEmail },
-                subject: fullSubject,
-                textContent: plainBody,
-              }),
-              signal: AbortSignal.timeout(4500),
-            });
-            if (brevoRes.ok) {
-              emailDispatched = true;
-              emailProvider = 'brevo';
-            }
-          } catch {}
-        }
-
-        const web3Key = ((env as any).WEB3FORMS_ACCESS_KEY || '').trim();
-        if (web3Key && !emailDispatched) {
-          try {
-            const wRes = await fetch('https://api.web3forms.com/submit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-              body: JSON.stringify({
-                access_key: web3Key,
-                from_name: rawSenderEmail,
-                replyto: rawSenderEmail,
-                subject: fullSubject,
-                message: plainBody,
-              }),
-              signal: AbortSignal.timeout(4500),
-            });
-            const wData: any = await wRes.json().catch(() => null);
-            if (wRes.ok && wData?.success === true) {
-              emailDispatched = true;
-              emailProvider = 'web3forms';
-            }
-          } catch {}
-        }
-
-        // 4. FormSubmit.co AJAX fallback (works without API keys once 1-time activation link in Google Group is confirmed)
-        let activationPending = false;
         if (!emailDispatched) {
           try {
-            const originUrl = request.headers.get('origin') || url.origin;
-            const fRes = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(targetRecipient)}`, {
+            const formRes = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(targetGroupEmail)}`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
-                Origin: originUrl,
-                Referer: `${originUrl}/`,
+                Origin: url.origin,
+                Referer: `${url.origin}/`,
               },
               body: JSON.stringify({
-                name: rawSenderEmail,
-                email: rawSenderEmail,
-                _replyto: rawSenderEmail,
-                _subject: fullSubject,
+                email: 'noreply@kolot-music.app',
+                _replyto: 'noreply@kolot-music.app',
+                name: record.senderEmail,
                 category: categoryLabel,
-                message: plainBody,
+                _subject: emailSubject,
+                message: emailBodyText,
                 _captcha: 'false',
+                _template: 'table',
               }),
-              signal: AbortSignal.timeout(5000),
             });
-            const fData: any = await fRes.json().catch(() => null);
-            if (fRes.ok && (fData?.success === true || fData?.success === 'true')) {
-              emailDispatched = true;
-              emailProvider = 'formsubmit';
-            } else if (String(fData?.message || '').toLowerCase().includes('activat')) {
-              activationPending = true;
+            if (formRes.ok) {
+              const fJson: any = await formRes.json().catch(() => null);
+              if (fJson?.success === 'true' || fJson?.success === true) {
+                emailDispatched = true;
+              }
             }
           } catch {}
         }
 
         if (!storedInR2 && !emailDispatched) {
-          return jsonResponse({ success: false, error: 'שליחת ההודעה נכשלה כרגע, אנא נסה שוב בעוד רגע' }, 502);
+          return jsonResponse({ success: false, error: 'שמירת הדיווח בשרת נכשלה כרגע, אנא נסה שוב בעוד רגע' }, 502);
         }
 
         return jsonResponse({
           success: true,
           id: msgId,
           emailDispatched,
-          emailProvider: emailProvider || undefined,
-          activationPending: activationPending || undefined,
           storedInR2,
+          targetEmail: targetGroupEmail,
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'שליחת הפנייה נכשלה' }, 500);
