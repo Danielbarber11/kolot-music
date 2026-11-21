@@ -208,8 +208,8 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
           : existing.audioUrl;
 
       const merged: JamendoTrack = {
-        ...existing,
         ...t,
+        ...existing,
         id: existing.id || t.id,
         artistName:
           existing.artistName && existing.artistName !== 'אמן לא ידוע'
@@ -221,17 +221,40 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         artistAvatarUrl: existing.artistAvatarUrl || t.artistAvatarUrl,
         uploadedByUid: existing.uploadedByUid || t.uploadedByUid,
         uploadedByEmail: existing.uploadedByEmail || t.uploadedByEmail,
-        subtitleSegments: existing.subtitleSegments?.length ? existing.subtitleSegments : t.subtitleSegments,
-        subtitleSegmentsHe: existing.subtitleSegmentsHe?.length ? existing.subtitleSegmentsHe : t.subtitleSegmentsHe,
-        subtitleSegmentsEn: existing.subtitleSegmentsEn?.length ? existing.subtitleSegmentsEn : t.subtitleSegmentsEn,
-        subtitleSegmentsOrig: existing.subtitleSegmentsOrig?.length ? existing.subtitleSegmentsOrig : t.subtitleSegmentsOrig,
-        lyrics: existing.lyrics || t.lyrics,
-        lyricsHe: existing.lyricsHe || t.lyricsHe,
-        lyricsEn: existing.lyricsEn || t.lyricsEn,
-        lyricsOrig: existing.lyricsOrig || t.lyricsOrig,
+        subtitleSegments:
+          existing.subtitlesDisabled === true
+            ? undefined
+            : existing.subtitleSegments?.length
+              ? existing.subtitleSegments
+              : t.subtitleSegments,
+        subtitleSegmentsHe:
+          existing.subtitlesDisabled === true
+            ? undefined
+            : existing.subtitleSegmentsHe?.length
+              ? existing.subtitleSegmentsHe
+              : t.subtitleSegmentsHe,
+        subtitleSegmentsEn:
+          existing.subtitlesDisabled === true
+            ? undefined
+            : existing.subtitleSegmentsEn?.length
+              ? existing.subtitleSegmentsEn
+              : t.subtitleSegmentsEn,
+        subtitleSegmentsOrig:
+          existing.subtitlesDisabled === true
+            ? undefined
+            : existing.subtitleSegmentsOrig?.length
+              ? existing.subtitleSegmentsOrig
+              : t.subtitleSegmentsOrig,
+        lyrics: existing.subtitlesDisabled === true ? undefined : existing.lyrics || t.lyrics,
+        lyricsHe: existing.subtitlesDisabled === true ? undefined : existing.lyricsHe || t.lyricsHe,
+        lyricsEn: existing.subtitlesDisabled === true ? undefined : existing.lyricsEn || t.lyricsEn,
+        lyricsOrig: existing.subtitlesDisabled === true ? undefined : existing.lyricsOrig || t.lyricsOrig,
         detectedLanguageCode: existing.detectedLanguageCode || t.detectedLanguageCode,
         detectedLanguageLabel: existing.detectedLanguageLabel || t.detectedLanguageLabel,
-        hasWhisperSubtitles: !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
+        hasWhisperSubtitles:
+          existing.subtitlesDisabled === true
+            ? false
+            : !!(existing.hasWhisperSubtitles || t.hasWhisperSubtitles),
         subtitlesIncomplete:
           existing.subtitlesIncomplete === false || t.subtitlesIncomplete === false
             ? false
@@ -239,13 +262,44 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         subtitlesCompletedUpTo: Math.max(existing.subtitlesCompletedUpTo || 0, t.subtitlesCompletedUpTo || 0) || undefined,
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
         viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
-        karaokeAudioUrl: existing.karaokeAudioUrl || t.karaokeAudioUrl,
+        karaokeEnabled: existing.karaokeEnabled !== undefined ? existing.karaokeEnabled : t.karaokeEnabled,
+        karaokeAudioUrl:
+          existing.karaokeEnabled === false
+            ? undefined
+            : existing.karaokeAudioUrl || t.karaokeAudioUrl,
+        isAiGenerated: existing.isAiGenerated !== undefined ? existing.isAiGenerated : t.isAiGenerated,
       };
       trackMap.set(canonicalKey, merged);
     }
   }
 
   return sortTracksChronologically(Array.from(trackMap.values()));
+}
+
+export const TRACK_VIEWS_UPDATED_EVENT = 'kolot:track-views-updated';
+export const TRACK_UPDATED_EVENT = 'kolot:track-updated';
+
+export function upsertTrackInMemory(updatedTrack: JamendoTrack): JamendoTrack[] {
+  if (!updatedTrack?.id) return memorySessionTracks;
+  const exists = memorySessionTracks.some((t) => t.id === updatedTrack.id);
+  const next = exists
+    ? memorySessionTracks.map((t) =>
+        t.id === updatedTrack.id
+          ? {
+              ...updatedTrack,
+              viewsCount: Math.max(Number(t.viewsCount) || 0, Number(updatedTrack.viewsCount) || 0),
+              playsCount: Math.max(Number(t.playsCount) || 0, Number(updatedTrack.playsCount) || 0),
+            }
+          : t
+      )
+    : [updatedTrack, ...memorySessionTracks];
+  saveCachedCloudTracks(next);
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent(TRACK_UPDATED_EVENT, { detail: updatedTrack }));
+    } catch {}
+  }
+  return memorySessionTracks;
 }
 
 export function incrementTrackViewInMemory(trackId: string): number {
@@ -262,22 +316,34 @@ export function incrementTrackViewInMemory(trackId: string): number {
 
 export function syncTrackViewFromServer(trackId: string, serverViewsCount: number): void {
   if (!trackId || !Number.isFinite(serverViewsCount) || serverViewsCount <= 0) return;
-  memorySessionTracks = memorySessionTracks.map((t) =>
-    t.id === trackId
-      ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViewsCount) }
-      : t
-  );
+  let finalViews = serverViewsCount;
+  memorySessionTracks = memorySessionTracks.map((t) => {
+    if (t.id === trackId) {
+      finalViews = Math.max(Number(t.viewsCount) || 0, serverViewsCount);
+      return { ...t, viewsCount: finalViews };
+    }
+    return t;
+  });
   try {
     const cached = getCachedCloudTracks();
     if (cached.some((t) => t.id === trackId)) {
       const updated = cached.map((t) =>
         t.id === trackId
-          ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViewsCount) }
+          ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, finalViews) }
           : t
       );
       saveCachedCloudTracks(updated);
     }
   } catch {}
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent(TRACK_VIEWS_UPDATED_EVENT, {
+          detail: { trackId, viewsCount: finalViews },
+        })
+      );
+    } catch {}
+  }
 }
 
 export const TRACK_SUBTITLES_UPDATED_EVENT = 'kolot:track-subtitles-updated';
@@ -461,7 +527,7 @@ export async function fetchAllRealSongs(
   const mergeAndEmit = (incoming: JamendoTrack[]) => {
     if (!incoming || incoming.length === 0) return;
     const deletedIds = getDeletedSongIds();
-    latestMerged = deduplicateTracks([...latestMerged, ...incoming]).filter(
+    latestMerged = deduplicateTracks([...incoming, ...latestMerged]).filter(
       (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
     );
     saveCachedCloudTracks(latestMerged);

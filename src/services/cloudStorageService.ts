@@ -995,6 +995,7 @@ export function incrementTrackViewsInCloud(track: JamendoTrack): void {
     fetch('/api/storage/track-view', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
       body: JSON.stringify({ trackId: track.id }),
       keepalive: true,
     })

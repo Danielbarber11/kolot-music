@@ -43,11 +43,23 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({ children }) => {
       e.preventDefault();
     };
 
+    const handleSelectStart = (e: Event) => {
+      if (isEditableElement(e.target)) return;
+      if (e.target instanceof HTMLElement && e.target.closest('img, svg, video, canvas, button, [role="button"]')) {
+        e.preventDefault();
+        return;
+      }
+      if (!document.documentElement.classList.contains('kolot-allow-select')) {
+        e.preventDefault();
+      }
+    };
+
     document.addEventListener('copy', handleCopyOrCut);
     document.addEventListener('cut', handleCopyOrCut);
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('dragstart', handleDragStart);
     document.addEventListener('contextmenu', handleContextMenu);
+    document.addEventListener('selectstart', handleSelectStart);
 
     return () => {
       document.removeEventListener('copy', handleCopyOrCut);
@@ -55,6 +67,7 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({ children }) => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('dragstart', handleDragStart);
       document.removeEventListener('contextmenu', handleContextMenu);
+      document.removeEventListener('selectstart', handleSelectStart);
     };
   }, []);
 

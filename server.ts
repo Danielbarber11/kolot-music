@@ -2890,6 +2890,40 @@ async function flushTrackViewsToR2(cleanId: string, r2Ctx: { client: S3Client; b
           );
           optimisticTrackViewCounts.set(cleanId, Math.max(optimisticTrackViewCounts.get(cleanId) || 0, viewsCount));
           committed = true;
+          const committedCount = viewsCount;
+          void (tracksIndexWriteChain = tracksIndexWriteChain
+            .then(async () => {
+              try {
+                const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+                if (idxObj.Body) {
+                  const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+                  if (Array.isArray(idxData)) {
+                    let changed = false;
+                    const nextArr = idxData.map((t: any) => {
+                      if (t?.id === cleanId) {
+                        const prevV = Number(t.viewsCount) || 0;
+                        if (committedCount > prevV) {
+                          changed = true;
+                          return { ...t, viewsCount: committedCount };
+                        }
+                      }
+                      return t;
+                    });
+                    if (changed) {
+                      await client.send(
+                        new PutObjectCommand({
+                          Bucket: bucket,
+                          Key: 'tracks_index.json',
+                          Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                          ContentType: 'application/json',
+                        })
+                      );
+                    }
+                  }
+                }
+              } catch {}
+            })
+            .catch(() => {}));
         }
       } catch {
         // Fallback to tracks_index.json serialized via tracksIndexWriteChain
@@ -2944,6 +2978,7 @@ async function flushTrackViewsToR2(cleanId: string, r2Ctx: { client: S3Client; b
 }
 
 app.post('/api/storage/track-view', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   try {
     const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
     if (!cleanId) return res.status(400).json({ success: false });
@@ -2953,9 +2988,10 @@ app.post('/api/storage/track-view', async (req, res) => {
     optimisticTrackViewCounts.set(cleanId, nextOptimistic);
 
     const r2Ctx = await getR2Context(req);
-    void flushTrackViewsToR2(cleanId, r2Ctx);
+    await flushTrackViewsToR2(cleanId, r2Ctx).catch(() => {});
 
-    return res.json({ success: true, viewsCount: nextOptimistic });
+    const authoritativeCount = Math.max(optimisticTrackViewCounts.get(cleanId) || 0, nextOptimistic);
+    return res.json({ success: true, viewsCount: authoritativeCount });
   } catch {
     return res.json({ success: false, viewsCount: 1 });
   }

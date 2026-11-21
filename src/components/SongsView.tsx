@@ -49,6 +49,8 @@ import {
   removeMemoryArtistProfile,
   updateMemoryTracksArtistAvatar,
   isValidTrackWithOwner,
+  TRACK_VIEWS_UPDATED_EVENT,
+  TRACK_UPDATED_EVENT,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
@@ -485,7 +487,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     if (initialTracks.length > 0) {
       const valid = initialTracks.filter(isValidTrackWithOwner);
       if (valid.length > 0) {
-        setAllTracks((prev) => (prev.length === 0 ? valid : deduplicateTracks([...prev, ...valid])));
+        setAllTracks((prev) => (prev.length === 0 ? valid : deduplicateTracks([...valid, ...prev])));
         valid.slice(0, 10).forEach((t) => prewarmTrackColor(t));
       }
     }
@@ -538,8 +540,82 @@ export const SongsView: React.FC<SongsViewProps> = ({
       })
       .catch(() => {});
 
+    let lastRefreshAt = Date.now();
+    const refreshFromCloud = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastRefreshAt < 10000) return;
+      lastRefreshAt = now;
+      fetchAllRealSongs()
+        .then((freshSongs) => {
+          if (!active || !Array.isArray(freshSongs)) return;
+          const valid = freshSongs.filter(isValidTrackWithOwner);
+          if (valid.length > 0) {
+            setAllTracks(valid);
+            onTracksSync?.(valid);
+            setPlayerTrack((cur) => {
+              if (!cur) return cur;
+              const match = valid.find((t) => t.id === cur.id);
+              return match ? { ...cur, ...match } : cur;
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        refreshFromCloud(false);
+      }
+    };
+
+    const handleViewsUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number }>)?.detail;
+      const trackId = detail?.trackId;
+      const serverViews = Number(detail?.viewsCount);
+      if (!trackId || !Number.isFinite(serverViews) || serverViews <= 0 || !active) return;
+
+      setAllTracks((prev) => {
+        if (!prev.some((t) => t.id === trackId)) return prev;
+        const next = prev.map((t) =>
+          t.id === trackId
+            ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViews) }
+            : t
+        );
+        saveCachedCloudTracks(next);
+        onTracksSync?.(next);
+        return next;
+      });
+      setPlayerTrack((cur) =>
+        cur && cur.id === trackId
+          ? { ...cur, viewsCount: Math.max(Number(cur.viewsCount) || 0, serverViews) }
+          : cur
+      );
+    };
+
+    const handleTrackUpdated = (ev: Event) => {
+      const updated = (ev as CustomEvent<JamendoTrack>)?.detail;
+      if (!updated?.id || !active) return;
+
+      setAllTracks((prev) => {
+        const next = deduplicateTracks([updated, ...prev]);
+        saveCachedCloudTracks(next);
+        onTracksSync?.(next);
+        return next;
+      });
+      setPlayerTrack((cur) => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+    window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
+
     return () => {
       active = false;
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+      window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
     };
   }, []);
 
@@ -727,16 +803,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
       .slice(0, 15);
   }, [publishedArtists, validTracksList]);
 
-  // Popularity heuristic (plays count + favorite bonus + pseudo hash)
+  // Popularity heuristic (views + plays count + favorite bonus + pseudo hash)
   const getTrackPopularity = React.useCallback(
     (t: JamendoTrack) => {
-      const plays = t.playsCount || 0;
+      const views = Number(t.viewsCount) || 0;
+      const plays = Number(t.playsCount) || 0;
       const isLikedBonus = likedSongIds.includes(t.id) ? 60 : 0;
       let hash = 0;
       for (let i = 0; i < t.name.length; i++) {
         hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
       }
-      return plays + isLikedBonus + hash;
+      return views * 2 + plays + isLikedBonus + hash;
     },
     [likedSongIds]
   );
@@ -2394,7 +2471,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
             }}
             onRemoveTrack={async (trackId) => {
               markSongAsDeleted(trackId);
-              setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+              setAllTracks((prev) => {
+                const next = prev.filter((t) => t.id !== trackId);
+                saveCachedCloudTracks(next);
+                onTracksSync?.(next);
+                return next;
+              });
               await Promise.allSettled([
                 removeTrackFromStorage(trackId),
                 deleteTrackFromCloud(trackId),
@@ -2413,11 +2495,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
         lang={lang}
         onTrackPublished={async (newTrack) => {
           setAllTracks((prev) => {
-            const next = deduplicateTracks([newTrack, ...prev]);
+            const replaced = prev.some((t) => t.id === newTrack.id)
+              ? prev.map((t) => (t.id === newTrack.id ? { ...t, ...newTrack } : t))
+              : [newTrack, ...prev];
+            const next = deduplicateTracks([newTrack, ...replaced]);
             saveCachedCloudTracks(next);
             onTracksSync?.(next);
             return next;
           });
+          setPlayerTrack((cur) => (cur && cur.id === newTrack.id ? { ...cur, ...newTrack } : cur));
         }}
         onArtistUpdated={(updatedArtist) => {
           setActiveArtistProfile(updatedArtist);
@@ -2480,7 +2566,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
         }}
         onRemoveTrack={async (trackId) => {
           markSongAsDeleted(trackId);
-          setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+          setAllTracks((prev) => {
+            const next = prev.filter((t) => t.id !== trackId);
+            saveCachedCloudTracks(next);
+            onTracksSync?.(next);
+            return next;
+          });
           await Promise.allSettled([
             removeTrackFromStorage(trackId),
             deleteTrackFromCloud(trackId),

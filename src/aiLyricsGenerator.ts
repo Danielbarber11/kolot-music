@@ -86,13 +86,13 @@ export function generateSynchronizedLyrics(
               : undefined;
 
   if (segments && segments.length > 0) {
-    const lines: SynchronizedLine[] = segments
+    const rawLines: SynchronizedLine[] = segments
       .map((seg, idx) => {
         const cleanText = sanitizeSubtitleLettersOnly(seg.text);
         if (!cleanText) return null;
-        const startTime = Math.max(0, Number(seg.startTime) || 0);
-        const endTime = Math.max(startTime + 0.8, Number(seg.endTime) || startTime + 4);
-        const words =
+        let startTime = Math.max(0, Number(seg.startTime) || 0);
+        let endTime = Math.max(startTime + 0.45, Number(seg.endTime) || startTime + 3.5);
+        const rawWords =
           seg.words && seg.words.length > 0
             ? seg.words
                 .map((w) => ({
@@ -102,15 +102,46 @@ export function generateSynchronizedLyrics(
                 .filter((w) => w.text.length > 0)
             : buildWordsForSegment(cleanText, startTime, endTime);
 
+        if (rawWords.length > 0) {
+          const wStart = Number(rawWords[0].startTime);
+          const wEnd = Number(rawWords[rawWords.length - 1].endTime);
+          if (Number.isFinite(wStart) && wStart > startTime && wStart < endTime - 0.25) {
+            startTime = wStart;
+          }
+          if (Number.isFinite(wEnd) && wEnd > startTime + 0.25 && wEnd < endTime) {
+            endTime = wEnd;
+          }
+        }
+
         return {
           id: seg.id || `whisper_line_${idx}`,
           startTime,
           endTime,
           text: cleanText,
-          words,
+          words: rawWords,
         };
       })
-      .filter((l): l is SynchronizedLine => !!l);
+      .filter((l): l is SynchronizedLine => !!l)
+      .sort((a, b) => a.startTime - b.startTime);
+
+    // Clamp overlapping boundaries cleanly so as soon as next line starts, previous line finishes
+    const lines: SynchronizedLine[] = rawLines.map((line, idx) => {
+      const next = rawLines[idx + 1];
+      let clampedEnd = line.endTime;
+      if (next && clampedEnd > next.startTime) {
+        clampedEnd = Math.max(line.startTime + 0.2, next.startTime - 0.02);
+      }
+      const clampedWords = line.words.map((w) => ({
+        ...w,
+        startTime: Math.max(line.startTime, Math.min(clampedEnd - 0.05, w.startTime)),
+        endTime: Math.max(line.startTime + 0.05, Math.min(clampedEnd, w.endTime)),
+      }));
+      return {
+        ...line,
+        endTime: clampedEnd,
+        words: clampedWords,
+      };
+    });
 
     if (lines.length > 0) {
       return {

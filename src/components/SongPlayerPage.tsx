@@ -233,6 +233,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [sleepEndedBanner, setSleepEndedBanner] = useState(false);
   const [sleepBlackoutOverlay, setSleepBlackoutOverlay] = useState(false);
   const wakeLockRef = useRef<any>(null);
+  const activeLyricsLineRef = useRef<HTMLDivElement | null>(null);
 
   // Bluetooth & Audio Output state
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
@@ -434,13 +435,50 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     [track, activeSegments, whisperSegmentsHe, whisperSegmentsEn, whisperSegmentsOrig, activeLyricsText, whisperLyricsHe, whisperLyricsEn, whisperLyricsOrig]
   );
 
+  // Keep publisher Karaoke availability synced with parent prop updates
+  useEffect(() => {
+    setCloudKaraokeUrl(track.karaokeAudioUrl);
+    if (track.karaokeEnabled === false) {
+      setIsKaraokeMode(false);
+      if (liveKaraokeRef.current) {
+        liveKaraokeRef.current.setEnabled(false);
+      }
+    }
+  }, [track.karaokeAudioUrl, track.karaokeEnabled]);
+
   const syncedLyrics = React.useMemo(
     () => generateSynchronizedLyrics(effectiveTrackForLyrics, activeSegments, subtitleLang),
     [effectiveTrackForLyrics, activeSegments, subtitleLang]
   );
-  const activeLineIndex = syncedLyrics.lines.findIndex(
-    (line) => currentTime >= line.startTime && currentTime <= line.endTime
+
+  // PlaybackRate-aware lookahead so highlighted phrase switches immediately as the singer finishes each line
+  const subtitleSyncTime = Math.min(
+    duration > 0 ? duration : 9999,
+    Math.max(0, currentTime + 0.06 * (playbackRate || 1))
   );
+
+  const activeLineIndex = React.useMemo(() => {
+    const lines = syncedLyrics.lines;
+    if (!lines.length) return -1;
+    let matched = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      const nextStart = i + 1 < lines.length ? lines[i + 1].startTime : l.endTime + 0.05;
+      const effectiveEnd = Math.min(l.endTime, nextStart - 0.01);
+      if (subtitleSyncTime >= l.startTime && subtitleSyncTime < Math.max(l.startTime + 0.05, effectiveEnd)) {
+        matched = i;
+      }
+    }
+    return matched;
+  }, [syncedLyrics.lines, subtitleSyncTime]);
+
+  useEffect(() => {
+    if (isLyricsExpanded && activeLineIndex >= 0 && activeLyricsLineRef.current) {
+      try {
+        activeLyricsLineRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } catch {}
+    }
+  }, [activeLineIndex, isLyricsExpanded]);
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
@@ -456,9 +494,61 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   }, [track.id]);
 
+  // Keep screen awake automatically whenever SongPlayerPage is open (unless dark sleep screen overlay is active)
+  useEffect(() => {
+    if (sleepBlackoutOverlay) {
+      if (wakeLockRef.current && typeof wakeLockRef.current.release === 'function') {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const acquireWakeLock = async () => {
+      try {
+        const navAny = navigator as any;
+        if (!cancelled && document.visibilityState === 'visible' && navAny?.wakeLock?.request && !wakeLockRef.current) {
+          const sentinel = await navAny.wakeLock.request('screen');
+          if (cancelled) {
+            sentinel?.release?.().catch(() => {});
+            return;
+          }
+          wakeLockRef.current = sentinel;
+          sentinel?.addEventListener?.('release', () => {
+            if (wakeLockRef.current === sentinel) {
+              wakeLockRef.current = null;
+            }
+          });
+        }
+      } catch {}
+    };
+
+    void acquireWakeLock();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && !sleepBlackoutOverlay) {
+        void acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (wakeLockRef.current && typeof wakeLockRef.current.release === 'function') {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, [sleepBlackoutOverlay]);
+
   const pregeneratedKaraokeUrl = cloudKaraokeUrl || track.karaokeAudioUrl;
+  const hasPublisherKaraoke =
+    (Boolean(pregeneratedKaraokeUrl) && track.karaokeEnabled !== false) ||
+    track.karaokeEnabled === true;
+
   const effectiveAudioUrl =
-    isKaraokeMode && pregeneratedKaraokeUrl
+    isKaraokeMode && hasPublisherKaraoke && pregeneratedKaraokeUrl
       ? getStreamingMediaUrl(pregeneratedKaraokeUrl)
       : getStreamingMediaUrl(track.audioUrl);
   const effectiveCoverUrl = getStreamingMediaUrl(track.coverUrl);
@@ -467,6 +557,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     (effectiveAudioUrl.startsWith('/') || effectiveAudioUrl.includes('/api/storage/'));
 
   const handleToggleKaraokeMode = () => {
+    if (!hasPublisherKaraoke) {
+      setIsKaraokeMode(false);
+      return;
+    }
     const next = !isKaraokeMode;
     const audio = audioRef.current;
 
@@ -479,7 +573,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       return;
     }
 
-    // Legacy track without pre-generated R2 karaoke audio: real-time Web Audio vocal cancellation
+    // Fallback when publisher enabled karaoke on a track without a cached WAV yet: real-time Web Audio vocal removal
     if (audio) {
       if (!liveKaraokeRef.current) {
         liveKaraokeRef.current = createLiveKaraokeController(audio);
@@ -1113,6 +1207,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.playbackRate = playbackRate;
+      const d =
+        audioRef.current.duration && Number.isFinite(audioRef.current.duration)
+          ? audioRef.current.duration
+          : duration;
+      syncMediaSessionPosition(audioRef.current.currentTime || currentTime || 0, d);
     }
   }, [playbackRate]);
 
@@ -1236,10 +1335,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           const rate = audio.playbackRate || 1;
           sc.clockTimeSec += dt * rate;
           const drift = audioCur - sc.clockTimeSec;
-          if (Math.abs(drift) > 0.7) {
+          if (Math.abs(drift) > 0.08) {
             sc.clockTimeSec = audioCur;
-          } else if (Math.abs(drift) > 0.18) {
-            sc.clockTimeSec += drift * 0.08;
+          } else if (Math.abs(drift) > 0.02) {
+            sc.clockTimeSec += drift * 0.25;
           }
           sc.clockTimeSec = Math.max(0, Math.min(audioDur, sc.clockTimeSec));
         } else {
@@ -1247,7 +1346,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         }
 
         syncProgressDomImmediate(sc.clockTimeSec, audioDur, false);
-        if (nowMs - lastReactTimeSyncRef.current >= 120) {
+        if (nowMs - lastReactTimeSyncRef.current >= 40) {
           lastReactTimeSyncRef.current = nowMs;
           setCurrentTime(sc.clockTimeSec);
         }
@@ -1429,12 +1528,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         style={{ overflowAnchor: 'none' }}
         className="relative z-10 flex-1 min-h-0 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
       >
-        {/* SCREEN 1: MOBILE-ANCHORED BOTTOM CONTROLS + TOP ARTWORK/KARAOKE STAGE (FITS CLEANLY BEFORE SCROLLING) */}
-        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-between sm:justify-center px-4 pt-14 pb-5 sm:pt-14 sm:pb-12 gap-2.5 sm:gap-5 max-w-md mx-auto shrink-0">
+        {/* SCREEN 1: MOBILE-ANCHORED BOTTOM CONTROLS + CENTERED ARTWORK/KARAOKE STAGE (FITS CLEANLY BEFORE SCROLLING) */}
+        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-between sm:justify-center px-4 pt-16 pb-5 sm:pt-14 sm:pb-12 gap-2.5 sm:gap-5 max-w-md mx-auto shrink-0">
 
-        {/* 1. COVER ARTWORK IMAGE OR KARAOKE LIVE LYRICS STAGE */}
+        {/* 1. COVER ARTWORK IMAGE OR KARAOKE LIVE LYRICS STAGE (Slightly lowered toward vertical middle on mobile) */}
         {isKaraokeMode ? (
-          <div className="w-full max-w-md h-[40dvh] sm:h-[42dvh] min-h-[210px] max-h-[330px] rounded-2xl sm:rounded-3xl bg-black/50 backdrop-blur-2xl border border-white/25 shadow-2xl p-4 sm:p-5 flex flex-col justify-between overflow-hidden shrink-0 my-auto sm:my-0">
+          <div className="w-full max-w-md h-[40dvh] sm:h-[42dvh] min-h-[210px] max-h-[330px] rounded-2xl sm:rounded-3xl bg-black/50 backdrop-blur-2xl border border-white/25 shadow-2xl p-4 sm:p-5 flex flex-col justify-between overflow-hidden shrink-0 mt-auto mb-3 sm:my-0">
             <div className="flex items-center justify-between gap-2 border-b border-white/15 pb-2 shrink-0" dir={isHe ? 'rtl' : 'ltr'}>
               <div className="flex items-center gap-2 text-xs font-bold text-white">
                 <Mic2 className="w-4 h-4 text-emerald-300 shrink-0" />
@@ -1471,10 +1570,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
 
             {syncedLyrics.lines.length > 0 ? (() => {
+              const nextLineIdx = syncedLyrics.lines.findIndex((l) => l.startTime > subtitleSyncTime);
               const anchorIdx =
                 activeLineIndex >= 0
                   ? activeLineIndex
-                  : Math.max(0, syncedLyrics.lines.findIndex((l) => l.startTime > currentTime) - 1);
+                  : nextLineIdx >= 0
+                    ? nextLineIdx
+                    : syncedLyrics.lines.length - 1;
               const visibleIndices = [anchorIdx - 1, anchorIdx, anchorIdx + 1, anchorIdx + 2].filter(
                 (i) => i >= 0 && i < syncedLyrics.lines.length
               );
@@ -1507,7 +1609,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                       >
                         <div className="flex flex-wrap items-center justify-center gap-1.5 leading-snug">
                           {line.words.map((w, wIdx) => {
-                            const wordActive = isCurr && currentTime >= w.startTime && currentTime <= w.endTime;
+                            const wordActive = isCurr && subtitleSyncTime >= w.startTime && subtitleSyncTime <= w.endTime;
                             return (
                               <span
                                 key={wIdx}
@@ -1543,7 +1645,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         ) : (
           <div
-            className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[33dvh] max-w-[33dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0 my-auto sm:my-0"
+            className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[33dvh] max-w-[33dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0 mt-auto mb-3 sm:my-0"
             style={
               extractedColor
                 ? {
@@ -1565,11 +1667,54 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         )}
 
-        {/* BOTTOM PLAYER CONTROLS CLUSTER ON MOBILE (ANCHORED ABOVE THE FOLD) */}
-        <div className="w-full mt-auto sm:mt-0 flex flex-col items-center gap-3 sm:gap-4 shrink-0">
+        {/* BOTTOM PLAYER CONTROLS CLUSTER (Mobile: Song Title & Artist sit ABOVE Progress Bar; Desktop keeps original order) */}
+        <div className="w-full mt-auto sm:mt-0 flex flex-col items-center gap-2.5 sm:gap-4 shrink-0">
 
-        {/* 2. PROGRESS BAR (SLIGHTLY NARROWER ON MOBILE, CLEANLY ROUNDED CORNERS AT BOTH ENDS) */}
-        <div className="w-[88%] sm:w-full mx-auto space-y-1.5 px-1 sm:px-2">
+        {/* 1 on Mobile / 3 on Desktop: SONG NAME & ARTIST NAME */}
+        <div className="order-1 sm:order-3 text-center space-y-1 px-2 w-full pb-0.5 sm:pb-1 overflow-hidden flex flex-col items-center">
+          <div className="w-full flex justify-center">
+            <ScrollingSongTitle title={track.name} />
+          </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={handleOpenArtistProfile}
+              className="text-xs sm:text-sm font-bold text-white hover:text-white/80 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <span>{track.artistName}</span>
+              {track.featuredArtist && <span className="text-white/80 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
+              <ArrowUpRight className="w-3.5 h-3.5 text-white" />
+            </button>
+          </div>
+
+          {favoriteAuthNotice && (
+            <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/65 border border-white/25 backdrop-blur-xl text-center space-y-1.5 shadow-xl">
+              <p className="text-[11px] font-bold text-white">
+                {isHe ? 'הוספה למועדפים זמינה למשתמשים מחוברים בלבד' : 'Favorites require a signed-in account'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  loginWithGoogle()
+                    .then((u) => {
+                      if (u) {
+                        setAuthUser(u);
+                        setFavoriteAuthNotice(false);
+                      }
+                    })
+                    .catch(() => {});
+                }}
+                className="px-3 py-1 rounded-full bg-white text-black font-bold text-[11px] hover:bg-neutral-200 transition-colors cursor-pointer"
+              >
+                {isHe ? 'התחבר עם Google' : 'Sign in with Google'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 2 on Mobile / 1 on Desktop: PROGRESS BAR */}
+        <div className="order-2 sm:order-1 w-[88%] sm:w-full mx-auto space-y-1.5 px-1 sm:px-2">
           <div
             ref={progressBarRef}
             dir="ltr"
@@ -1613,8 +1758,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         </div>
 
-        {/* 3. PLAY BUTTON & CONTROLS ROW (dir="ltr" — Profile Avatar on Left, Heart on Right) */}
-        <div dir="ltr" className="flex items-center justify-center gap-3 sm:gap-4 pt-1">
+        {/* 3 on Mobile / 2 on Desktop: PLAY BUTTON & CONTROLS ROW */}
+        <div dir="ltr" className="order-3 sm:order-2 flex items-center justify-center gap-3 sm:gap-4 pt-0.5">
           <button
             type="button"
             onClick={handleOpenArtistProfile}
@@ -1705,70 +1850,32 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </button>
         </div>
 
-        {/* 4. SONG NAME & ARTIST NAME */}
-        <div className="text-center space-y-1.5 px-2 w-full pb-2 overflow-hidden flex flex-col items-center">
-          <div className="w-full flex justify-center">
-            <ScrollingSongTitle title={track.name} />
-          </div>
-
-          <div>
-            <button
-              type="button"
-              onClick={handleOpenArtistProfile}
-              className="text-xs sm:text-sm font-bold text-white hover:text-white/80 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <span>{track.artistName}</span>
-              {track.featuredArtist && <span className="text-white/80 font-semibold text-xs"> (Feat. {track.featuredArtist})</span>}
-              <ArrowUpRight className="w-3.5 h-3.5 text-white" />
-            </button>
-          </div>
-
-          {favoriteAuthNotice && (
-            <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/65 border border-white/25 backdrop-blur-xl text-center space-y-1.5 shadow-xl">
-              <p className="text-[11px] font-bold text-white">
-                {isHe ? 'הוספה למועדפים זמינה למשתמשים מחוברים בלבד' : 'Favorites require a signed-in account'}
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  loginWithGoogle()
-                    .then((u) => {
-                      if (u) {
-                        setAuthUser(u);
-                        setFavoriteAuthNotice(false);
-                      }
-                    })
-                    .catch(() => {});
-                }}
-                className="px-3 py-1 rounded-full bg-white text-black font-bold text-[11px] hover:bg-neutral-200 transition-colors cursor-pointer"
-              >
-                {isHe ? 'התחבר עם Google' : 'Sign in with Google'}
-              </button>
-            </div>
-          )}
-
-          {/* MORE TOOLS TAB BUTTON ("כלים נוספים" - Sleep Timer, Karaoke, Bluetooth, Sound) */}
-          <div className="pt-0.5 flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsMoreToolsOpen(true)}
-              className="px-4 py-1.5 rounded-full bg-white/12 hover:bg-white/22 border border-white/25 backdrop-blur-xl text-xs font-bold text-white inline-flex items-center gap-2 shadow-lg transition-all cursor-pointer active:scale-95"
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5 text-white" />
-              <span>{isHe ? 'כלים נוספים' : 'More Tools'}</span>
-              {isKaraokeMode && (
-                <Mic2 className="w-3.5 h-3.5 text-emerald-300" />
-              )}
-              {(sleepRemainingSec !== null || sleepStopAtTrackEnd) && (
-                <span className="px-2 py-0.5 rounded-full bg-white text-black text-[10px] font-mono tabular-nums">
-                  {sleepStopAtTrackEnd ? (isHe ? 'סוף שיר' : 'Track End') : formatClockTime(sleepRemainingSec || 0)}
-                </span>
-              )}
-              {bluetoothDeviceInfo?.connected && (
-                <Bluetooth className="w-3.5 h-3.5 text-sky-300" />
-              )}
-            </button>
-          </div>
+        {/* 4. MORE TOOLS TAB BUTTON ("כלים נוספים" - Speed, Sleep Timer, Karaoke, Bluetooth, Sound) */}
+        <div className="order-4 w-full flex flex-col items-center gap-2 pt-0.5 pb-1">
+          <button
+            type="button"
+            onClick={() => setIsMoreToolsOpen(true)}
+            className="px-4 py-1.5 rounded-full bg-white/12 hover:bg-white/22 border border-white/25 backdrop-blur-xl text-xs font-bold text-white inline-flex items-center gap-2 shadow-lg transition-all cursor-pointer active:scale-95"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-white" />
+            <span>{isHe ? 'כלים נוספים' : 'More Tools'}</span>
+            {playbackRate !== 1 && (
+              <span className="px-2 py-0.5 rounded-full bg-white text-black text-[10px] font-mono tabular-nums">
+                {playbackRate}x
+              </span>
+            )}
+            {isKaraokeMode && (
+              <Mic2 className="w-3.5 h-3.5 text-emerald-300" />
+            )}
+            {(sleepRemainingSec !== null || sleepStopAtTrackEnd) && (
+              <span className="px-2 py-0.5 rounded-full bg-white text-black text-[10px] font-mono tabular-nums">
+                {sleepStopAtTrackEnd ? (isHe ? 'סוף שיר' : 'Track End') : formatClockTime(sleepRemainingSec || 0)}
+              </span>
+            )}
+            {bluetoothDeviceInfo?.connected && (
+              <Bluetooth className="w-3.5 h-3.5 text-sky-300" />
+            )}
+          </button>
 
           {sleepEndedBanner && (
             <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/70 border border-white/25 backdrop-blur-xl flex items-center justify-between gap-2 shadow-xl text-xs">
@@ -1784,7 +1891,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               </button>
             </div>
           )}
-
         </div>
         </div>
 
@@ -1920,6 +2026,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                     return (
                       <div
                         key={line.id}
+                        ref={isLineActive ? activeLyricsLineRef : undefined}
                         dir={lineIsRtl ? 'rtl' : 'ltr'}
                         onClick={() => {
                           if (audioRef.current) {
@@ -1946,7 +2053,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                           }`}
                         >
                           {line.words.map((w, wIdx) => {
-                            const isWordActive = currentTime >= w.startTime && currentTime <= w.endTime;
+                            const isWordActive = isLineActive && subtitleSyncTime >= w.startTime && subtitleSyncTime <= w.endTime;
 
                             return (
                               <span
@@ -2153,6 +2260,39 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 </button>
               </div>
 
+              {/* QUICK PLAYBACK SPEED BAR IN "כלים נוספים" (Syncs Audio & Subtitles to Chosen Speed) */}
+              <div className="p-3 rounded-2xl bg-white/[0.04] border border-white/12 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setMoreToolsTab('audio')}
+                    className="font-bold text-white flex items-center gap-2 cursor-pointer hover:text-white/80"
+                  >
+                    <Gauge className="w-4 h-4 text-white" />
+                    <span>{isHe ? 'מהירות השמעה (מסונכרן לכתוביות)' : 'Playback Speed (Synced to Subtitles)'}</span>
+                  </button>
+                  <span className="font-mono text-xs font-bold text-black bg-white px-2 py-0.5 rounded-full">
+                    {playbackRate}x
+                  </span>
+                </div>
+                <div className="grid grid-cols-6 gap-1.5" dir="ltr">
+                  {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                    <button
+                      key={rate}
+                      type="button"
+                      onClick={() => setPlaybackRate(rate)}
+                      className={`py-1.5 rounded-xl text-[11px] font-mono border transition-all cursor-pointer ${
+                        playbackRate === rate
+                          ? 'bg-white text-black border-white font-bold shadow'
+                          : 'bg-white/[0.05] text-white/80 border-white/10 hover:bg-white/15'
+                      }`}
+                    >
+                      {rate}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* TABS INSIDE "כלים נוספים" */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-2xl bg-white/[0.05] border border-white/10 text-xs font-semibold">
                 <button
@@ -2200,32 +2340,37 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 </button>
               </div>
 
-              {/* TAB 0: KARAOKE MODE */}
+              {/* TAB 0: PUBLISHER-CONTROLLED KARAOKE MODE */}
               {moreToolsTab === 'karaoke' && (
                 <div className="space-y-4">
                   <div className="p-4 rounded-2xl bg-white/[0.06] border border-white/15 space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
                         <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                          <Mic2 className="w-4 h-4 text-emerald-300" />
-                          <span>{isHe ? 'מצב קריוקי (AI)' : 'AI Karaoke Mode'}</span>
+                          <Mic2 className={`w-4 h-4 ${hasPublisherKaraoke ? 'text-emerald-300' : 'text-white/40'}`} />
+                          <span>{isHe ? 'מצב קריוקי (מנגינה ללא זמר)' : 'Karaoke Mode (Instrumental)'}</span>
                         </h4>
                         <p className="text-[11px] text-white/65 leading-relaxed">
-                          {isHe
-                            ? 'מסיר את קול הזמר ומשאיר את המוזיקה של השיר בלבד, ומציג את המילים המסונכרנות על המסך במקום תמונת השיר.'
-                            : 'Strips lead vocals leaving only the instrumental backing track, and shows live lyrics instead of cover art.'}
+                          {hasPublisherKaraoke
+                            ? (isHe
+                                ? 'מוציא את שירת הזמר ומשאיר את המנגינה בלבד, ומציג את המילים המסונכרנות במקום תמונת השיר.'
+                                : 'Removes lead vocals leaving only the instrumental backing track, with live synced lyrics.')
+                            : (isHe
+                                ? 'מפרסם השיר לא הפעיל עדיין מצב קריוקי לשיר זה. יוצר השיר יכול להפעיל וליצור קריוקי בעריכת השיר בפרופיל.'
+                                : 'The track publisher has not enabled or generated Karaoke Mode for this release yet.')}
                         </p>
                       </div>
                       <button
                         type="button"
+                        disabled={!hasPublisherKaraoke}
                         onClick={handleToggleKaraokeMode}
-                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer shrink-0 ${
-                          isKaraokeMode
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                          isKaraokeMode && hasPublisherKaraoke
                             ? 'bg-emerald-400 text-black hover:bg-emerald-300'
                             : 'bg-white text-black hover:bg-neutral-200'
                         }`}
                       >
-                        {isKaraokeMode
+                        {isKaraokeMode && hasPublisherKaraoke
                           ? (isHe ? 'כבה קריוקי' : 'Turn Off')
                           : (isHe ? 'הפעל קריוקי' : 'Turn On')}
                       </button>
@@ -2233,19 +2378,26 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
                     <div className="pt-2 border-t border-white/10 text-[11px] text-white/70 flex items-center justify-between gap-2">
                       <span>
-                        {pregeneratedKaraokeUrl
-                          ? (isHe ? 'פסקול קריוקי מוכן ושמור מראש בענן לניגון מיידי' : 'Pre-generated cloud karaoke track ready')
-                          : (isHe ? 'הסרת זמר בזמן אמת לשיר זה (Web Audio)' : 'Real-time Web Audio vocal isolation active')}
+                        {!hasPublisherKaraoke
+                          ? (isHe ? 'מצב קריוקי מנוהל על ידי חשבון מפרסם השיר' : 'Publisher-controlled karaoke')
+                          : pregeneratedKaraokeUrl
+                            ? (isHe ? 'פסקול קריוקי אינסטרומנטלי מוכן ושמור בענן' : 'Publisher karaoke instrumental ready in cloud')
+                            : (isHe ? 'הפרדת זמר פעילה לשיר זה' : 'Vocal removal enabled by publisher')}
                       </span>
-                      <span className={`font-bold ${isKaraokeMode ? 'text-emerald-300' : 'text-white/50'}`}>
-                        {isKaraokeMode ? (isHe ? 'פעיל' : 'Active') : (isHe ? 'כבוי' : 'Off')}
+                      <span className={`font-bold ${isKaraokeMode && hasPublisherKaraoke ? 'text-emerald-300' : 'text-white/50'}`}>
+                        {!hasPublisherKaraoke
+                          ? (isHe ? 'לא הופעל' : 'Unavailable')
+                          : isKaraokeMode
+                            ? (isHe ? 'פעיל' : 'Active')
+                            : (isHe ? 'מוכן' : 'Ready')}
                       </span>
                     </div>
                   </div>
 
-                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
-                    (whisperSegmentsEn && whisperSegmentsEn.length > 0) ||
-                    (whisperSegmentsOrig && whisperSegmentsOrig.length > 0)) && (
+                  {hasPublisherKaraoke &&
+                    ((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
+                      (whisperSegmentsEn && whisperSegmentsEn.length > 0) ||
+                      (whisperSegmentsOrig && whisperSegmentsOrig.length > 0)) && (
                     <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2">
                       <span className="text-xs font-semibold text-white/80 block">
                         {isHe ? 'שפת מילות הקריוקי על המסך:' : 'Karaoke Lyrics Language:'}

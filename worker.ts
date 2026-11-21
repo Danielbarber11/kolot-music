@@ -1705,6 +1705,7 @@ export default {
         const nextOptimistic = (workerOptimisticViewCounts.get(cleanId) || 0) + 1;
         workerOptimisticViewCounts.set(cleanId, nextOptimistic);
 
+        let committedViews: number | null = null;
         const flushWorkerTrackViews = async () => {
           if (workerInFlightViewFlushes.has(cleanId)) return;
           workerInFlightViewFlushes.add(cleanId);
@@ -1732,6 +1733,7 @@ export default {
                       cleanId,
                       Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
                     );
+                    committedViews = viewsCount;
                     committed = true;
                     break;
                   }
@@ -1746,6 +1748,7 @@ export default {
                     cleanId,
                     Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
                   );
+                  committedViews = viewsCount;
                   committed = true;
                 }
               }
@@ -1777,6 +1780,7 @@ export default {
                         cleanId,
                         Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
                       );
+                      committedViews = nextViews;
                       committed = true;
                       break;
                     }
@@ -1801,6 +1805,7 @@ export default {
                         cleanId,
                         Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
                       );
+                      committedViews = nextViews;
                       committed = true;
                     }
                   }
@@ -1817,14 +1822,40 @@ export default {
           }
         };
 
-        const flushPromise = flushWorkerTrackViews();
-        if (ctx?.waitUntil) {
-          ctx.waitUntil(flushPromise);
-        } else {
-          await flushPromise;
+        await flushWorkerTrackViews();
+
+        if (committedViews !== null && env.R2_BUCKET) {
+          const finalViewVal = committedViews;
+          const syncIndexTask = (async () => {
+            try {
+              const idxObj = await env.R2_BUCKET!.get('tracks_index.json');
+              if (!idxObj) return;
+              const idxData = JSON.parse(await idxObj.text());
+              if (!Array.isArray(idxData)) return;
+              let changed = false;
+              const nextArr = idxData.map((t: any) => {
+                if (t?.id === cleanId && finalViewVal > (Number(t.viewsCount) || 0)) {
+                  changed = true;
+                  return { ...t, viewsCount: finalViewVal };
+                }
+                return t;
+              });
+              if (changed) {
+                await env.R2_BUCKET!.put('tracks_index.json', encoder.encode(JSON.stringify(nextArr, null, 2)), {
+                  httpMetadata: { contentType: 'application/json' },
+                });
+              }
+            } catch {}
+          })();
+          if (ctx?.waitUntil) {
+            ctx.waitUntil(syncIndexTask);
+          }
         }
 
-        return jsonResponse({ success: true, viewsCount: workerOptimisticViewCounts.get(cleanId) || nextOptimistic });
+        return jsonResponse({
+          success: true,
+          viewsCount: Math.max(workerOptimisticViewCounts.get(cleanId) || 0, committedViews || 0, nextOptimistic),
+        });
       } catch {
         return jsonResponse({ success: false, viewsCount: 1 });
       }

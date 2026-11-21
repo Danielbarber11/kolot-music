@@ -7,10 +7,13 @@ import { Language, JamendoTrack, ArtistProfile, Album } from './types';
 import {
   getInstantSongPool,
   fetchBootstrapData,
+  fetchAllRealSongs,
   getCachedArtistProfiles,
   getCachedAlbums,
   incrementTrackViewInMemory,
   TRACK_SUBTITLES_UPDATED_EVENT,
+  TRACK_VIEWS_UPDATED_EVENT,
+  TRACK_UPDATED_EVENT,
 } from './services/multiMusicService';
 import { getStreamingMediaUrl, incrementTrackViewsInCloud, fetchSingleTrackFromCloud } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
@@ -171,9 +174,36 @@ export default function App() {
     setActivePlayerTrack(updatedTrack);
   };
 
+  const lastCloudSyncRef = React.useRef<number>(Date.now());
+
+  const refreshCloudTracksInBackground = React.useCallback((force = false) => {
+    const now = Date.now();
+    if (!force && now - lastCloudSyncRef.current < 10000) return;
+    lastCloudSyncRef.current = now;
+    fetchAllRealSongs()
+      .then((fresh) => {
+        if (!Array.isArray(fresh) || fresh.length === 0) return;
+        setAllTracks(fresh);
+        setActivePlayerTrack((cur) => {
+          if (!cur) return cur;
+          const match = fresh.find((t) => t.id === cur.id);
+          return match
+            ? {
+                ...cur,
+                ...match,
+                viewsCount: Math.max(Number(cur.viewsCount) || 0, Number(match.viewsCount) || 0),
+                playsCount: Math.max(Number(cur.playsCount) || 0, Number(match.playsCount) || 0),
+              }
+            : cur;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   const handleExitTrack = () => {
     syncSongQueryParam(null);
     setActivePlayerTrack(null);
+    refreshCloudTracksInBackground(true);
   };
 
   // Coordinate single-roundtrip /api/bootstrap + color prewarming + top cover & avatar image decode BEFORE dismissing SplashScreen
@@ -257,14 +287,76 @@ export default function App() {
       );
       setActivePlayerTrack((cur) => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
     };
+    const handleTrackUpdated = (ev: Event) => {
+      const updated = (ev as CustomEvent<JamendoTrack>)?.detail;
+      if (!updated?.id || !active) return;
+      setAllTracks((prev) =>
+        prev.some((t) => t.id === updated.id)
+          ? prev.map((t) =>
+              t.id === updated.id
+                ? {
+                    ...updated,
+                    viewsCount: Math.max(Number(t.viewsCount) || 0, Number(updated.viewsCount) || 0),
+                    playsCount: Math.max(Number(t.playsCount) || 0, Number(updated.playsCount) || 0),
+                  }
+                : t
+            )
+          : [updated, ...prev]
+      );
+      setActivePlayerTrack((cur) =>
+        cur && cur.id === updated.id
+          ? {
+              ...cur,
+              ...updated,
+              viewsCount: Math.max(Number(cur.viewsCount) || 0, Number(updated.viewsCount) || 0),
+              playsCount: Math.max(Number(cur.playsCount) || 0, Number(updated.playsCount) || 0),
+            }
+          : cur
+      );
+    };
+
+    const handleViewsUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number }>)?.detail;
+      const trackId = detail?.trackId;
+      const serverViews = Number(detail?.viewsCount);
+      if (!trackId || !Number.isFinite(serverViews) || serverViews <= 0 || !active) return;
+
+      setAllTracks((prev) =>
+        prev.some((t) => t.id === trackId)
+          ? prev.map((t) =>
+              t.id === trackId
+                ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViews) }
+                : t
+            )
+          : prev
+      );
+      setActivePlayerTrack((cur) =>
+        cur && cur.id === trackId
+          ? { ...cur, viewsCount: Math.max(Number(cur.viewsCount) || 0, serverViews) }
+          : cur
+      );
+    };
+
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState === 'visible') {
+        refreshCloudTracksInBackground(false);
+      }
+    };
+
     window.addEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
+    window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
+    window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
 
     return () => {
       active = false;
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
+      window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
+      window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
     };
-  }, []);
+  }, [refreshCloudTracksInBackground]);
 
   const handleToggleLikeSong = (id: string) => {
     if (!authUser?.uid) {

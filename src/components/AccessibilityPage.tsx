@@ -257,11 +257,11 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-3.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-xs sm:text-sm font-normal flex items-center gap-2 transition-colors cursor-pointer shrink-0"
+              className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
               aria-label={isHe ? 'חזור לאתר' : 'Back to site'}
+              title={isHe ? 'חזור לאתר' : 'Back to site'}
             >
               <ArrowRight className={`w-4 h-4 ${isHe ? '' : 'rotate-180'}`} />
-              <span>{isHe ? 'חזור' : 'Back'}</span>
             </button>
 
             <div className="flex items-center gap-2.5 min-w-0">
@@ -292,14 +292,6 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
                 <span className="hidden sm:inline">{isHe ? 'איפוס הגדרות' : 'Reset'}</span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
-              aria-label={isHe ? 'סגור מסך נגישות' : 'Close accessibility'}
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         </div>
       </header>

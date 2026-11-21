@@ -130,10 +130,12 @@ body, h1, h2, h3, h4, h5, h6, p, span, a, button, input, textarea, select, label
 }
 
 /* Content & Image Protection (Default: block text/image selection; allow text highlighting only when Accessibility toggle is enabled) */
-body {
-  -webkit-user-select: text;
-  user-select: text;
-  -webkit-touch-callout: default;
+html,
+body,
+body *:not(input):not(textarea):not([contenteditable="true"]) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 input,
@@ -141,6 +143,7 @@ textarea,
 [contenteditable="true"] {
   -webkit-user-select: text !important;
   user-select: text !important;
+  -webkit-touch-callout: default !important;
 }
 
 img,
@@ -171,14 +174,20 @@ html.kolot-allow-select li,
 html.kolot-allow-select div {
   -webkit-user-select: text !important;
   user-select: text !important;
+  -webkit-touch-callout: default !important;
 }
 
 html.kolot-allow-select button,
+html.kolot-allow-select button *,
 html.kolot-allow-select [role="button"],
+html.kolot-allow-select [role="button"] *,
 html.kolot-allow-select img,
-html.kolot-allow-select svg {
+html.kolot-allow-select svg,
+html.kolot-allow-select video,
+html.kolot-allow-select canvas {
   -webkit-user-select: none !important;
   user-select: none !important;
+  -webkit-touch-callout: none !important;
 }
 
 /* Accessibility: High Contrast */

@@ -174,6 +174,7 @@ export interface JamendoTrack {
   featuredArtist?: string;
   writers?: string;
   karaokeAudioUrl?: string;
+  karaokeEnabled?: boolean;
 }
 
 export const CURRENT_TERMS_VERSION = 1;

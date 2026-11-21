@@ -141,8 +141,48 @@ export const Footer: React.FC<FooterProps> = ({
         throw new Error(data?.error || (isHe ? 'שליחת הפנייה נכשלה, נסה שוב' : 'Failed to send message'));
       }
 
-      const emailDispatched = Boolean(data.emailDispatched);
-      const activationPending = Boolean(data.activationPending);
+      let emailDispatched = Boolean(data.emailDispatched);
+      let activationPending = Boolean(data.activationPending);
+
+      // Browser-side FormSubmit fallback when backend environment has no SMTP/API key or datacenter IP was blocked
+      if (!emailDispatched) {
+        try {
+          const directController = new AbortController();
+          const directTimer = setTimeout(() => directController.abort(), 8000);
+          try {
+            const fsRes = await fetch(`https://formsubmit.co/ajax/${contactEmail}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              signal: directController.signal,
+              body: JSON.stringify({
+                name: authUser?.displayName || senderEmail.split('@')[0] || 'Kolot Music User',
+                email: senderEmail,
+                _replyto: senderEmail,
+                _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
+                category: categoryLabel,
+                message: `סוג פנייה: ${categoryLabel}\nשולח: ${senderEmail}\n\n${message}`,
+                _captcha: 'false',
+                _template: 'table',
+              }),
+            });
+            const fsJson = await fsRes.json().catch(() => null);
+            const fsMsg = String(fsJson?.message || '');
+            if (fsRes.ok && (fsJson?.success === true || fsJson?.success === 'true')) {
+              emailDispatched = true;
+              activationPending = false;
+            } else if (/activat/i.test(fsMsg)) {
+              activationPending = true;
+            }
+          } finally {
+            clearTimeout(directTimer);
+          }
+        } catch {
+          // Non-fatal fallback; submission is already persisted in R2 admin inbox
+        }
+      }
 
       trackEvent('contact_submit', {
         category: contactCategory,
@@ -157,10 +197,10 @@ export const Footer: React.FC<FooterProps> = ({
               : `Your message has been sent directly to ${contactEmail} and saved in the system.`)
           : activationPending
             ? (isHe
-                ? `הפנייה נשמרה במערכת, ונשלחה הודעת אישור ראשונית לתיבת הקבוצה ${contactEmail}. לאחר אישור ההפעלה בתיבה, הפניות יגיעו אוטומטית כאימייל.`
-                : `Your message was saved and an activation notice was sent to ${contactEmail}.`)
+                ? `הפנייה נשמרה במערכת ההנהלה. נשלח מייל הפעלה חד-פעמי אל ${contactEmail} — יש לפתוח את קבוצת Google Groups (תחת "שיחות" / "בהמתנה") או את ספאם המייל של בעל הקבוצה ולאשר פעם אחת את Activation כדי שהמיילים יגיעו אוטומטית.`
+                : `Saved in management inbox. Please click the one-time FormSubmit activation link sent to ${contactEmail} (check Google Groups pending messages or owner spam) to enable automatic forwarding.`)
             : (isHe
-                ? `הפנייה נשמרה בתיבת ההנהלה של האתר, ותועבר אוטומטית אל ${contactEmail} מיד לאחר השלמת הגדרת שליחת המייל בשרת.`
+                ? `הפנייה נשמרה בתיבת ההנהלה של האתר (זמינה להנהלה בפורטל האמן), ותועבר גם לקבוצת ${contactEmail}.`
                 : `Saved in management inbox and queued for ${contactEmail}.`),
       });
 

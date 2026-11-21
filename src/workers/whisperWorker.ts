@@ -245,13 +245,16 @@ function buildSegmentsFromChunk(
     }
 
     const finalStart = Number(absStart.toFixed(2));
-    const finalEnd = Number(Math.max(absStart + 0.8, absEnd).toFixed(2));
+    const finalEnd = Number(Math.max(absStart + 0.5, absEnd).toFixed(2));
+    const alignedWords = alignSegmentWordsToAudio(cleanText, finalStart, finalEnd, chunkPcm, windowOffsetSec);
+    const trimmedStart = alignedWords.length > 0 ? alignedWords[0].startTime : finalStart;
+    const trimmedEnd = alignedWords.length > 0 ? alignedWords[alignedWords.length - 1].endTime : finalEnd;
     segments.push({
       id: `${idPrefix}_${segments.length}`,
-      startTime: finalStart,
-      endTime: finalEnd,
+      startTime: trimmedStart,
+      endTime: Math.max(trimmedStart + 0.3, trimmedEnd),
       text: cleanText,
-      words: alignSegmentWordsToAudio(cleanText, finalStart, finalEnd, chunkPcm, windowOffsetSec),
+      words: alignedWords,
     });
   });
 
@@ -268,13 +271,16 @@ function buildSegmentsFromChunk(
         const absStart = windowOffsetSec + idx * step;
         const absEnd = Math.min(totalDuration, windowOffsetSec + (idx + 1) * step);
         const finalStart = Number(absStart.toFixed(2));
-        const finalEnd = Number(Math.max(absStart + 0.8, absEnd).toFixed(2));
+        const finalEnd = Number(Math.max(absStart + 0.5, absEnd).toFixed(2));
+        const alignedWords = alignSegmentWordsToAudio(text, finalStart, finalEnd, chunkPcm, windowOffsetSec);
+        const trimmedStart = alignedWords.length > 0 ? alignedWords[0].startTime : finalStart;
+        const trimmedEnd = alignedWords.length > 0 ? alignedWords[alignedWords.length - 1].endTime : finalEnd;
         return {
           id: `${idPrefix}_${idx}`,
-          startTime: finalStart,
-          endTime: finalEnd,
+          startTime: trimmedStart,
+          endTime: Math.max(trimmedStart + 0.3, trimmedEnd),
           text,
-          words: alignSegmentWordsToAudio(text, finalStart, finalEnd, chunkPcm, windowOffsetSec),
+          words: alignedWords,
         };
       });
     }
@@ -307,6 +313,9 @@ function mergeOrdered(allSegments: SubtitleSegment[]): SubtitleSegment[] {
     if (prev && prev.text.toLowerCase() === seg.text.toLowerCase() && seg.startTime - prev.endTime < 2.0) {
       prev.endTime = Number(Math.max(prev.endTime, seg.endTime).toFixed(2));
     } else {
+      if (prev && prev.endTime > seg.startTime) {
+        prev.endTime = Number(Math.max(prev.startTime + 0.2, seg.startTime - 0.02).toFixed(2));
+      }
       merged.push({ ...seg });
     }
   }
