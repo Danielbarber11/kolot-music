@@ -15,16 +15,20 @@ import {
   Minus,
   Highlighter,
   ShieldCheck,
-  Mail,
+  Copy,
   Keyboard,
   FileCheck2,
   Check,
   Plus,
+  Hand,
 } from 'lucide-react';
 import {
   AccessibilitySettings,
   DEFAULT_ACCESSIBILITY_SETTINGS,
+  PointerCapabilities,
   countActiveAccessibilityFeatures,
+  detectPointerCapabilities,
+  subscribePointerCapabilities,
 } from '../services/accessibilityService';
 import { Language } from '../types';
 
@@ -63,23 +67,10 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
   lang,
 }) => {
   const isHe = lang === 'he';
-  const [hasFinePointer, setHasFinePointer] = useState<boolean>(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
-    return window.matchMedia('(any-pointer: fine)').matches;
-  });
+  const [caps, setCaps] = useState<PointerCapabilities>(() => detectPointerCapabilities());
+  const [copiedA11yEmail, setCopiedA11yEmail] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(any-pointer: fine)');
-    const syncPointer = () => setHasFinePointer(mq.matches);
-    syncPointer();
-    if (typeof mq.addEventListener === 'function') {
-      mq.addEventListener('change', syncPointer);
-      return () => mq.removeEventListener('change', syncPointer);
-    }
-    mq.addListener(syncPointer);
-    return () => mq.removeListener(syncPointer);
-  }, []);
+  useEffect(() => subscribePointerCapabilities(setCaps), []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -94,7 +85,8 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
 
   if (!isOpen) return null;
 
-  const activeCount = countActiveAccessibilityFeatures(settings);
+  const { hasFinePointer, hasCoarsePointer } = caps;
+  const activeCount = countActiveAccessibilityFeatures(settings, caps);
   const scales: Array<100 | 115 | 130 | 145> = [100, 115, 130, 145];
 
   const toggle = (key: keyof Omit<AccessibilitySettings, 'fontScale'>) => {
@@ -121,6 +113,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
     descHe: string;
     descEn: string;
     icon: React.ReactNode;
+    hardware?: 'all' | 'fine' | 'coarse';
   }> = [
     {
       key: 'highContrast',
@@ -129,6 +122,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'חדות מרבית של טקסט לבן, מסגרות בולטות ורקע שחור מוחלט.',
       descEn: 'Maximum white-on-black contrast and crisp borders.',
       icon: <Contrast className="w-5 h-5" />,
+      hardware: 'all',
     },
     {
       key: 'grayscale',
@@ -137,6 +131,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'הצגת האתר בגווני שחור-לבן להקלה על רגישות לצבעים.',
       descEn: 'Display the interface in monochrome grayscale.',
       icon: <Eye className="w-5 h-5" />,
+      hardware: 'all',
     },
     {
       key: 'stopAnimations',
@@ -145,6 +140,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'ביטול תנועה, גלילות אוטומטיות והבהובים בכל חלקי האתר.',
       descEn: 'Disable motion, marquees, and UI transitions.',
       icon: <PauseCircle className="w-5 h-5" />,
+      hardware: 'all',
     },
     {
       key: 'highlightLinks',
@@ -153,6 +149,16 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'סימון ברור עם מסגרת וקו תחתון סביב כל אלמנט לחיץ.',
       descEn: 'Clear borders and underlines around interactive elements.',
       icon: <Link2 className="w-5 h-5" />,
+      hardware: 'all',
+    },
+    {
+      key: 'touchTargets',
+      titleHe: 'הגדלת אזורי לחיצה (מסך מגע)',
+      titleEn: 'Large Touch Targets',
+      descHe: 'מגדיל כפתורים ורווחי לחיצה לנוחות מלאה בהפעלה באצבע על מסך מגע.',
+      descEn: 'Enlarge tap areas and spacing for comfortable touch control.',
+      icon: <Hand className="w-5 h-5" />,
+      hardware: 'coarse',
     },
     {
       key: 'strongFocus',
@@ -161,6 +167,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'מסגרת לבנה עבה ובולטת בעת מעבר בין כפתורים באמצעות Tab.',
       descEn: 'Thick visible focus ring when navigating with Tab.',
       icon: <Focus className="w-5 h-5" />,
+      hardware: 'fine',
     },
     {
       key: 'readableFont',
@@ -169,6 +176,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'החלפת הגופנים לגופן מערכת חד וקל לקריאה ללא עיטורים.',
       descEn: 'Switch to clean high-legibility sans-serif typography.',
       icon: <Type className="w-5 h-5" />,
+      hardware: 'all',
     },
     {
       key: 'extraSpacing',
@@ -177,6 +185,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'מגדיל מרווחים בין אותיות, מילים ושורות לקריאה נוחה.',
       descEn: 'Increase line height and letter spacing across text.',
       icon: <AlignJustify className="w-5 h-5" />,
+      hardware: 'all',
     },
     {
       key: 'largeCursor',
@@ -185,24 +194,49 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
       descHe: 'הגדלת סמן העכבר והוספת ניגודיות גבוהה לזיהוי מהיר.',
       descEn: 'Enlarge the mouse pointer for easier visibility.',
       icon: <MousePointer2 className="w-5 h-5" />,
+      hardware: 'fine',
     },
     {
       key: 'readingGuide',
       titleHe: 'סרגל עזר לקריאה',
       titleEn: 'Reading Guide',
       descHe: 'פס אופקי מואר העוקב אחר תנועת העכבר ומסייע בהתמקדות בשורה.',
-      descEn: 'Horizontal reading line following the pointer.',
+      descEn: 'Horizontal reading line following the mouse pointer.',
       icon: <Minus className="w-5 h-5" />,
+      hardware: 'fine',
     },
     {
       key: 'allowTextSelection',
       titleHe: 'סימון טקסט לקריאה (ללא העתקה)',
       titleEn: 'Allow Text Highlighting (No Copy)',
-      descHe: 'מאפשר לסמן שורות עם העכבר לצורך מעקב וקריאה בלבד. העתקת תוכן ושמירת תמונות נשארות חסומות.',
+      descHe: hasFinePointer
+        ? 'מאפשר לסמן שורות עם העכבר לצורך מעקב וקריאה בלבד. העתקת תוכן ושמירת תמונות נשארות חסומות.'
+        : 'מאפשר לסמן שורות בלחיצה ממושכת לצורך מעקב וקריאה בלבד. העתקת תוכן ושמירת תמונות נשארות חסומות.',
       descEn: 'Allows marking text visually for reading while keeping clipboard copying and image saving disabled.',
       icon: <Highlighter className="w-5 h-5" />,
+      hardware: 'all',
     },
   ];
+
+  const visibleCards = featureCards.filter((card) => {
+    if (card.hardware === 'fine') return hasFinePointer;
+    if (card.hardware === 'coarse') return hasCoarsePointer;
+    return true;
+  });
+
+  const hardwareLabelHe =
+    hasFinePointer && hasCoarsePointer
+      ? 'זוהו מסך מגע + עכבר/מקלדת — מוצגות הגדרות מגע וגם עכבר'
+      : hasFinePointer
+        ? 'זוהתה סביבת עכבר ומקלדת — מוצגות הגדרות מותאמות'
+        : 'זוהה מסך מגע בלבד — הגדרות עכבר הוסרו אוטומטית';
+
+  const hardwareLabelEn =
+    hasFinePointer && hasCoarsePointer
+      ? 'Touch + Mouse detected — showing both'
+      : hasFinePointer
+        ? 'Mouse & Keyboard detected'
+        : 'Touch screen only — mouse-only tools hidden';
 
   return (
     <motion.div
@@ -332,21 +366,24 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
           </div>
         </section>
 
-        {/* Section 2: Interactive Accessibility Adjustments */}
+        {/* Section 2: Interactive Accessibility Adjustments (Hardware-Aware) */}
         <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base sm:text-lg font-normal text-white">
-              {isHe ? 'כלי התאמת נגישות באתר' : 'Site Accessibility Tools'}
-            </h2>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base sm:text-lg font-normal text-white">
+                {isHe ? 'כלי התאמת נגישות באתר' : 'Site Accessibility Tools'}
+              </h2>
+              <p className="text-[11px] font-normal text-neutral-400">
+                {isHe ? hardwareLabelHe : hardwareLabelEn}
+              </p>
+            </div>
             <span className="text-xs font-normal text-neutral-400">
               {isHe ? 'השינויים נשמרים אוטומטית בדפדפן' : 'Saved automatically'}
             </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
-            {featureCards
-              .filter((card) => card.key !== 'largeCursor' || hasFinePointer)
-              .map((card) => {
+            {visibleCards.map((card) => {
               const isActive = Boolean(settings[card.key]);
               return (
                 <button
@@ -400,34 +437,36 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
           </div>
         </section>
 
-        {/* Section 3: Keyboard Navigation Shortcuts */}
-        <section className="rounded-2xl bg-[#0a0a0a] border border-white/15 p-5 sm:p-6 space-y-4">
-          <div className="flex items-center gap-2.5">
-            <Keyboard className="w-5 h-5 text-white" />
-            <h2 className="text-base sm:text-lg font-normal text-white">
-              {isHe ? 'ניווט מקלדת מהיר באתר ובנגן' : 'Keyboard Navigation'}
-            </h2>
-          </div>
+        {/* Section 3: Keyboard Navigation Shortcuts (Shown only when Mouse/Keyboard hardware is available) */}
+        {hasFinePointer && (
+          <section className="rounded-2xl bg-[#0a0a0a] border border-white/15 p-5 sm:p-6 space-y-4">
+            <div className="flex items-center gap-2.5">
+              <Keyboard className="w-5 h-5 text-white" />
+              <h2 className="text-base sm:text-lg font-normal text-white">
+                {isHe ? 'ניווט מקלדת מהיר באתר ובנגן' : 'Keyboard Navigation'}
+              </h2>
+            </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs font-normal">
-            {[
-              { key: 'Tab / Shift + Tab', desc: 'מעבר קדימה ואחורה בין כפתורים, שירים וקישורים' },
-              { key: 'Enter / Space', desc: 'הפעלת כפתור, בחירת שיר, או השהייה/ניגון' },
-              { key: 'Escape', desc: 'סגירת חלון הנגישות, חלונות קופצים או תפריטים' },
-              { key: 'חיצים שמאלה / ימינה', desc: 'דילוג קדימה או אחורה של 10 שניות בנגן' },
-              { key: 'חיצים למעלה / למטה', desc: 'התאמת עוצמת השמע (Volume) בנגן' },
-              { key: 'קורא מסך (ARIA)', desc: 'תמיכה מלאה בתגיות סמנטיות ובתיאורי ARIA' },
-            ].map((item) => (
-              <div
-                key={item.key}
-                className="p-3.5 rounded-xl bg-black border border-white/10 flex flex-col gap-1.5"
-              >
-                <span className="font-normal text-white text-xs">{item.key}</span>
-                <span className="font-normal text-neutral-400 leading-relaxed">{item.desc}</span>
-              </div>
-            ))}
-          </div>
-        </section>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs font-normal">
+              {[
+                { key: 'Tab / Shift + Tab', desc: 'מעבר קדימה ואחורה בין כפתורים, שירים וקישורים' },
+                { key: 'Enter / Space', desc: 'הפעלת כפתור, בחירת שיר, או השהייה/ניגון' },
+                { key: 'Escape', desc: 'סגירת חלון הנגישות, חלונות קופצים או תפריטים' },
+                { key: 'חיצים שמאלה / ימינה', desc: 'דילוג קדימה או אחורה של 10 שניות בנגן' },
+                { key: 'חיצים למעלה / למטה', desc: 'התאמת עוצמת השמע (Volume) בנגן' },
+                { key: 'קורא מסך (ARIA)', desc: 'תמיכה מלאה בתגיות סמנטיות ובתיאורי ARIA' },
+              ].map((item) => (
+                <div
+                  key={item.key}
+                  className="p-3.5 rounded-xl bg-black border border-white/10 flex flex-col gap-1.5"
+                >
+                  <span className="font-normal text-white text-xs">{item.key}</span>
+                  <span className="font-normal text-neutral-400 leading-relaxed">{item.desc}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Section 4: Legal Accessibility Statement (Israeli Standard 5568 / WCAG 2.1 AA) */}
         <section className="rounded-2xl bg-[#0a0a0a] border border-white/15 p-5 sm:p-7 space-y-5 font-normal">
@@ -439,7 +478,7 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
               </h2>
             </div>
             <span className="text-xs font-normal text-neutral-400">
-              תאריך עדכון אחרון: 17.11.2026
+              תאריך עדכון אחרון: 21.11.2026
             </span>
           </div>
 
@@ -454,10 +493,10 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
             <div className="space-y-1.5">
               <h3 className="text-white font-normal text-sm">2. התאמות הנגישות שבוצעו באתר</h3>
               <ul className="list-disc ps-5 space-y-1 text-neutral-300">
-                <li>תמיכה מלאה בניווט מקלדת (Tab, Enter, Space, Escape וחיצי שליטה בנגן).</li>
+                <li>התאמה דינמית חכמה למכשירי מגע ולמחשבים עם עכבר/מקלדת.</li>
                 <li>תמיכה בקוראי מסך באמצעות היררכיית כותרות תקנית, תגיות סמנטיות ותיאורי aria-label.</li>
-                <li>כתוביות מתוזמנות לשירים בנגן המוזיקה עבור כבדי שמיעה וחירשים.</li>
-                <li>תפריט נגישות מובנה המאפשר הגדלת טקסט עד 145%, ניגודיות גבוהה, גווני אפור, עצירת אנימציות, סרגל קריאה, גופן קריא, סמן מוגדל וסימון טקסט לקריאה.</li>
+                <li>כתוביות מתוזמנות ומצב קריוקי בנגן המוזיקה עבור כבדי שמיעה וחירשים.</li>
+                <li>תפריט נגישות מובנה המאפשר הגדלת טקסט עד 145%, ניגודיות גבוהה, גווני אפור, עצירת אנימציות, גופן קריא והגדלת אזורי מגע.</li>
                 <li>מניעת הבהובים או תנועה מהירה העלולים להפריע למשתמשים רגישים.</li>
                 <li>הגנת זכויות יוצרים על קבצי שמע ותמונות ללא פגיעה בקריאות האתר לקוראי מסך ולמקלדת.</li>
               </ul>
@@ -482,13 +521,24 @@ export const AccessibilityPage: React.FC<AccessibilityPageProps> = ({
                 <p className="text-xs font-normal text-white font-mono" dir="ltr">kolot-music@googlegroups.com</p>
               </div>
 
-              <a
-                href="mailto:kolot-music@googlegroups.com?subject=%D7%A4%D7%A0%D7%99%D7%99%D7%AA%20%D7%A0%D7%92%D7%99%D7%A9%D7%95%D7%AA%20-%20Kolot%20Music"
-                className="h-10 px-4 rounded-xl bg-white hover:bg-neutral-200 text-black font-normal text-xs flex items-center justify-center gap-2 shrink-0 transition-colors"
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText('kolot-music@googlegroups.com');
+                    setCopiedA11yEmail(true);
+                    setTimeout(() => setCopiedA11yEmail(false), 2500);
+                  } catch {}
+                }}
+                className="h-10 px-4 rounded-xl bg-white hover:bg-neutral-200 text-black font-normal text-xs flex items-center justify-center gap-2 shrink-0 transition-colors cursor-pointer"
               >
-                <Mail className="w-4 h-4" />
-                <span>{isHe ? 'שליחת פניית נגישות במייל' : 'Email Accessibility Coordinator'}</span>
-              </a>
+                {copiedA11yEmail ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>
+                  {copiedA11yEmail
+                    ? isHe ? 'כתובת המייל הועתקה!' : 'Copied!'
+                    : isHe ? 'העתק כתובת מייל לפניות' : 'Copy Accessibility Email'}
+                </span>
+              </button>
             </div>
           </div>
         </section>

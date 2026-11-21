@@ -159,7 +159,7 @@ function xhrSend(
  * Uploads any Blob/File directly to Cloudflare R2 via Presigned/Stream PUT URL for large audio files,
  * skipping the extra presign roundtrip for small files (covers) and falling back cleanly to multipart upload.
  */
-async function uploadBinaryFastToR2(
+export async function uploadBinaryFastToR2(
   blob: File | Blob,
   r2Path: string,
   contentType: string,

@@ -1247,6 +1247,7 @@ app.get('/api/storage/raw/*', async (req, res) => {
     const s3Item = await client.send(command);
 
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
     if (s3Item.ContentType) {
       res.setHeader('Content-Type', s3Item.ContentType);
     } else if (isJson) {

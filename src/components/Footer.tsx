@@ -11,7 +11,6 @@ import {
   Loader2,
   AlertCircle,
   Share2,
-  ExternalLink,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
@@ -58,7 +57,6 @@ export const Footer: React.FC<FooterProps> = ({
   const [sentNotice, setSentNotice] = useState<{
     mode: 'email' | 'inbox';
     text: string;
-    mailtoHref?: string;
   } | null>(null);
 
   const contactEmail = 'kolot-music@googlegroups.com';
@@ -146,10 +144,6 @@ export const Footer: React.FC<FooterProps> = ({
       const emailDispatched = Boolean(data.emailDispatched);
       const activationPending = Boolean(data.activationPending);
 
-      const mailtoSubject = encodeURIComponent(`[Kolot Music - ${categoryLabel}] ${subject}`);
-      const mailtoBody = encodeURIComponent(`מאת: ${senderEmail}\n\n${message}`);
-      const mailtoHref = `mailto:${contactEmail}?subject=${mailtoSubject}&body=${mailtoBody}`;
-
       trackEvent('contact_submit', {
         category: contactCategory,
         email_dispatched: emailDispatched,
@@ -157,18 +151,17 @@ export const Footer: React.FC<FooterProps> = ({
 
       setSentNotice({
         mode: emailDispatched ? 'email' : 'inbox',
-        mailtoHref: emailDispatched ? undefined : mailtoHref,
         text: emailDispatched
           ? (isHe
               ? `פנייתך (${categoryLabel}) נשלחה בהצלחה ישירות לקבוצת הפניות בכתובת ${contactEmail} ונשמרה במערכת לטיפול.`
               : `Your message has been sent directly to ${contactEmail} and saved in the system.`)
           : activationPending
             ? (isHe
-                ? `הפנייה נשמרה במערכת, ונשלחה הודעת אישור הפעלה לקבוצת המייל ${contactEmail}. באפשרותך גם לשלוח עותק מיידי ישירות מהמייל שלך:`
-                : `Your message was saved and an activation link was sent to ${contactEmail}. You can also send directly via your email app:`)
+                ? `הפנייה נשמרה במערכת, ונשלחה הודעת אישור ראשונית לתיבת הקבוצה ${contactEmail}. לאחר אישור ההפעלה בתיבה, הפניות יגיעו אוטומטית כאימייל.`
+                : `Your message was saved and an activation notice was sent to ${contactEmail}.`)
             : (isHe
-                ? `הפנייה נשמרה בתיבת ההנהלה של האתר. לשליחה מיידית ישירות לקבוצת ${contactEmail} לחץ על הכפתור מטה:`
-                : `Saved in management inbox. To send directly to ${contactEmail}, use the button below:`),
+                ? `הפנייה נשמרה בתיבת ההנהלה של האתר, ותועבר אוטומטית אל ${contactEmail} מיד לאחר השלמת הגדרת שליחת המייל בשרת.`
+                : `Saved in management inbox and queued for ${contactEmail}.`),
       });
 
       setContactSenderEmail('');
@@ -447,27 +440,14 @@ export const Footer: React.FC<FooterProps> = ({
                   <p className="text-xs text-white/80 leading-relaxed max-w-sm mx-auto">
                     {sentNotice.text}
                   </p>
-                  <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-2.5">
-                    {sentNotice.mailtoHref && (
-                      <a
-                        href={sentNotice.mailtoHref}
-                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-white text-black hover:bg-neutral-200 font-bold text-xs inline-flex items-center justify-center gap-2 transition-colors"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>{isHe ? `שלח במייל אל ${contactEmail}` : `Send via Email to ${contactEmail}`}</span>
-                      </a>
-                    )}
+                  <div className="pt-2 flex items-center justify-center">
                     <button
                       type="button"
                       onClick={() => {
                         setSentNotice(null);
                         setShowContactModal(false);
                       }}
-                      className={`w-full sm:w-auto px-6 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer ${
-                        sentNotice.mailtoHref
-                          ? 'bg-white/15 hover:bg-white/25 text-white'
-                          : 'bg-white hover:bg-neutral-200 text-black'
-                      }`}
+                      className="w-full sm:w-auto px-8 py-2.5 rounded-xl font-bold text-xs transition-colors cursor-pointer bg-white hover:bg-neutral-200 text-black"
                     >
                       {isHe ? 'סגור' : 'Close'}
                     </button>

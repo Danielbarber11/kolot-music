@@ -17,10 +17,13 @@ import { SecurityGuard } from './components/SecurityGuard';
 import { AccessibilityPage } from './components/AccessibilityPage';
 import {
   AccessibilitySettings,
+  PointerCapabilities,
   loadAccessibilitySettings,
   saveAccessibilitySettings,
   applyAccessibilitySettingsToDom,
   countActiveAccessibilityFeatures,
+  detectPointerCapabilities,
+  subscribePointerCapabilities,
 } from './services/accessibilityService';
 import { AuthUser, onAuthUserChanged, loginWithGoogle } from './services/authService';
 import {
@@ -100,8 +103,11 @@ export default function App() {
     applyAccessibilitySettingsToDom(loaded);
     return loaded;
   });
+  const [pointerCaps, setPointerCaps] = useState<PointerCapabilities>(() => detectPointerCapabilities());
   const [isAccessibilityOpen, setIsAccessibilityOpen] = useState(false);
   const [guideY, setGuideY] = useState<number>(220);
+
+  useEffect(() => subscribePointerCapabilities(setPointerCaps), []);
 
   const handleUpdateAccessibility = (next: AccessibilitySettings) => {
     setA11ySettings(next);
@@ -114,13 +120,13 @@ export default function App() {
   }, [a11ySettings]);
 
   useEffect(() => {
-    if (!a11ySettings.readingGuide) return;
+    if (!a11ySettings.readingGuide || !pointerCaps.hasFinePointer) return;
     const handleMove = (e: MouseEvent) => {
       setGuideY(e.clientY);
     };
     window.addEventListener('mousemove', handleMove, { passive: true });
     return () => window.removeEventListener('mousemove', handleMove);
-  }, [a11ySettings.readingGuide]);
+  }, [a11ySettings.readingGuide, pointerCaps.hasFinePointer]);
 
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [likedSongIds, setLikedSongIds] = useState<string[]>([]);
@@ -271,11 +277,11 @@ export default function App() {
     }
   };
 
-  const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings);
+  const activeAccessibilityCount = countActiveAccessibilityFeatures(a11ySettings, pointerCaps);
 
   return (
     <SecurityGuard>
-      <div className="min-h-screen bg-[#000000] text-white flex flex-col font-sans selection:bg-white selection:text-black relative">
+      <div className="min-h-screen w-full max-w-[100vw] overflow-x-hidden bg-[#000000] text-white flex flex-col font-sans selection:bg-white selection:text-black relative">
         {/* LUXURY SPLASH SCREEN */}
         <AnimatePresence>
           {isInitializing && <SplashScreen key="splash" isLoading={isInitializing} />}
@@ -339,8 +345,8 @@ export default function App() {
           />
         )}
 
-        {/* GLOBAL READING GUIDE OVERLAY */}
-        {a11ySettings.readingGuide && (
+        {/* GLOBAL READING GUIDE OVERLAY (Active only when fine mouse pointer is available) */}
+        {a11ySettings.readingGuide && pointerCaps.hasFinePointer && (
           <div
             aria-hidden="true"
             style={{ top: `${guideY}px` }}

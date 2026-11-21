@@ -173,6 +173,7 @@ export interface JamendoTrack {
   viewsCount?: number;
   featuredArtist?: string;
   writers?: string;
+  karaokeAudioUrl?: string;
 }
 
 export const CURRENT_TERMS_VERSION = 1;

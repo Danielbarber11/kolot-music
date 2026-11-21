@@ -239,6 +239,7 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
         subtitlesCompletedUpTo: Math.max(existing.subtitlesCompletedUpTo || 0, t.subtitlesCompletedUpTo || 0) || undefined,
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
         viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
+        karaokeAudioUrl: existing.karaokeAudioUrl || t.karaokeAudioUrl,
       };
       trackMap.set(canonicalKey, merged);
     }

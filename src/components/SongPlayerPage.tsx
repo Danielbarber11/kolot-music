@@ -26,6 +26,7 @@ import {
   VolumeX,
   Gauge,
   RefreshCw,
+  Mic2,
   X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -43,6 +44,7 @@ import {
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
 import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
+import { createLiveKaraokeController, LiveKaraokeController } from '../services/karaokeAudioService';
 import { trackEvent } from '../services/analyticsService';
 import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, removeMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
 import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
@@ -197,11 +199,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const progressThumbRef = useRef<HTMLDivElement>(null);
   const elapsedTimeRef = useRef<HTMLSpanElement>(null);
   const smoothClockRef = useRef<{
-    anchorAudioTime: number;
-    anchorPerfMs: number;
-    lastAudioTime: number;
-    lastVisualTime: number;
-  }>({ anchorAudioTime: 0, anchorPerfMs: 0, lastAudioTime: 0, lastVisualTime: 0 });
+    clockTimeSec: number;
+    lastPerfMs: number;
+    isBuffering: boolean;
+  }>({ clockTimeSec: 0, lastPerfMs: 0, isBuffering: false });
   const lastReactTimeSyncRef = useRef<number>(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -212,9 +213,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [favoriteAuthNotice, setFavoriteAuthNotice] = useState(false);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
 
-  // "כלים נוספים" (More Tools) panel state: Sleep Timer, Bluetooth & Audio Output, Speed/Volume
+  // Karaoke mode ("מצב קריוקי": removes lead vocals & replaces cover artwork with live lyrics)
+  const [isKaraokeMode, setIsKaraokeMode] = useState(false);
+  const [cloudKaraokeUrl, setCloudKaraokeUrl] = useState<string | undefined>(track.karaokeAudioUrl);
+  const liveKaraokeRef = useRef<LiveKaraokeController | null>(null);
+  const pendingResumeTimeRef = useRef<number | null>(null);
+  const shouldAutoPlayAfterSwapRef = useRef<boolean>(false);
+
+  // "כלים נוספים" (More Tools) panel state: Sleep Timer, Karaoke, Bluetooth & Audio Output, Speed/Volume
   const [isMoreToolsOpen, setIsMoreToolsOpen] = useState(false);
-  const [moreToolsTab, setMoreToolsTab] = useState<'sleep' | 'bluetooth' | 'audio'>('sleep');
+  const [moreToolsTab, setMoreToolsTab] = useState<'sleep' | 'karaoke' | 'bluetooth' | 'audio'>('sleep');
 
   // Sleep Timer state
   const [sleepEndTimestamp, setSleepEndTimestamp] = useState<number | null>(null);
@@ -290,13 +298,20 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     setIsLyricsExpanded(false);
     setSleepEndedBanner(false);
     setSleepBlackoutOverlay(false);
+    setIsKaraokeMode(false);
+    setCloudKaraokeUrl(track.karaokeAudioUrl);
+    pendingResumeTimeRef.current = null;
+    shouldAutoPlayAfterSwapRef.current = false;
+    if (liveKaraokeRef.current) {
+      liveKaraokeRef.current.destroy();
+      liveKaraokeRef.current = null;
+    }
     smoothClockRef.current = {
-      anchorAudioTime: 0,
-      anchorPerfMs: typeof performance !== 'undefined' ? performance.now() : 0,
-      lastAudioTime: 0,
-      lastVisualTime: 0,
+      clockTimeSec: 0,
+      lastPerfMs: typeof performance !== 'undefined' ? performance.now() : 0,
+      isBuffering: false,
     };
-    syncProgressDomImmediate(0, track.duration || 180);
+    syncProgressDomImmediate(0, track.duration || 180, true);
 
     const hasHe = !!(track.subtitleSegmentsHe?.length || track.subtitleSegments?.length);
     const hasEn = !!track.subtitleSegmentsEn?.length;
@@ -314,6 +329,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
     const applyFreshTrackSubs = (freshTrack: JamendoTrack) => {
       if (cancelled || freshTrack.id !== track.id) return;
+      if (freshTrack.karaokeAudioUrl) {
+        setCloudKaraokeUrl(freshTrack.karaokeAudioUrl);
+      }
       const freshHe = freshTrack.subtitleSegmentsHe || freshTrack.subtitleSegments;
       const freshEn = freshTrack.subtitleSegmentsEn;
       const freshOrig = freshTrack.subtitleSegmentsOrig;
@@ -438,16 +456,55 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   }, [track.id]);
 
-  const effectiveAudioUrl = getStreamingMediaUrl(track.audioUrl);
+  const pregeneratedKaraokeUrl = cloudKaraokeUrl || track.karaokeAudioUrl;
+  const effectiveAudioUrl =
+    isKaraokeMode && pregeneratedKaraokeUrl
+      ? getStreamingMediaUrl(pregeneratedKaraokeUrl)
+      : getStreamingMediaUrl(track.audioUrl);
   const effectiveCoverUrl = getStreamingMediaUrl(track.coverUrl);
+  const shouldUseAnonymousCors =
+    !pregeneratedKaraokeUrl &&
+    (effectiveAudioUrl.startsWith('/') || effectiveAudioUrl.includes('/api/storage/'));
+
+  const handleToggleKaraokeMode = () => {
+    const next = !isKaraokeMode;
+    const audio = audioRef.current;
+
+    if (pregeneratedKaraokeUrl) {
+      if (audio) {
+        pendingResumeTimeRef.current = audio.currentTime || currentTime || 0;
+        shouldAutoPlayAfterSwapRef.current = isPlaying && !audio.paused;
+      }
+      setIsKaraokeMode(next);
+      return;
+    }
+
+    // Legacy track without pre-generated R2 karaoke audio: real-time Web Audio vocal cancellation
+    if (audio) {
+      if (!liveKaraokeRef.current) {
+        liveKaraokeRef.current = createLiveKaraokeController(audio);
+      }
+      liveKaraokeRef.current?.setEnabled(next);
+    }
+    setIsKaraokeMode(next);
+  };
 
   // Dynamic matching color extracted from track cover, saved bgColor hint, or genre (zero snap on mount)
   const extractedColor = useExtractedColor(effectiveCoverUrl, track.genre || 'Pop', track.bgColor);
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.load();
-      const playPromise = audioRef.current.play();
+    const audio = audioRef.current;
+    if (!audio || !effectiveAudioUrl) return;
+    const shouldResumeSwap = pendingResumeTimeRef.current !== null;
+    const shouldAutoPlay = shouldResumeSwap ? shouldAutoPlayAfterSwapRef.current : true;
+
+    audio.load();
+    audio.playbackRate = playbackRate;
+    audio.volume = isMuted ? 0 : volumeLevel;
+    audio.muted = isMuted;
+
+    if (shouldAutoPlay) {
+      const playPromise = audio.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => setIsPlaying(true))
@@ -456,6 +513,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             setIsPlaying(false);
           });
       }
+    } else {
+      setIsPlaying(false);
     }
   }, [effectiveAudioUrl]);
 
@@ -555,6 +614,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
       clearMediaSessionCompletely(audioRef.current, true);
+      if (liveKaraokeRef.current) {
+        liveKaraokeRef.current.destroy();
+        liveKaraokeRef.current = null;
+      }
       if (wakeLockRef.current && typeof wakeLockRef.current.release === 'function') {
         wakeLockRef.current.release().catch(() => {});
         wakeLockRef.current = null;
@@ -784,13 +847,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
-  const syncProgressDomImmediate = (timeSec: number, durSec: number, updateAnchor = false) => {
+  const syncProgressDomImmediate = (timeSec: number, durSec: number, resetClock = false) => {
     const safeDur = durSec > 0 && Number.isFinite(durSec) ? durSec : 1;
     const clampedTime = Math.max(0, Math.min(safeDur, Number.isFinite(timeSec) ? timeSec : 0));
     const ratio = Math.min(1, Math.max(0, clampedTime / safeDur));
     const pct = ratio * 100;
     if (progressFillRef.current) {
-      progressFillRef.current.style.transform = `scaleX(${ratio})`;
+      // Translate a full-width rounded-full fill inside overflow-hidden clip so BOTH ends stay cleanly rounded
+      progressFillRef.current.style.transform = `translate3d(${(ratio - 1) * 100}%, 0, 0)`;
     }
     if (progressThumbRef.current) {
       progressThumbRef.current.style.left = `${pct}%`;
@@ -798,13 +862,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     if (elapsedTimeRef.current) {
       elapsedTimeRef.current.textContent = formatClockTime(clampedTime);
     }
-    if (updateAnchor) {
+    if (resetClock) {
       const now = typeof performance !== 'undefined' ? performance.now() : 0;
       smoothClockRef.current = {
-        anchorAudioTime: clampedTime,
-        anchorPerfMs: now,
-        lastAudioTime: clampedTime,
-        lastVisualTime: clampedTime,
+        clockTimeSec: clampedTime,
+        lastPerfMs: now,
+        isBuffering: false,
       };
     }
   };
@@ -1166,28 +1229,27 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             : duration;
         const audioCur = audio.currentTime || 0;
         const sc = smoothClockRef.current;
+        const dt = sc.lastPerfMs > 0 ? Math.min(0.1, Math.max(0, (nowMs - sc.lastPerfMs) / 1000)) : 0;
+        sc.lastPerfMs = nowMs;
 
-        if (Math.abs(audioCur - sc.lastAudioTime) > 0.001) {
-          sc.anchorAudioTime = audioCur;
-          sc.anchorPerfMs = nowMs;
-          sc.lastAudioTime = audioCur;
-        }
-
-        let visualTime = audioCur;
-        if (!audio.paused && !audio.ended && audio.readyState >= 2 && sc.anchorPerfMs > 0) {
+        if (!audio.paused && !audio.ended && !sc.isBuffering && audio.readyState >= 2) {
           const rate = audio.playbackRate || 1;
-          const extrapolated = sc.anchorAudioTime + ((nowMs - sc.anchorPerfMs) / 1000) * rate;
-          visualTime = Math.max(audioCur, Math.min(audioDur, Math.min(audioCur + 0.16, extrapolated)));
-          if (visualTime < sc.lastVisualTime && sc.lastVisualTime - visualTime < 0.05) {
-            visualTime = sc.lastVisualTime;
+          sc.clockTimeSec += dt * rate;
+          const drift = audioCur - sc.clockTimeSec;
+          if (Math.abs(drift) > 0.7) {
+            sc.clockTimeSec = audioCur;
+          } else if (Math.abs(drift) > 0.18) {
+            sc.clockTimeSec += drift * 0.08;
           }
+          sc.clockTimeSec = Math.max(0, Math.min(audioDur, sc.clockTimeSec));
+        } else {
+          sc.clockTimeSec = audioCur;
         }
-        sc.lastVisualTime = visualTime;
 
-        syncProgressDomImmediate(visualTime, audioDur, false);
-        if (nowMs - lastReactTimeSyncRef.current >= 150) {
+        syncProgressDomImmediate(sc.clockTimeSec, audioDur, false);
+        if (nowMs - lastReactTimeSyncRef.current >= 120) {
           lastReactTimeSyncRef.current = nowMs;
-          setCurrentTime(audioCur);
+          setCurrentTime(sc.clockTimeSec);
         }
       }
       if (isPlaying && !isScrubbing) {
@@ -1196,8 +1258,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
 
     if (isPlaying && !isScrubbing) {
-      smoothClockRef.current.anchorPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
-      smoothClockRef.current.anchorAudioTime = audioRef.current?.currentTime || smoothClockRef.current.lastAudioTime || 0;
+      const now = typeof performance !== 'undefined' ? performance.now() : 0;
+      smoothClockRef.current.lastPerfMs = now;
+      smoothClockRef.current.clockTimeSec = audioRef.current?.currentTime ?? smoothClockRef.current.clockTimeSec ?? 0;
+      smoothClockRef.current.isBuffering = false;
       requestRef.current = requestAnimationFrame(tick);
     } else if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
@@ -1250,23 +1314,54 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       <audio
         ref={audioRef}
         src={effectiveAudioUrl}
+        crossOrigin={shouldUseAnonymousCors ? 'anonymous' : undefined}
         preload="auto"
         onLoadedMetadata={() => {
-          if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
-            setDuration(audioRef.current.duration);
-            syncProgressDomImmediate(audioRef.current.currentTime || 0, audioRef.current.duration, true);
-            syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
+          const audio = audioRef.current;
+          if (!audio) return;
+          const dur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : duration;
+          if (audio.duration && Number.isFinite(audio.duration)) {
+            setDuration(audio.duration);
+          }
+          if (pendingResumeTimeRef.current !== null) {
+            const target = Math.max(0, Math.min(dur || 180, pendingResumeTimeRef.current));
+            pendingResumeTimeRef.current = null;
+            audio.currentTime = target;
+            syncProgressDomImmediate(target, dur, true);
+            syncMediaSessionPosition(target, dur);
+            setCurrentTime(target);
+            if (shouldAutoPlayAfterSwapRef.current) {
+              audio.play().then(() => setIsPlaying(true)).catch(() => {});
+            }
+          } else {
+            syncProgressDomImmediate(audio.currentTime || 0, dur, true);
+            syncMediaSessionPosition(audio.currentTime || 0, dur);
           }
         }}
         onDurationChange={() => {
           if (audioRef.current?.duration && Number.isFinite(audioRef.current.duration)) {
             setDuration(audioRef.current.duration);
-            syncProgressDomImmediate(audioRef.current.currentTime || 0, audioRef.current.duration, true);
-            syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
+            if (pendingResumeTimeRef.current === null) {
+              syncProgressDomImmediate(audioRef.current.currentTime || 0, audioRef.current.duration, true);
+              syncMediaSessionPosition(audioRef.current.currentTime || 0, audioRef.current.duration);
+            }
           }
+        }}
+        onWaiting={() => {
+          smoothClockRef.current.isBuffering = true;
+        }}
+        onCanPlay={() => {
+          smoothClockRef.current.isBuffering = false;
+          smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
+        }}
+        onPlaying={() => {
+          smoothClockRef.current.isBuffering = false;
+          smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
         }}
         onPlay={() => {
           setIsPlaying(true);
+          smoothClockRef.current.isBuffering = false;
+          smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
           if (audioRef.current) {
             const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
             syncMediaSessionPosition(audioRef.current.currentTime || 0, d);
@@ -1334,34 +1429,147 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         style={{ overflowAnchor: 'none' }}
         className="relative z-10 flex-1 min-h-0 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
       >
-        {/* SCREEN 1: FULL-VIEWPORT MAIN PLAYER ON ALL DEVICES (Subtitles & Details remain below the fold until scrolling down) */}
-        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center px-4 pt-14 pb-12 gap-3.5 sm:gap-5 max-w-md mx-auto shrink-0">
+        {/* SCREEN 1: MOBILE-ANCHORED BOTTOM CONTROLS + TOP ARTWORK/KARAOKE STAGE (FITS CLEANLY BEFORE SCROLLING) */}
+        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-between sm:justify-center px-4 pt-14 pb-5 sm:pt-14 sm:pb-12 gap-2.5 sm:gap-5 max-w-md mx-auto shrink-0">
 
-        {/* 1. COVER ARTWORK IMAGE */}
-        <div
-          className="w-44 h-44 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[34vh] max-w-[34vh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
-          style={
-            extractedColor
-              ? {
-                  boxShadow: `0 20px 50px -10px rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.55)`,
-                }
-              : undefined
-          }
-        >
-          <div className="w-full h-full rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl">
-            <TrackCoverArt
-              coverUrl={track.coverUrl}
-              artistName={track.artistName}
-              trackName={track.name}
-              genre={track.genre}
-              showHoverPlay={false}
-              priority={true}
-            />
+        {/* 1. COVER ARTWORK IMAGE OR KARAOKE LIVE LYRICS STAGE */}
+        {isKaraokeMode ? (
+          <div className="w-full max-w-md h-[40dvh] sm:h-[42dvh] min-h-[210px] max-h-[330px] rounded-2xl sm:rounded-3xl bg-black/50 backdrop-blur-2xl border border-white/25 shadow-2xl p-4 sm:p-5 flex flex-col justify-between overflow-hidden shrink-0 my-auto sm:my-0">
+            <div className="flex items-center justify-between gap-2 border-b border-white/15 pb-2 shrink-0" dir={isHe ? 'rtl' : 'ltr'}>
+              <div className="flex items-center gap-2 text-xs font-bold text-white">
+                <Mic2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                <span>{isHe ? 'מצב קריוקי חי' : 'Live Karaoke'}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
+                  (whisperSegmentsEn && whisperSegmentsEn.length > 0)) && (
+                  <div className="inline-flex items-center gap-0.5 rounded-lg bg-white/10 p-0.5 text-[10px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('he')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${subtitleLang === 'he' ? 'bg-white text-black' : 'text-white/75'}`}
+                    >
+                      עב
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubtitleLang('en')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${subtitleLang === 'en' ? 'bg-white text-black' : 'text-white/75'}`}
+                    >
+                      EN
+                    </button>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleToggleKaraokeMode}
+                  className="px-2.5 py-1 rounded-full bg-white/15 hover:bg-white/25 text-white text-[10px] font-bold cursor-pointer transition-colors"
+                >
+                  {isHe ? 'סגור' : 'Off'}
+                </button>
+              </div>
+            </div>
+
+            {syncedLyrics.lines.length > 0 ? (() => {
+              const anchorIdx =
+                activeLineIndex >= 0
+                  ? activeLineIndex
+                  : Math.max(0, syncedLyrics.lines.findIndex((l) => l.startTime > currentTime) - 1);
+              const visibleIndices = [anchorIdx - 1, anchorIdx, anchorIdx + 1, anchorIdx + 2].filter(
+                (i) => i >= 0 && i < syncedLyrics.lines.length
+              );
+              return (
+                <div className="flex-1 flex flex-col justify-center gap-2.5 overflow-hidden py-1">
+                  {visibleIndices.map((idx) => {
+                    const line = syncedLyrics.lines[idx];
+                    const isCurr = idx === anchorIdx && activeLineIndex >= 0;
+                    const lineRtl = isRtlSubtitleText(line.text, subtitleLang);
+                    return (
+                      <div
+                        key={line.id}
+                        dir={lineRtl ? 'rtl' : 'ltr'}
+                        onClick={() => {
+                          if (audioRef.current) {
+                            const effDur = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
+                            audioRef.current.currentTime = line.startTime;
+                            syncProgressDomImmediate(line.startTime, effDur, true);
+                            syncMediaSessionPosition(line.startTime, effDur);
+                            setCurrentTime(line.startTime);
+                          }
+                        }}
+                        className={`cursor-pointer text-center px-2 py-1 rounded-xl transition-all duration-150 ${
+                          isCurr
+                            ? 'bg-white/12 scale-[1.03] opacity-100'
+                            : idx < anchorIdx
+                              ? 'opacity-40 text-xs sm:text-sm'
+                              : 'opacity-65 text-xs sm:text-sm hover:opacity-90'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-center gap-1.5 leading-snug">
+                          {line.words.map((w, wIdx) => {
+                            const wordActive = isCurr && currentTime >= w.startTime && currentTime <= w.endTime;
+                            return (
+                              <span
+                                key={wIdx}
+                                className={
+                                  wordActive
+                                    ? 'bg-white text-black font-black px-2 py-0.5 rounded-lg text-sm sm:text-base shadow-md'
+                                    : isCurr
+                                      ? 'text-white font-extrabold text-sm sm:text-base'
+                                      : 'text-white/90 font-semibold'
+                                }
+                              >
+                                {w.text}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })() : (
+              <div className="flex-1 flex flex-col items-center justify-center text-center px-4 space-y-2">
+                <Mic2 className="w-8 h-8 text-white/40" />
+                <p className="text-xs sm:text-sm font-semibold text-white/80">
+                  {isHe ? 'שירת הזמר מוסרת כעת במצב קריוקי' : 'Lead vocals removed in Karaoke Mode'}
+                </p>
+                <p className="text-[11px] text-white/55">
+                  {isHe ? 'לשיר זה טרם נשמרו מילים מסונכרנות' : 'No synced lyrics saved for this song yet'}
+                </p>
+              </div>
+            )}
           </div>
-        </div>
+        ) : (
+          <div
+            className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[33dvh] max-w-[33dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0 my-auto sm:my-0"
+            style={
+              extractedColor
+                ? {
+                    boxShadow: `0 20px 50px -10px rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.55)`,
+                  }
+                : undefined
+            }
+          >
+            <div className="w-full h-full rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl">
+              <TrackCoverArt
+                coverUrl={track.coverUrl}
+                artistName={track.artistName}
+                trackName={track.name}
+                genre={track.genre}
+                showHoverPlay={false}
+                priority={true}
+              />
+            </div>
+          </div>
+        )}
 
-        {/* 2. PROGRESS BAR */}
-        <div className="w-full space-y-1.5 px-2">
+        {/* BOTTOM PLAYER CONTROLS CLUSTER ON MOBILE (ANCHORED ABOVE THE FOLD) */}
+        <div className="w-full mt-auto sm:mt-0 flex flex-col items-center gap-3 sm:gap-4 shrink-0">
+
+        {/* 2. PROGRESS BAR (SLIGHTLY NARROWER ON MOBILE, CLEANLY ROUNDED CORNERS AT BOTH ENDS) */}
+        <div className="w-[88%] sm:w-full mx-auto space-y-1.5 px-1 sm:px-2">
           <div
             ref={progressBarRef}
             dir="ltr"
@@ -1379,12 +1587,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             onPointerCancel={() => setIsScrubbing(false)}
             className="w-full py-2.5 cursor-pointer group select-none touch-none"
           >
-            <div className="w-full h-2 group-hover:h-2.5 rounded-full bg-white/20 relative shadow-inner overflow-visible">
-              <div
-                ref={progressFillRef}
-                className="w-full h-full bg-white rounded-full origin-left will-change-transform"
-                style={{ transform: 'scaleX(0)' }}
-              />
+            <div className="w-full h-2 group-hover:h-2.5 rounded-full bg-white/20 relative shadow-inner">
+              <div className="w-full h-full rounded-full overflow-hidden">
+                <div
+                  ref={progressFillRef}
+                  className="w-full h-full bg-white rounded-full will-change-transform"
+                  style={{ transform: 'translate3d(-100%, 0, 0)' }}
+                />
+              </div>
               <div
                 ref={progressThumbRef}
                 className="w-4 h-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9),0_2px_4px_rgba(0,0,0,0.5)] absolute top-1/2 -translate-y-1/2 -translate-x-1/2 group-hover:scale-125 transition-transform duration-100 ring-2 ring-black/10 will-change-[left]"
@@ -1537,8 +1747,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           )}
 
-          {/* MORE TOOLS TAB BUTTON ("כלים נוספים" - Sleep Timer, Bluetooth, Sound) */}
-          <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
+          {/* MORE TOOLS TAB BUTTON ("כלים נוספים" - Sleep Timer, Karaoke, Bluetooth, Sound) */}
+          <div className="pt-0.5 flex flex-wrap items-center justify-center gap-2">
             <button
               type="button"
               onClick={() => setIsMoreToolsOpen(true)}
@@ -1546,6 +1756,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             >
               <SlidersHorizontal className="w-3.5 h-3.5 text-white" />
               <span>{isHe ? 'כלים נוספים' : 'More Tools'}</span>
+              {isKaraokeMode && (
+                <Mic2 className="w-3.5 h-3.5 text-emerald-300" />
+              )}
               {(sleepRemainingSec !== null || sleepStopAtTrackEnd) && (
                 <span className="px-2 py-0.5 rounded-full bg-white text-black text-[10px] font-mono tabular-nums">
                   {sleepStopAtTrackEnd ? (isHe ? 'סוף שיר' : 'Track End') : formatClockTime(sleepRemainingSec || 0)}
@@ -1573,8 +1786,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           )}
 
         </div>
+        </div>
 
-        {/* SUBTLE BOTTOM SCROLL BUTTON TO SCREEN 2 (SUBTITLES & DETAILS) */}
+        {/* DESKTOP ONLY FLOATING SCROLL BUTTON TO SCREEN 2 (Hidden on mobile so initial player screen has no arrow) */}
         <button
           type="button"
           onClick={() => {
@@ -1582,7 +1796,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               playerScrollRef.current.scrollBy({ top: Math.round(window.innerHeight * 0.85), behavior: 'smooth' });
             }
           }}
-          className="absolute bottom-3.5 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 backdrop-blur-xl flex items-center justify-center text-white/75 hover:text-white transition-colors cursor-pointer"
+          className="hidden sm:flex absolute bottom-3.5 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 backdrop-blur-xl items-center justify-center text-white/75 hover:text-white transition-colors cursor-pointer"
           title={isHe ? 'גלול למטה לכתוביות ופרטים' : 'Scroll down for subtitles & details'}
           aria-label={isHe ? 'גלול למטה לכתוביות ופרטים' : 'Scroll down for subtitles & details'}
         >
@@ -1925,7 +2139,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                       {isHe ? 'כלים נוספים' : 'More Tools'}
                     </h3>
                     <p className="text-[11px] text-white/55">
-                      {isHe ? 'טיימר שינה, חיבור Bluetooth והגדרות שמע' : 'Sleep Timer, Bluetooth & Audio Controls'}
+                      {isHe ? 'מצב קריוקי AI, טיימר שינה, Bluetooth והגדרות שמע' : 'AI Karaoke, Sleep Timer, Bluetooth & Audio Controls'}
                     </p>
                   </div>
                 </div>
@@ -1940,7 +2154,17 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               </div>
 
               {/* TABS INSIDE "כלים נוספים" */}
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-white/[0.05] border border-white/10 text-xs font-semibold">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-2xl bg-white/[0.05] border border-white/10 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setMoreToolsTab('karaoke')}
+                  className={`py-2 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    moreToolsTab === 'karaoke' ? 'bg-white text-black shadow' : 'text-white/75 hover:text-white'
+                  }`}
+                >
+                  <Mic2 className="w-3.5 h-3.5" />
+                  <span>{isHe ? 'מצב קריוקי' : 'Karaoke'}</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setMoreToolsTab('sleep')}
@@ -1975,6 +2199,92 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                   <span>{isHe ? 'מהירות ועוצמה' : 'Sound & Speed'}</span>
                 </button>
               </div>
+
+              {/* TAB 0: KARAOKE MODE */}
+              {moreToolsTab === 'karaoke' && (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-white/[0.06] border border-white/15 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Mic2 className="w-4 h-4 text-emerald-300" />
+                          <span>{isHe ? 'מצב קריוקי (AI)' : 'AI Karaoke Mode'}</span>
+                        </h4>
+                        <p className="text-[11px] text-white/65 leading-relaxed">
+                          {isHe
+                            ? 'מסיר את קול הזמר ומשאיר את המוזיקה של השיר בלבד, ומציג את המילים המסונכרנות על המסך במקום תמונת השיר.'
+                            : 'Strips lead vocals leaving only the instrumental backing track, and shows live lyrics instead of cover art.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleToggleKaraokeMode}
+                        className={`px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer shrink-0 ${
+                          isKaraokeMode
+                            ? 'bg-emerald-400 text-black hover:bg-emerald-300'
+                            : 'bg-white text-black hover:bg-neutral-200'
+                        }`}
+                      >
+                        {isKaraokeMode
+                          ? (isHe ? 'כבה קריוקי' : 'Turn Off')
+                          : (isHe ? 'הפעל קריוקי' : 'Turn On')}
+                      </button>
+                    </div>
+
+                    <div className="pt-2 border-t border-white/10 text-[11px] text-white/70 flex items-center justify-between gap-2">
+                      <span>
+                        {pregeneratedKaraokeUrl
+                          ? (isHe ? 'פסקול קריוקי מוכן ושמור מראש בענן לניגון מיידי' : 'Pre-generated cloud karaoke track ready')
+                          : (isHe ? 'הסרת זמר בזמן אמת לשיר זה (Web Audio)' : 'Real-time Web Audio vocal isolation active')}
+                      </span>
+                      <span className={`font-bold ${isKaraokeMode ? 'text-emerald-300' : 'text-white/50'}`}>
+                        {isKaraokeMode ? (isHe ? 'פעיל' : 'Active') : (isHe ? 'כבוי' : 'Off')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {((whisperSegmentsHe && whisperSegmentsHe.length > 0) ||
+                    (whisperSegmentsEn && whisperSegmentsEn.length > 0) ||
+                    (whisperSegmentsOrig && whisperSegmentsOrig.length > 0)) && (
+                    <div className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2">
+                      <span className="text-xs font-semibold text-white/80 block">
+                        {isHe ? 'שפת מילות הקריוקי על המסך:' : 'Karaoke Lyrics Language:'}
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setSubtitleLang('he')}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer border transition-colors ${
+                            subtitleLang === 'he' ? 'bg-white text-black border-white' : 'bg-white/5 text-white/75 border-white/10'
+                          }`}
+                        >
+                          עברית
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSubtitleLang('en')}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer border transition-colors ${
+                            subtitleLang === 'en' ? 'bg-white text-black border-white' : 'bg-white/5 text-white/75 border-white/10'
+                          }`}
+                        >
+                          English
+                        </button>
+                        {whisperSegmentsOrig && whisperSegmentsOrig.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSubtitleLang('orig')}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer border transition-colors ${
+                              subtitleLang === 'orig' ? 'bg-white text-black border-white' : 'bg-white/5 text-white/75 border-white/10'
+                            }`}
+                          >
+                            {detectedLangLabel || (isHe ? 'שפת המקור' : 'Original')}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* TAB 1: SLEEP TIMER */}
               {moreToolsTab === 'sleep' && (
