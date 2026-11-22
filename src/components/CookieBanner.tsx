@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Cookie, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Language, ArtistProfile } from '../types';
+import { Language, ArtistProfile, CURRENT_TERMS_VERSION } from '../types';
 import { AuthUser } from '../services/authService';
 import { saveArtistAccountToR2 } from '../services/multiMusicService';
 
@@ -38,6 +38,7 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
       const updated: ArtistProfile = {
         ...artistProfile,
         hasAcceptedTerms: true,
+        termsVersionAccepted: CURRENT_TERMS_VERSION,
         acceptedTermsAt: artistProfile.acceptedTermsAt || new Date().toISOString(),
       };
       try {

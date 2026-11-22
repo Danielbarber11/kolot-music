@@ -309,8 +309,8 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
                   </label>
                   <p className="text-[11px] text-neutral-600">
                     {isHe
-                      ? 'ניתן לצרף תעודת זכויות יוצרים, אישור אקו״ם/פדרציה, חוזה או מסמך משפטי חתום (PDF, תמונה או Word, עד 10MB). המסמך גלוי למנהל המערכת בלבד.'
-                      : 'Attach copyright certificate, signed affidavit, or legal proof (PDF, Image, Word, up to 10MB). Visible to platform admin only.'}
+                      ? 'ניתן לצרף תעודת זכויות יוצרים, אישור אקו״ם/פדרציה, חוזה או מסמך משפטי חתום (PDF, תמונה או Word, עד 10MB). מומלץ להשחיר מס׳ ת"ז/בנק שאינם נדרשים. המסמך גלוי למנהל בלבד, ודיווח שווא כפוף לאחריות משפטית מלאה.'
+                      : 'Attach copyright certificate, signed affidavit, or legal proof (PDF, Image, Word, up to 10MB). Please redact unneeded ID/bank numbers. Visible to admin only; bad-faith false claims carry full legal liability.'}
                   </p>
                   {legalDocFile ? (
                     <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-white border border-neutral-300 text-xs font-semibold text-neutral-900">

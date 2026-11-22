@@ -3152,11 +3152,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       />
                       <span className="text-xs text-neutral-300 leading-relaxed">
                         <span className="text-white font-black block mb-0.5">
-                          {isHe ? 'אישור זכויות יוצרים ותנאי שימוש (חובה) *' : 'Rights & Copyright Certification (Required) *'}
+                          {isHe ? 'אישור זכויות יוצרים, שיפוי וויתור זכות מוסרית (חובה) *' : 'Copyright, Indemnification & Moral Rights Waiver (Required) *'}
                         </span>
                         {isHe
-                          ? 'אני מאשר/ת שהשיר והעטיפה תואמים את תנאי השימוש, מותרים ברישיון תקף ויש לי את כל הזכויות להעלותם ולהפיצם בפלטפורמה.'
-                          : 'I certify that the track and artwork comply with terms and I hold full rights to upload and distribute them.'}
+                          ? 'אני מאשר/ת שיש לי את מלוא הזכויות בשיר, במילים, בעטיפה ובקול (ללא שיבוט קול/דמות וללא חובת תמלוגים לאקו״ם/פדרציה), מוותר/ת על טענת הזכות המוסרית בגין עיבוד קריוקי וכתוביות אוטומטיות, מודע/ת להפצה הפומבית ומתחייב/ת לשיפוי מלא לפי תנאי השימוש.'
+                          : 'I certify 100% copyright/master/likeness clearance (no collecting-society claims or unauthorized voice cloning), waive moral rights for automated karaoke/subtitles, acknowledge public hosting, and agree to full indemnification under the Terms.'}
                       </span>
                     </label>
                   </div>

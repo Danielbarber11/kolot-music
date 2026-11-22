@@ -40,48 +40,48 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
 
           <div className="space-y-3 text-xs leading-relaxed text-white/85 max-h-64 overflow-y-auto p-4 rounded-2xl bg-neutral-900 border border-white/10 custom-scrollbar">
             <h4 className="font-extrabold text-white text-sm">
-              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v2):' : 'Terms of Service, Privacy & Liability (v2):'}
+              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v3):' : 'Terms of Service, Privacy & Liability (v3):'}
             </h4>
             <ul className="space-y-2 list-disc list-inside text-[11px] text-white/80">
               <li>
                 {isHe
-                  ? 'כשירות וגיל: השימוש וההתחברות לאתר מיועדים לבני 18+ בלבד (או בני 13+ באישור ופיקוח מלא של הורה/אפוטרופוס האחראי לכל פעולה של הקטין).'
-                  : 'Eligibility: Use and upload require age 18+ (or 13+ with explicit parent/guardian consent and responsibility).'}
+                  ? 'כשירות וגיל: השימוש מתחת לגיל 13 אסור בהחלט. ההתחברות והעלאה מותרות לבני 18+ בלבד (או 13–17 באישור ופיקוח מלא של הורה/אפוטרופוס האחראי משפטית וכספית לכל פעולה).'
+                  : 'Eligibility: Under 13 strictly prohibited. Use and upload require age 18+ (or 13–17 with parent/guardian consent and full legal responsibility).'}
               </li>
               <li>
                 {isHe
-                  ? 'אחריות בלעדית ושיפוי מלא: כל תוכן המועלה (קבצי שמע עד 5 דקות/1GB, קישורים חיצוניים, עטיפות, מילים, שמות וז׳אנרים) הינו באחריות בעל הפרופיל המעלה בלבד. הנהלת האתר אינה מבצעת סינון או אימות משפטי מוקדם, ואינה אחראית לתביעות, תמלוגים או נזקים. המשתמש מתחייב לשפות ולפצות את הנהלת האתר בגין כל תביעה, נזק, קנס או הוצאה משפטית עקב תוכן שהעלה או הפרת התנאים.'
-                  : 'Sole Uploader Responsibility & Indemnification: Platform does not pre-screen uploads. Uploader bears sole responsibility and agrees to fully indemnify the platform against any claim, royalties, or legal fees.'}
+                  ? 'אחריות בלעדית, אקו״ם ושיפוי מלא: הפלטפורמה אינה מבצעת סינון מוקדם ואינה חבה בתמלוגים (אקו״ם/פדרציה/פי״ל). כל תוכן (שירים עד 5 דקות, קישורים, עטיפות, קולות AI) הינו באחריות המעלה בלבד, המתחייב לשפות ולפצות את ההנהלה במלואה בגין כל תביעה או נזק. חל איסור על שיבוט קול/דמות (Deepfake) ללא אישור.'
+                  : 'Sole Responsibility, Collecting Societies & Indemnification: Platform does not pre-screen and owes zero royalties. Uploader bears sole liability (including AI voice/likeness) and agrees to indemnify the platform.'}
               </li>
               <li>
                 {isHe
-                  ? 'רישיון שימוש והסרת תכנים: העלאת תוכן מעניקה לפלטפורמה רישיון לאחסן, לעבד (כולל תמלול/תרגום/ז׳אנר), לשמור במטמון ולהזרים את התוכן בענן. במקרה של תלונת זכויות יוצרים או הפרה, חובתנו מוגבלת להסרת התוכן במידת הצורך, ולמעלה תישלח הודעה לכתובת המייל האישית שלו.'
-                  : 'Platform License & Removal: Uploading grants a royalty-free license to host, process, and stream content. On copyright or violation complaints, our sole duty is content removal and notice is emailed to the uploader.'}
+                  ? 'רישיון, ויתור על "הזכות המוסרית" ועיבוד קריוקי: העלאה מעניקה רישיון לאחסן, לעבד קריוקי/הסרת שירה, להפיק כתוביות ותרגומים ולהזרים לציבור, תוך ויתור מראש על טענת פגיעה בזכות המוסרית. אין באחסון הקבצים הצפנת קצה-לקצה והשירים זמינים בכתובות ציבוריות; העלאה אינה יוצרת יחסי עבודה, שותפות או זכאות לתשלום.'
+                  : 'License & Moral Rights Waiver: Uploading grants license for public streaming, karaoke vocal processing, and automated subtitles with waiver of moral rights. Files use open cloud URLs; no agency/partnership/royalty relationship is created.'}
               </li>
               <li>
                 {isHe
-                  ? 'איסור לשון הרע, התחזות, תוכן פוגעני ודיווחי שווא: חל איסור מוחלט להעלות תכני לשון הרע, הסתה, אלימות, פגיעה בפרטיות, תוכן מיני/בלתי חוקי, קוד זדוני, להתחזות לאמן/אחר או להגיש דיווחי סרק פוגעניים.'
-                  : 'Prohibited Conduct: Defamation, impersonation, hate speech, explicit/illegal content, malware, and bad-faith false reports are strictly forbidden.'}
+                  ? 'איסור לשון הרע, התחזות, ספאם ודיווחי שווא: חל איסור להעלות לשון הרע, הסתה, אלימות, פורנוגרפיה, ספאם/הונאה, קוד זדוני, להתחזות לאחר או להגיש דיווחי סרק בחוסר תום לב.'
+                  : 'Prohibited Conduct: Defamation, impersonation, hate speech, explicit/illegal content, spam, malware, and bad-faith false reports are strictly forbidden.'}
               </li>
               <li>
                 {isHe
-                  ? 'בינה מלאכותית (AI) וכתוביות: כתוביות, תמלולים, תרגומים וסיווגי ז׳אנר (בענן ובדפדפן) מסופקים "AS IS" ועלולים לכלול שגיאות טקסט/תזמון/תרגום ואף מילים שגויות – ללא כל אחריות או עילת לשון הרע. עיבוד בדפדפן (WASM/WebGPU/AudioContext) צורך משאבי מכשיר על אחריות המשתמש.'
-                  : 'AI Features "AS IS": AI subtitles, translations, and genre tags may contain errors or misinterpretations without liability. In-browser processing runs at user device risk.'}
+                  ? 'AI, כתוביות, צריכת גלישה וציוד קצה: תמלול, תרגום וסיווגי AI מסופקים "AS IS" ועלולים לכלול שגיאות ללא עילת לשון הרע. הורדת מודלים בדפדפן והזרמת אודיו צורכות חבילת גלישה, מעבד, Cache וסוללה על חשבון המשתמש בלבד. המאזין אחראי לבטיחות עוצמת השמע, מצב קריוקי, Wake Lock ומניעת נזק לרמקולים/מסך.'
+                  : 'AI "AS IS", Bandwidth & Safety: AI outputs may contain errors without defamation liability. In-browser AI and audio use user cellular data, CPU, cache, and battery. Listeners bear sole risk for volume, karaoke gain, speaker protection, and Wake Lock.'}
               </li>
               <li>
                 {isHe
-                  ? 'פרטיות, אנליטיקה ואחסון ענן חוצה-גבולות: פרטי Google (שם, מייל, תמונה, UID), יצירות, פניות ומסמכים משפטיים מעובדים ונשמרים בענן (כולל Cloudflare R2 ו-Google Analytics / Tag Manager) ובאחסון מקומי בדפדפן. הנהלת האתר רשאית למסור פרטי מעלה/מדווח לרשויות או לבעל זכויות במסגרת טענה משפטית מבוססת. למרות אמצעי הגנה, אין חסינות מוחלטת מפני אירועי סייבר.'
-                  : 'Privacy & Cloud: Google profile data, uploads, legal docs, cookies, local storage, and GA4/GTM analytics are processed on international cloud infrastructure. Details may be disclosed upon court order or substantiated infringement claims.'}
+                  ? 'פרטיות (תיקון 13), אנליטיקה ומחיקת חשבון: נתוני Google (UID, מייל, תמונה), לוגים, עוגיות, GA4/GTM, דיווחים ומסמכים משפטיים (יש להשחיר ת"ז/פרטים מיותרים) מעובדים בענן בינלאומי. מחיקת חשבון מסירה פרופיל ואווטאר ואינה מוחקת אוטומטית שירים קיימים (יש למחקם קודם לכן או לפנות במייל). תצוגת נגן במסך נעילה/רכב היא באחריות המשתמש.'
+                  : 'Privacy (Amendment 13) & Account Deletion: Google data, cookies, GA4/GTM, and legal docs (redact unneeded IDs) are stored on international clouds. Account deletion removes profile/avatars but not previously uploaded tracks (delete tracks first or email us). Lock-screen/Bluetooth MediaSession metadata is at user risk.'}
               </li>
               <li>
                 {isHe
-                  ? 'בטיחות, מניעת כיבוי מסך, קישורים חיצוניים והיעדר גיבוי: האתר מסופק "AS IS" ואינו שירות גיבוי; ההנהלה רשאית למחוק תוכן, לשנות מגבלות או לסגור חשבון/אתר ללא הודעה או פיצוי. המשתמש אחראי לעוצמת השמע, למנגנון Wake Lock, ולגלישה בקישורים/מאגרים חיצוניים (כגון Audius). מדדי צפיות/אהבות הינם אומדן טכני בלבד, והאתר פטור מתאימות נגישות בתוכן משתמשים (כגון ביטול כתוביות).'
-                  : 'Service Availability & Safety: Provided "AS IS" with no backup warranty. Users are responsible for audio volume, Wake Lock battery usage, and external links. View counters are estimates; platform is not liable for user-disabled accessibility.'}
+                  ? 'אבטחה, PWA, כוח עליון ואין גיבוי: השירות ניתן ללא אחריות גיבוי. חסימות מניעת העתקה/DevTools, נפילות ספקי צד שלישי (Cloudflare/Google/Audius) ומחיקת Cache ע"י הדפדפן הינן ללא פיצוי. האתר פטור מאי-התאמות נגישות בתוכן משתמשים או במנוע הקראה קולית (TTS).'
+                  : 'Security, Force Majeure & No Backup: No backup warranty; anti-copy/DevTools locks, browser cache eviction, third-party outages, user-disabled accessibility, and TTS pronunciation errors carry zero liability.'}
               </li>
               <li>
                 {isHe
-                  ? 'חובת פנייה מוקדמת, הגבלת אחריות ושיפוט בלעדי בישראל: האחריות הכספית של המפעילים מוגבלת ל-0 ש״ח. טרם כל הליך משפטי (זכויות יוצרים, לשון הרע, פרטיות, נגישות וכו׳) חובה לפנות בכתב עם אסמכתאות ל-kolot-music@googlegroups.com ולאפשר לפחות 7–14 ימי עסקים לטיפול. דין מדינת ישראל חל בלעדית, והסמכות הבלעדית הינה לבתי המשפט במחוז תל-אביב-יפו (תביעות עד 12 חודשים).'
-                  : 'Pre-Litigation Notice & Jurisdiction: Aggregate liability is 0 NIS. Written notice & cure period (7–14 business days) to kolot-music@googlegroups.com is mandatory before any legal claim. Governed by Israeli law; exclusive jurisdiction in Tel Aviv-Jaffa courts.'}
+                  ? 'חובת פנייה מוקדמת, ויתור ייצוגית, שיפוט בישראל והנוסח המחייב: אחריות ההנהלה מוגבלת ל-0 ש״ח. כל תביעה תתברר אישית בלבד (ויתור על תובענה ייצוגית בכפוף לדין) לאחר פנייה מוקדמת בכתב ל-kolot-music@googlegroups.com והמתנה 7–14 ימי עסקים. דין מדינת ישראל חל בלעדית, סמכות בלעדית בתל-אביב-יפו (תביעות עד 12 חודשים), והנוסח העברי הוא המחייב.'
+                  : 'Notice, Individual Claims & Jurisdiction: Liability capped at 0 NIS. Individual claims only (class action waiver) after 7–14 business days written notice to kolot-music@googlegroups.com. Israeli law, Tel Aviv-Jaffa courts, 12-month limit; Hebrew text controls.'}
               </li>
             </ul>
           </div>

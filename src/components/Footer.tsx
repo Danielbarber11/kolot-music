@@ -752,135 +752,167 @@ export const TermsReaderModal: React.FC<{
 
   const sectionsHe = [
     {
-      title: '1. כללי, מטרת הפלטפורמה ומתן השירות "AS IS"',
-      body: 'קולות מוזיקה (Kolot Music) הינה פלטפורמה חינמית להאזנה, שיתוף, גילוי והפצת יצירות מוזיקליות (כולל שירי משתמשים ויצירות שנוצרו או עובדו בסיוע בינה מלאכותית). השימוש באתר, בנגן, בכתוביות, בפורטל האמן ובשירותי הענן ניתן בחינם, לשימוש אישי ולא-מסחרי בלבד, כמות שהוא ("AS IS") וכפי שהוא זמין ("AS AVAILABLE"), ללא כל מצג, התחייבות או אחריות מכל סוג – מפורשת או משתמעת – לרבות לזמינות רציפה, תקינות, דיוק, התאמה למטרה מסוימת או היעדר תקלות.',
+      title: '1. כללי, שימוש פרטי ומתן השירות "AS IS"',
+      body: 'קולות מוזיקה (Kolot Music) הינה פלטפורמה חינמית להאזנה, שיתוף, גילוי והפצת יצירות מוזיקליות (כולל שירי משתמשים ויצירות שנוצרו או עובדו בסיוע בינה מלאכותית). השימוש באתר, בנגן, בכתוביות, במצב הקריוקי, בפורטל האמן ובשירותי הענן ניתן בחינם, לשימוש אישי ולא-מסחרי בלבד, כמות שהוא ("AS IS") וכפי שהוא זמין ("AS AVAILABLE"), ללא כל מצג, התחייבות או אחריות מכל סוג – מפורשת או משתמעת – לרבות לזמינות רציפה, תקינות, דיוק, התאמה למטרה מסוימת או היעדר תקלות.',
     },
     {
       title: '2. כשירות משפטית, קטינים והצהרת גיל',
-      body: 'הגלישה וההרשמה לאתר באמצעות חשבון Google, וכן העלאת תכנים לפלטפורמה, מותרות לבגירים בני 18 ומעלה בלבד, או לקטינים מגיל 13 ומעלה בכפוף להסכמה מפורשת ופיקוח צמוד של הורה או אפוטרופוס חוקי. הורה או אפוטרופוס המאשר שימוש לקטין נושא באחריות המלאה והבלעדית לכל מעשה, העלאה, מסירת פרטים או הפרה מצד הקטין.',
+      body: 'השימוש באתר מתחת לגיל 13 אסור בהחלט. הגלישה וההתחברות באמצעות חשבון Google, וכן העלאת תכנים או שליחת פניות, מותרות לבגירים בני 18 ומעלה בלבד, או לקטינים בגילאי 13–17 בכפוף להסכמה מפורשת ופיקוח צמוד של הורה או אפוטרופוס חוקי. הורה או אפוטרופוס המאשר שימוש לקטין נושא באחריות המשפטית והכספית המלאה והבלעדית לכל מעשה, העלאה, מסירת מידע או הפרה מצד הקטין. הנהלת האתר רשאית למחוק לאלתר כל חשבון שיתברר כי שייך לקטין מתחת לגיל 13.',
     },
     {
       title: '3. זכויות יוצרים, היעדר סינון מוקדם ואחריות בלעדית של המעלה',
-      body: 'הנהלת האתר אינה מבצעת בדיקה, פיקוח או אימות משפטי מוקדם של שירים, קישורי שמע חיצוניים, עטיפות, מילות שיר, אלבומים או פרופילי אמנים המועלים בידי משתמשים, ופועלת כפלטפורמת אירוח והזרמה ניטרלית בלבד. תוויות טכניות כגון "סטטוס זכויות", "מקורי" או "עצמאי" משקפות את הצהרת המעלה או ספק צד שלישי בלבד ואינן מהוות אישור משפטי מטעם האתר. כל משתמש המעלה יצירה מצהיר ומתחייב כי הוא בעל הזכויות הבלעדיות בה (לרבות זכויות יוצרים, מאסטר, ביצוע, מילים, לחן, סימני מסחר, זכויות פרסום ועטיפות), וכי ההעלאה וההזרמה באתר אינן מחייבות את הנהלת האתר בתמלוגים לאקו״ם, לפדרציה או לכל גוף גבייה אחר. בכל תביעה, דרישה או טענה שתופנה כלפינו בקשר לתוכן שהועלה, האחריות המלאה חלה על המעלה בלבד, ואנו אחראים רק להסיר את התוכן במידת הצורך. בקבלת תלונה על זכויות יוצרים או כל הפרה אחרת, תישלח למשתמש הודעה לכתובת המייל האישית שלו.',
+      body: 'הנהלת האתר אינה מבצעת בדיקה, פיקוח או אימות משפטי מוקדם של שירים, קישורי שמע חיצוניים, עטיפות, מילות שיר, אלבומים או פרופילי אמנים המועלים בידי משתמשים, ופועלת כפלטפורמת אירוח והזרמה ניטרלית בלבד. תוויות טכניות כגון "מקורי", "עצמאי" או "AI" משקפות את הצהרת המעלה או ספק צד שלישי בלבד ואינן מהוות אישור משפטי מטעם האתר. כל משתמש המעלה יצירה מצהיר ומתחייב כי הוא בעל הזכויות הבלעדיות בה (לרבות זכויות יוצרים, מאסטר, ביצוע, מילים, לחן, סימני מסחר, זכויות פרסום ועטיפות), וכי ההעלאה וההזרמה באתר אינן מחייבות את הנהלת האתר בתמלוגים לאקו״ם, לפדרציה, לפי״ל או לכל גוף גבייה אחר. בכל תביעה, דרישה או טענה שתופנה כלפינו בקשר לתוכן שהועלה, האחריות המלאה חלה על המעלה בלבד, ואנו אחראים רק להסיר את התוכן במידת הצורך. בקבלת תלונה על זכויות יוצרים או כל הפרה אחרת, תישלח למשתמש הודעה לכתובת המייל האישית שלו.',
     },
     {
-      title: '4. שיפוי ופיצוי מלא (Indemnification)',
-      body: 'המשתמש מתחייב לשפות, להגן ולפצות את מפעילי האתר, בעליו, מנהליו, נציגיו ושותפיו, מיד עם דרישה ראשונה, בגין כל תביעה, דרישה, נזק, הפסד, פיצוי סטטוטורי, קנס, הוצאה או שכר טרחת עורכי דין הנובעים במישרין או בעקיפין מכל תוכן שהעלה, פרסם או קישר באתר, מהתחזות, מלשון הרע, מפגיעה בפרטיות, מדיווח שווא או מהפרת תנאי שימוש אלה.',
+      title: '4. איסור פגיעה בזכויות פרסום, קול, תמונה ודמות (Deepfake / Voice Cloning)',
+      body: 'חל איסור מוחלט להעלות שירים (ובפרט שירים שנוצרו בבינה מלאכותית), עטיפות אלבומים, תמונות פרופיל או תיאורים המחקים או משבטים את קולו, דמותו, פניו, שמו או זהותו של אדם אחר, אמן קיים או אישיות ציבורית ללא הסכמתם המפורשת בכתב. המעלה נושא באחריות הבלעדית לכל תביעה בגין פגיעה בפרטיות, הפרת זכות פרסום או עשיית עושר ולא במשפט.',
     },
     {
-      title: '5. רישיון שימוש בפלטפורמה (License Grant)',
-      body: 'בעצם העלאת שיר, קישור שמע, מילים, עטיפה, תמונת פרופיל או פרטי אלבום לאתר, המשתמש מעניק להנהלת האתר רישיון עולמי, לא-בלעדי, פטור מתמלוגים, ניתן להעברה ולהענקת רישיונות משנה, לאחסן, לדחוס, לעבד, ליצור כתוביות ותרגומים אוטומטיים, לסווג לז׳אנרים, להפיק נגזרות אודיו/תמונה, לשמור במטמון ולהזרים את התוכן לכלל הציבור לצורך תפעול, הצגה וקידום הפלטפורמה, כל עוד התוכן זמין בה.',
+      title: '5. שיפוי ופיצוי מלא (Indemnification)',
+      body: 'המשתמש מתחייב לשפות, להגן ולפצות את מפעילי האתר, בעליו, מנהליו, מפתחיו, נציגיו ושותפיו, מיד עם דרישה ראשונה, בגין כל תביעה, דרישה, נזק, הפסד, פיצוי סטטוטורי (ללא הוכחת נזק), קנס, הוצאה או שכר טרחת עורכי דין הנובעים במישרין או בעקיפין מכל תוכן שהעלה, פרסם או קישר באתר, מהתחזות, משיבוט קול/דמות, מלשון הרע, מפגיעה בפרטיות, מדיווח שווא או מהפרת תנאי שימוש אלה.',
     },
     {
-      title: '6. איסור לשון הרע, התחזות, תכנים פוגעניים ודיווחי שווא',
-      body: 'חל איסור מוחלט להעלות, לשתף או לכתוב בשם שיר, שם אמן, תיאור אמן, מילות שיר, אלבום או פנייה: (א) תוכן המהווה לשון הרע, השמצה, הסתה לאלימות, גזענות, איומים, הטרדה או פגיעה בפרטיות; (ב) התחזות לאמן קיים, אדם אחר, מותג או גוף רשמי; (ג) תוכן מיני מפורש, פורנוגרפיה, פגיעה בקטינים, קידום הימורים או פעילות בלתי חוקית; (ד) קוד זדוני, קישורי פישינג או קבצים פגומים; (ה) שימוש במערכת הדיווח לצורך דיווח כוזב, הטרדה או הסרת יצירות של מתחרים בחוסר תום לב. המדווח דיווח שווא יישא באחריות משפטית מלאה לנזקים שיגרמו ליוצר ולפלטפורמה.',
+      title: '6. רישיון שימוש בפלטפורמה וויתור על טענות "הזכות המוסרית" (עיבוד קריוקי, תמלול ותרגום)',
+      body: 'בעצם העלאת שיר, קישור שמע, מילים, עטיפה, תמונת פרופיל או פרטי אלבום לאתר, המשתמש מעניק להנהלת האתר רישיון עולמי, לא-בלעדי, פטור מתמלוגים, ניתן להעברה ולהענקת רישיונות משנה, לאחסן, לדחוס, לעבד, להפיק גרסאות קריוקי/אינסטרומנטל (לרבות הפרדת קול באמצעות Web Audio או שמירת קבצי עזר), ליצור כתוביות ותרגומים אוטומטיים, לסווג לז׳אנרים, לחלץ גווני צבע, לשמור במטמון ולהזרים את התוכן לכלל הציבור. המעלה מצהיר ומסכים מראש לביצוע עיבודים טכניים ונגזרות אוטומטיות אלו ומוותר באופן בלתי חוזר על כל טענה או תביעה בגין פגיעה בזכות המוסרית (Moral Rights, סעיפים 45–46 לחוק זכות יוצרים, תשס"ח-2007) עקב שינוי צליל, הפרדת ערוצי שירה, חוסר דיוק בכתוביות/תרגום או התאמת עיצוב.',
     },
     {
-      title: '7. כתוביות, תרגומים, סיווג ובינה מלאכותית (AI) ועיבוד בדפדפן',
-      body: 'שירותי התמלול, סנכרון הכתוביות, התרגום (לעברית/אנגלית) וסיווג הז׳אנרים מופעלים בחלקם באמצעות מודלי בינה מלאכותית (AI) בענן או ישירות בדפדפן המשתמש (WebAssembly / WebGPU / Whisper / AudioContext). תוצרי AI עלולים להכיל שגיאות קשות, טעויות זיהוי, מילים פוגעניות או מעוותות כתוצאה מטעות אלגוריתמית, השמטות, טעויות תרגום, חוסר סנכרון או שיוך ז׳אנר שגוי. תוצרים אלו אינם משקפים את עמדת הנהלת האתר, מסופקים "AS IS" ללא אחריות, ולא תקום בגינם כל עילה בגין לשון הרע, פגיעה בשם הטוב או אי-דיוק. כמו כן, עיבוד שמע ובינה מלאכותית בצד הדפדפן עשוי לצרוך מעבד, זיכרון, אחסון מקומי וסוללה של המכשיר באחריות המשתמש בלבד.',
+      title: '7. היעדר יחסי עבודה, שותפות, סוכנות או זכאות לתמלוגים',
+      body: 'השימוש בפלטפורמה, פתיחת פרופיל אמן או העלאת שירים ואלבומים אינם יוצרים יחסי עובד-מעביד, שותפות, מיזם משותף, סוכנות, נציגות או התחייבות מסחרית מכל סוג בין המשתמש לבין הנהלת האתר. המשתמש מאשר כי האתר הינו חינמי לחלוטין ואינו חייב בתשלום תמלוגים, שכר, חלוקת הכנסות, שירותי יחסי ציבור או הבטחת חשיפה כלשהי.',
     },
     {
-      title: '8. יצירות AI, פרטי יצירות ומטא-דאטה',
-      body: 'שירים המסומנים כ-AI הינם באחריות המשתמש המפרסם בלבד, המצהיר כי אין בהם הפרת זכויות יוצרים, זכויות קול, דמות או סימני מסחר של צד שלישי. פרטי השירים, הקרדיטים, הז׳אנרים, תיאורי האמנים ויתר נתוני המטא-דאטה מוזנים ע"י משתמשים או נמשכים ממקורות חיצוניים ועלולים לכלול טעויות סופר או אי-דיוקים ללא כל אחריות של הנהלת האתר.',
+      title: '8. איסור לשון הרע, התחזות, ספאם מסחרי, תכנים פוגעניים ודיווחי שווא',
+      body: 'חל איסור מוחלט להעלות, לשתף או לכתוב בשם שיר, שם אמן, תיאור אמן, מילות שיר, אלבום או טופס פנייה: (א) תוכן המהווה לשון הרע, השמצה, הסתה לאלימות, גזענות, איומים, הטרדה או פגיעה בפרטיות; (ב) התחזות לאמן קיים, אדם אחר, מותג או גוף רשמי; (ג) תוכן מיני מפורש, פורנוגרפיה, פגיעה בקטינים, קידום הימורים או פעילות בלתי חוקית; (ד) ספאם, קישורי הונאה, פרסום מסחרי מטעה או קוד זדוני/פישינג; (ה) שימוש במערכת הדיווח לצורך דיווח כוזב, הטרדה או הסרת יצירות של מתחרים בחוסר תום לב. המדווח דיווח שווא יישא באחריות משפטית מלאה לנזקים שיגרמו ליוצר ולפלטפורמה.',
     },
     {
-      title: '9. מדדי צפיות, השמעות, אהבות וקידום תכנים',
-      body: 'מספרי הצפיות, ההשמעות, הסימונים כמועדפים, רשימות השמעה מובילות (כגון "שיר השבוע") ותוצאות החיפוש הינם אומדן טכני ומשוער המושפע ממנגנוני מטמון (Cache), השהיות רשת ואלגוריתמים אוטומטיים. הנהלת האתר אינה מתחייבת לחשיפה, לקידום מסוים או לתשלום תמלוגים/הכנסות מכל סוג.',
+      title: '9. כתוביות, תרגומים, סיווג AI, עיבוד בדפדפן וצריכת חבילת גלישה',
+      body: 'שירותי התמלול, סנכרון הכתוביות, התרגום (לעברית/אנגלית) וסיווג הז׳אנרים מופעלים בחלקם באמצעות מודלי בינה מלאכותית (AI) בענן או ישירות בדפדפן המשתמש (WebAssembly / WebGPU / Whisper / ONNX / AudioContext). תוצרי AI עלולים להכיל שגיאות קשות, טעויות זיהוי, מילים פוגעניות או מעוותות כתוצאה מטעות אלגוריתמית, השמטות, טעויות תרגום, חוסר סנכרון או שיוך ז׳אנר שגוי. תוצרים אלו אינם משקפים את עמדת הנהלת האתר, מסופקים "AS IS" ללא אחריות, ולא תקום בגינם כל עילה בגין לשון הרע, פגיעה בשם הטוב או אי-דיוק. טעינת מודלי AI לדפדפן והזרמת קובצי שמע עשויות לצרוך נפח גלישה (כולל תעבורה סלולרית על חשבון המשתמש), מעבד, זיכרון, Cache מקומי וסוללה – והכול באחריות המשתמש ובעלותו הבלעדית.',
     },
     {
-      title: '10. שירותי צד שלישי וקישורים חיצוניים',
-      body: 'האתר עשוי להציג או להזרים תכנים, קישורי שמע, תמונות, תיאורים וקישורים חיצוניים שמקורם בפלטפורמות צד שלישי (כגון Audius, Google ואחרים) או בקישורים שהוזנו בידי משתמשים. הנהלת האתר אינה שולטת במדיניות, בזמינות, באבטחה, בחוקיות או בתוכן של אתרים ושירותים חיצוניים ואינה אחראית לכל נזק, הונאה או הפרת פרטיות הנובעים משימוש בהם.',
+      title: '10. בטיחות שמע, מצב קריוקי, ציוד קצה, רגישות לאור ו-Wake Lock',
+      body: 'קבצי שמע המועלים בידי משתמשים ועיבודי אודיו/קריוקי בדפדפן (כולל הגברת שמע וסינון תדרים בזמן אמת) עלולים ליצור עוצמות קול חריגות, עיוותים או צלילים צורמים; המאזין אחראי בלעדית לווסת את עוצמת השמע, והאתר פטור מכל אחריות לנזקי שמיעה או נזק לרמקולים/אוזניות. הנגן עשוי להפעיל מנגנון מניעת כיבוי מסך (Screen Wake Lock) בזמן נגינה; האחריות לצריכת סוללה, התחממות או צריבת מסך חלה על המשתמש בלבד. בעלי רגישות לתנועה או תאורה משתנה מתבקשים להפעיל הפחתת תנועה בתפריט הנגישות.',
     },
     {
-      title: '11. מדיניות פרטיות, עוגיות (Cookies), אנליטיקה ואחסון ענן חוצה-גבולות',
-      body: 'השימוש באתר כרוך באיסוף ועיבוד מידע כמפורט להלן: (א) בעת התחברות עם Google נשמרים מזהה חשבון (UID), שם מלא, כתובת דוא"ל ותמונת פרופיל, וכן יצירות, אלבומים, מועדפים והגדרות פרופיל; (ב) האתר עושה שימוש בקבצי עוגיות (Cookies), Session/Local Storage, Cache API ובכלי מדידה וניתוח של צד שלישי – לרבות Google Analytics 4 (GA4) ו-Google Tag Manager (GTM) – לצורך תפעול, אימות אבטחה, ספירת האזנות ושיפור חוויית השימוש, וגישה לאתר מהווה הסכמה לכך; (ג) פניות, דיווחים ומסמכים משפטיים הנשלחים בטפסי הדיווח או ליצירת קשר נשמרים ומועברים לטיפול ההנהלה (בין היתר דרך Cloudflare R2 ושרתי דואר/טפסים); (ד) קבצים ומידע עשויים להישמר ולעבור עיבוד בשרתי ענן בינלאומיים מחוץ לישראל (כגון Cloudflare ו-Google Cloud); (ה) הנהלת האתר רשאית למסור פרטי משתמש/מעלה (לרבות כתובת מייל ומזהה) לרשויות מוסמכות, על פי צו שיפוטי, או לנפגע/בעל זכויות במסגרת טענה מבוססת להפרת זכויות יוצרים או חוק; (ו) ניתן לעדכן פרטים או לבצע מחיקת חשבון דרך הגדרות הפרופיל או בפנייה למייל האתר, בכפוף לשמירת תיעוד חיוני לפי דין. למרות אמצעי אבטחה סבירים, אין חסינות מוחלטת מפני פריצות סייבר או תקלות אבטחה, והאתר לא יישא באחריות לנזק עקב אירוע סייבר של צד שלישי.',
+      title: '11. אופי ציבורי של תכנים בענן (היעדר הצפנת קצה-לקצה)',
+      body: 'כל שיר, אלבום, עטיפה, תמונת פרופיל, כתוביות או גרסת קריוקי המפורסמים באתר מאוחסנים ומונגשים באמצעות תשתיות אחסון ענן וכתובות ציבוריות פתוחות לצורך הזרמה מהירה. סימון חשבון כ"פרטי" (ככל שמופיע בהגדרות מסוימות) הינו סימון ממשק בלבד ואינו מבטיח הצפנת קצה-לקצה או חסימת גישה ברמת שרת. חל איסור מוחלט להעלות קבצים סודיים, פרטיים או טרם-השקה שאין בכוונתך לחשוף לציבור.',
     },
     {
-      title: '12. בטיחות שמע, בריאות, רגישות לאור ושמירת מסך פעיל (Wake Lock)',
-      body: 'קבצי שמע המועלים בידי משתמשים עלולים להכיל עוצמות קול חריגות, רעשים פתאומיים או צלילים צורמים; המאזין אחראי בלעדית לווסת את עוצמת השמע במכשירו. הנגן עשוי להפעיל מנגנון מניעת כיבוי מסך (Screen Wake Lock) בזמן נגינה; האחריות לצריכת סוללה, התחממות או צריבת מסך חלה על המשתמש בלבד. בעלי רגישות לתנועה או הבזקים מתבקשים להפעיל את הגדרות הפחתת התנועה בתפריט הנגישות.',
+      title: '12. מדדי צפיות, השמעות, אהבות וקידום תכנים',
+      body: 'מספרי הצפיות, ההשמעות, הסימונים כמועדפים, רשימות מובילות (כגון "שיר השבוע"), יצירות AI ותוצאות חיפוש הינם אומדן טכני ומשוער המושפע מתעבורת רשת, מטמון (Cache) ואלגוריתמים אוטומטיים, ועלולים להשתנות או להימחק. הנהלת האתר אינה מתחייבת לדיוק סטטיסטי מוחלט, לחשיפה מסוימת או לזכאות כספית מכל סוג.',
     },
     {
-      title: '13. איסור כריית מידע, הורדה בלתי מורשית, עקיפת הגנות ואין אחריות גיבוי',
-      body: 'חל איסור מוחלט להעתיק, להוריד קבצים שלא סופקו להורדה, לבצע כריית מידע (Scraping), שימוש בבוטים, הנדסה לאחור או עקיפת מנגנוני הגנת ההעתקה והמגבלות הטכניות באתר (כגון מגבלת 5 דקות לשיר ונפח הקבצים). האתר אינו משמש כשירות גיבוי לקבצי משתמשים; הנהלת האתר שומרת לעצמה את הזכות המלאה, בכל עת וללא הודעה מוקדמת או פיצוי, לשנות מגבלות, להסיר כל שיר/פרופיל, להשעות משתמשים או להפסיק את פעילות האתר כולה או חלקה.',
+      title: '13. שירותי צד שלישי, קישורים חיצוניים ותצוגת נגן במסך נעילה / רכב (MediaSession)',
+      body: 'האתר עשוי להציג או להזרים תכנים, קישורי שמע, תמונות וקישורים שמקורם בפלטפורמות צד שלישי (כגון Audius, Google, OpenAI, HuggingFace, CDN ואחרים) או בקישורי משתמשים. הנהלת האתר אינה שולטת בזמינותם, חוקיותם או מדיניות הפרטיות שלהם. בעת ניגון, הדפדפן ומערכת ההפעלה (Android/iOS/Desktop) עשויים להציג שם שיר, שם אמן ועטיפה במסך הנעילה, בהתראות המערכת או בצגי Bluetooth ורכב (MediaSession) באחריות המשתמש בסביבה ציבורית או משותפת.',
     },
     {
-      title: '14. נגישות ותוכן גולשים',
-      body: 'הנהלת האתר פועלת בתום לב לעמוד בהוראות חוק שוויון זכויות לאנשים עם מוגבלות ותקן ישראלי ת"י 5568 (WCAG 2.1 AA) כפי שמפורט בהצהרת הנגישות. יובהר כי אי-התאמות נגישות בתכנים שהועלו בידי משתמשים (לרבות שירים שבהם היוצר ביטל כתוביות, שמע לא ברור או קישורים חיצוניים) אינן בשליטת האתר ולא תוטל בגינן אחריות על ההנהלה. בכל פניית נגישות יש למסור הודעה מוקדמת בכתב למייל הרשמי ולאפשר זמן סביר לתיקון.',
+      title: '14. מדיניות פרטיות (חוק הגנת הפרטיות תיקון 13), עוגיות, GA4 ומחיקת חשבון',
+      body: 'הנהלת האתר פועלת בהתאם להוראות חוק הגנת הפרטיות (לרבות תיקון 13): (א) המידע הנאסף: בעת התחברות עם Google נשמרים מזהה חשבון (UID), שם מלא, כתובת דוא"ל ותמונת פרופיל, לצד יצירות, אלבומים, מועדפים והעדפות נגישות; (ב) עוגיות ואנליטיקה: האתר משתמש בעוגיות חיוניות, Local/Session Storage, Cache API ובכלי מדידה (Google Analytics 4 ו-Google Tag Manager) לצורך תפעול, אבטחה, ספירת צפיות ושיפור השירות; (ג) דיווחים ומסמכים משפטיים: יש להימנע ממסירת פרטים רגישים מיותרים (כגון מספר תעודת זהות או פרטי בנק) בטפסי פנייה ובמסמכים משפטיים ולטשטשם טרם ההעלאה; (ד) עיבוד בינלאומי: המידע והקבצים מאוחסנים בענן מחוץ לישראל (כגון Cloudflare R2 ו-Google Cloud); (ה) מחיקת חשבון ושימור נתונים: מחיקת חשבון מהאפליקציה מסירה את פרופיל האמן ותמונות הפרופיל, אך אינה מוחקת אוטומטית שירים ואלבומים שכבר הועלו – על המשתמש למחוק את שיריו לפני מחיקת החשבון או לפנות בכתב למייל האתר. דיווחי הפרות, מסמכים משפטיים, פניות תמיכה ונתונים סטטיסטיים אנונימיים עשויים להישמר לצורכי הגנה משפטית ותיעוד חוקי; (ו) מסירת מידע והודעות שירות: ההנהלה רשאית למסור פרטי מעלה/מדווח לרשויות או לצד הטוען להפרה מבוססת/צו שיפוטי. משלוח הודעות תפעוליות או משפטיות למייל שלך (כגון התראת זכויות יוצרים) אינו מהווה "דבר פרסומת" לפי חוק התקשורת; (ז) זכות עיון ותיקון: ניתן לממש זכויות פרטיות ומחיקה דרך kolot-music@googlegroups.com. אין חסינות מוחלטת מאירועי סייבר.',
     },
     {
-      title: '15. הגבלת אחריות מרבית (Limitation of Liability)',
+      title: '15. אבטחה, הגנת העתקה/DevTools, מצב אפליקציה (PWA) והיעדר גיבוי',
+      body: 'חל איסור מוחלט להעתיק, להוריד קבצים ללא היתר, לבצע כריית מידע (Scraping), אוטומציה/בוטים, הנדסה לאחור או עקיפת מגבלות טכניות (כולל מגבלת 5 דקות לשיר). האתר מפעיל מנגנוני הגנה מפני העתקה ופתיחת כלי מפתחים (DevTools) העלולים להשהות או לחסום גישה בדפדפנים מסוימים – ללא כל אחריות לחסימות שגויות. התקנת האתר כאפליקציה (PWA) ושמירת נתונים מקומיים תלויות בדפדפן/מערכת ההפעלה ועלולות להימחק אוטומטית (למשל מחיקת Cache ב-iOS). האתר אינו שירות גיבוי, והנהלת האתר רשאית למחוק כל תוכן, לשנות מגבלות או להשעות/לסגור את השירות בכל עת ללא הודעה או פיצוי.',
+    },
+    {
+      title: '16. נגישות, הקראה קולית (TTS) ותוכן גולשים',
+      body: 'הנהלת האתר פועלת בתום לב לעמוד בהוראות חוק שוויון זכויות לאנשים עם מוגבלות ותקן ישראלי ת"י 5568 (WCAG 2.1 AA). יובהר כי אי-התאמות נגישות בתכנים שהועלו בידי משתמשים (לרבות שירים שבהם היוצר ביטל כתוביות, שמע לא ברור או קישורים חיצוניים), וכן שגיאות הגייה של מנוע ההקראה הקולית המובנה בדפדפן (SpeechSynthesis), אינן בשליטת האתר ולא תוטל בגינן אחריות. בכל פניית נגישות יש לשלוח הודעה מוקדמת בכתב למייל האתר ולאפשר פרק זמן סביר לתיקון.',
+    },
+    {
+      title: '17. כוח עליון (Force Majeure) ותקלות תשתית',
+      body: 'מפעילי האתר יהיו פטורים מכל אחריות לכל עיכוב, שיבוש, אובדן קבצים או השבתה הנובעים מכוח עליון או מנסיבות שמחוץ לשליטתם הסבירה – לרבות תקלות אצל Cloudflare, Google, ספקי AI/WASM, תקיפות סייבר/DDoS, מלחמה, מצב חירום, שביתות, הפסקות חשמל/אינטרנט או שינויים בחוק וברגולציה.',
+    },
+    {
+      title: '18. הגבלת אחריות מרבית (0 ש״ח)',
       body: 'במידה המרבית המותרת על פי דין, בשום מקרה לא יישאו האתר, בעליו, מפעיליו, מפתחיו או נציגיו באחריות לכל נזק ישיר, עקיף, תוצאתי, מיוחד, עונשי או נלווה – לרבות אובדן נתונים, אובדן קבצי שמע, פגיעה במוניטין, הפסד רווחים, נזק למכשיר הקצה או הפרת זכויות מצד משתמשים אחרים – הנובע מהשימוש באתר או מאי-היכולת להשתמש בו. מאחר שהשירות ניתן ללא תשלום, סך האחריות המצטברת של המפעילים מוגבל ל-0 ש״ח (או לסכום המינימלי שאינו ניתן להתניה על פי דין).',
     },
     {
-      title: '16. חובת פנייה מוקדמת, הסרת תכנים, דין חל וסמכות שיפוט בלעדית',
-      body: 'כתנאי מוקדם לכל תביעה, התראה משפטית או הליך מכל סוג (לרבות זכויות יוצרים, לשון הרע, פרטיות או נגישות), מתחייב הטוען לפנות תחילה בכתב ובפירוט מלא (כולל זיהוי השיר המדויק ואסמכתאות בעלות או הוכחה משפטית) לקבוצת הפניות הרשמית (Google Groups) בכתובת: kolot-music@googlegroups.com (או דרך כפתור הדיווח באתר) ולאפשר להנהלת האתר פרק זמן סביר של לפחות 7 ימי עסקים (ובפניות נגישות/כלליות 14 ימי עסקים) לבדיקה ולהסרה או תיקון. על תנאי שימוש אלה ועל כל סכסוך בקשר לאתר יחולו אך ורק דיני מדינת ישראל (ללא כללי ברירת הדין), וסמכות השיפוט הבלעדית והייחודית תהא נתונה לבתי המשפט המוסמכים במחוז תל-אביב-יפו בלבד. בכפוף לדין, כל תביעה תוגש תוך 12 חודשים ממועד היווצרות העילה. הנהלת האתר רשאית לעדכן תנאים אלה מעת לעת, והמשך השימוש באתר מהווה הסכמה מחייבת לתנאים המעודכנים.',
+      title: '19. ויתור על תובענה ייצוגית והיעדר ייעוץ משפטי',
+      body: 'במידה המרבית המותרת על פי דין, כל סכסוך, טענה או הליך משפטי נגד מפעילי האתר יתברר ברמה האישית בלבד, והמשתמש מוותר על הזכות להגיש או להצטרף לתובענה ייצוגית או הליך קיבוצי. כל טקסט, תווית, הצהרת נגישות או מסמך באתר הינם למידע תפעולי בלבד ואינם מהווים ייעוץ משפטי.',
+    },
+    {
+      title: '20. חובת פנייה מוקדמת, התיישנות, שיפוט בלעדי והנוסח המחייב',
+      body: 'כתנאי סף מוקדם לכל תביעה, התראה משפטית או הליך מכל סוג (לרבות זכויות יוצרים, לשון הרע, פרטיות או נגישות), מתחייב הטוען לפנות תחילה בכתב ובפירוט מלא (כולל זיהוי השיר המדויק ואסמכתאות בעלות או הוכחה משפטית) לקבוצת הפניות הרשמית (Google Groups) בכתובת: kolot-music@googlegroups.com (או דרך כפתור הדיווח באתר) ולאפשר להנהלת האתר פרק זמן סביר של לפחות 7 ימי עסקים (ובפניות נגישות/כלליות 14 ימי עסקים) לבדיקה ולהסרה או תיקון. על תנאי שימוש אלה ועל כל סכסוך בקשר לאתר יחולו אך ורק דיני מדינת ישראל (ללא כללי ברירת הדין), וסמכות השיפוט הבלעדית והייחודית תהא נתונה לבתי המשפט המוסמכים במחוז תל-אביב-יפו בלבד. בכפוף לדין, כל תביעה תוגש תוך 12 חודשים ממועד היווצרות העילה. הנהלת האתר רשאית לעדכן תנאים אלה מעת לעת, והמשך השימוש באתר מהווה הסכמה מחייבת. בכל סתירה בין התרגום לאנגלית לנוסח העברי – הנוסח העברי הוא הקובע והמחייב בלעדית.',
     },
   ];
 
   const sectionsEn = [
     {
       title: '1. Platform Purpose & "AS IS" / "AS AVAILABLE" Disclaimer',
-      body: 'Kolot Music is a free streaming and independent music publishing platform. Access to the site, audio player, subtitles, artist portal, and cloud storage is provided strictly for personal, non-commercial use on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind—express or implied—including uptime, accuracy, merchantability, or fitness for a particular purpose.',
+      body: 'Kolot Music is a free streaming and independent music publishing platform. Access to the site, audio player, karaoke mode, subtitles, artist portal, and cloud storage is provided strictly for personal, non-commercial use on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind—express or implied—including uptime, accuracy, merchantability, or fitness for a particular purpose.',
     },
     {
-      title: '2. Eligibility & Minors',
-      body: 'Using Google Sign-In or uploading content requires being at least 18 years old, or ages 13–17 strictly with explicit parental or legal guardian consent and supervision. The consenting parent/guardian assumes full legal and financial responsibility for all actions and uploads of the minor.',
+      title: '2. Eligibility & Strict Under-13 Prohibition',
+      body: 'Use of the site by children under age 13 is strictly prohibited. Using Google Sign-In, uploading content, or submitting forms requires being at least 18 years old, or ages 13–17 strictly with explicit parental or legal guardian consent and supervision. The consenting parent/guardian assumes full legal and financial responsibility for all actions and uploads of the minor. Accounts detected as belonging to users under 13 may be deleted immediately.',
     },
     {
-      title: '3. Copyright, Safe Harbor & Sole Uploader Responsibility',
-      body: 'The platform acts solely as a neutral hosting/streaming intermediary and does not pre-screen or legally verify uploaded tracks, external URLs, lyrics, or artwork. Any status label ("uploader declared", etc.) reflects uploader declaration only and is not a platform certification. Uploaders warrant they own 100% of required copyrights, master rights, trademarks, and clearances and owe no royalties against the platform. Full legal responsibility rests solely with the uploading profile owner; platform obligation is limited strictly to removing reported content upon verified notice. Upon copyright or violation complaints, notice is sent to the uploader’s personal email address.',
+      title: '3. Copyright, Safe Harbor, Collecting Societies & Sole Uploader Responsibility',
+      body: 'The platform acts solely as a neutral hosting/streaming intermediary and does not pre-screen or legally verify uploaded tracks, external URLs, lyrics, or artwork. Technical labels ("original", "AI", etc.) reflect uploader declaration only and are not platform certifications. Uploaders warrant they own 100% of required copyrights, master rights, trademarks, and clearances and owe zero royalties against the platform (including ACUM, Federation, PIL, or similar collecting societies). Full legal responsibility rests solely with the uploading profile owner; platform obligation is strictly limited to removing reported content upon verified notice. Upon copyright or violation complaints, notice is sent to the uploader’s personal email address.',
     },
     {
-      title: '4. Full Indemnification',
-      body: 'You agree to indemnify, defend, and hold harmless Kolot Music, its owners, operators, and developers from any claim, lawsuit, statutory damages, fines, settlements, and legal fees arising out of your uploaded content, external links, defamation, privacy breach, impersonation, false reports, or breach of these Terms.',
+      title: '4. Right of Publicity, Voice Cloning & Likeness Protection',
+      body: 'Uploading AI-generated tracks or artwork/profiles that clone, mimic, or use another person’s or artist’s voice, face, name, or likeness without express written permission is strictly forbidden. Uploaders bear sole liability for privacy, publicity, or deepfake claims.',
     },
     {
-      title: '5. Platform License Grant',
-      body: 'By uploading content, you grant Kolot Music a worldwide, non-exclusive, royalty-free, transferable, sublicensable license to store, compress, process, generate subtitles/translations/classifications, cache, stream, and display the content for operating and promoting the service.',
+      title: '5. Full Indemnification',
+      body: 'You agree to indemnify, defend, and hold harmless Kolot Music, its owners, operators, developers, and representatives upon first demand from any claim, lawsuit, statutory damages, fines, settlements, and legal fees arising out of your uploaded content, external links, deepfakes, defamation, privacy breach, impersonation, false reports, or breach of these Terms.',
     },
     {
-      title: '6. Prohibited Content, Defamation, Impersonation & False Reports',
-      body: 'Uploading or submitting defamatory content (לשון הרע), hate speech, harassment, privacy violations, artist/brand impersonation, explicit sexual or illegal content, malware/phishing links, or bad-faith/false copyright reports is strictly prohibited. Bad-faith reporters bear full liability for resulting damages.',
+      title: '6. Platform License Grant & Waiver of Moral Rights (Karaoke, Subtitles & Translations)',
+      body: 'By uploading content, you grant Kolot Music a worldwide, non-exclusive, royalty-free, transferable, sublicensable license to store, compress, extract colors, generate karaoke/vocal-removed versions (via Web Audio or derivative audio files), generate automated subtitles/translations and genre labels, cache, and stream the content. The uploader expressly consents to these technical adaptations and irrevocably waives any Moral Rights claim (Israeli Copyright Act Sections 45–46) regarding vocal cancellation, audio alterations, AI subtitle/translation inaccuracies, or presentation.',
     },
     {
-      title: '7. AI Subtitles, Translations, Genre Classifier & Browser Processing',
-      body: 'Automated subtitles, translations, and genre classifications use AI models (cloud and in-browser WASM/WebGPU/AudioContext). Automated AI outputs may contain severe transcription/translation errors, accidental offensive wording, timing drift, or genre mislabeling. They are provided "AS IS" without warranty and create no liability for defamation or misrepresentation. Browser-side AI processing consumes device CPU, RAM, cache, and battery at user risk.',
+      title: '7. No Employment, Partnership, Agency or Royalties',
+      body: 'Using the platform or uploading music creates no employment, partnership, joint venture, agency, promotional commitment, or royalty/revenue-sharing entitlement between you and Kolot Music.',
     },
     {
-      title: '8. AI-Generated Tracks & Metadata Accuracy',
-      body: 'Uploaders marking tracks as AI-generated bear sole responsibility for IP, voice, and likeness compliance. Track credits, genres, bios, and metadata come from users or third-party sources and may contain inaccuracies without platform liability.',
+      title: '8. Prohibited Content, Defamation, Impersonation, Spam & False Reports',
+      body: 'Uploading or submitting defamatory content (לשון הרע), hate speech, harassment, privacy violations, artist/brand impersonation, explicit sexual or illegal content, spam, misleading ads, malware/phishing links, or bad-faith/false copyright reports is strictly prohibited. Bad-faith reporters bear full liability for resulting damages.',
     },
     {
-      title: '9. View/Play Counts & Discovery Slots',
-      body: 'View counts, play counts, likes, and featured lists are approximate technical metrics affected by caching and sync delays, and carry no commercial entitlement or royalty obligation.',
+      title: '9. AI Subtitles, Translations, Genre Classifier & User Bandwidth / Cache Costs',
+      body: 'Automated subtitles, translations, and genre classifications use AI models (cloud and in-browser WASM/WebGPU/Whisper/ONNX). Automated AI outputs may contain severe transcription/translation errors, accidental offensive wording, timing drift, or genre mislabeling, provided "AS IS" without defamation or inaccuracy liability. Streaming audio and downloading browser AI models consume cellular/internet data bandwidth, CPU, RAM, local Cache, and battery at the user’s sole expense and risk.',
     },
     {
-      title: '10. Third-Party Services & External Links',
-      body: 'Third-party streams, APIs, and links (e.g., Audius, Google, user-submitted URLs) are outside platform control. The platform assumes no responsibility for their availability, safety, legality, or privacy practices.',
+      title: '10. Hearing Safety, Karaoke Processing, Hardware & Screen Wake Lock',
+      body: 'User audio and real-time karaoke processing/gain boost may produce high volumes or distortion; listeners are solely responsible for device volume control and speaker/headphone protection. The player may request Screen Wake Lock; battery drain, heat, or screen burn-in are at user risk. Users sensitive to motion/visual effects should use Accessibility settings.',
     },
     {
-      title: '11. Privacy Policy, Cookies, Analytics (GA4/GTM) & Cloud Storage',
-      body: 'Signing in stores Google UID, name, email, and avatar alongside profiles, tracks, and preferences. The site uses essential cookies, browser storage (localStorage/sessionStorage/Cache API), and analytics tools (Google Analytics 4 & Google Tag Manager). Uploaded audio/images, contact inquiries, and legal proof documents are stored and processed on international cloud infrastructure (including Cloudflare R2 and Google Cloud). The platform may disclose uploader/contact records pursuant to court orders, legal authorities, or substantiated copyright claims. You may delete your account via Profile Settings or contact kolot-music@googlegroups.com. No internet system is 100% immune from cyber incidents.',
+      title: '11. Public Cloud Storage Notice (No Private End-to-End Vault)',
+      body: 'Uploaded tracks, covers, avatars, subtitles, and karaoke files are stored and served via open public/shared cloud infrastructure for fast streaming without end-to-end encryption. Any "private" UI flag does not restrict server-level public media URLs. Do not upload confidential or unreleased material expecting sealed privacy.',
     },
     {
-      title: '12. Hearing Safety, Photosensitivity & Screen Wake Lock',
-      body: 'User audio may play at sudden high volumes; listeners are solely responsible for device volume control. The player may request Screen Wake Lock during playback; battery, heat, or screen burn-in are at user risk. Users sensitive to motion should use the Accessibility menu.',
+      title: '12. View/Play Counts & Discovery Slots',
+      body: 'View counts, play counts, likes, and featured lists are approximate technical metrics affected by network caching and may fluctuate or reset; they create no commercial entitlement.',
     },
     {
-      title: '13. Anti-Scraping, Restrictions & No Backup Warranty',
-      body: 'Downloading unauthorized files, scraping, bots, reverse engineering, or bypassing duration/size/copy protections is forbidden. The site is not a backup service and reserves the unilateral right to modify limits, remove any content, or terminate accounts/service at any time without notice or compensation.',
+      title: '13. Third-Party Services & Lock-Screen / Bluetooth MediaSession',
+      body: 'Third-party streams, APIs, and links (e.g., Audius, Google, OpenAI, HuggingFace, CDN) are outside platform control. OS MediaSession notifications may display song titles, artists, and covers on lock screens, car displays, and Bluetooth devices at user responsibility.',
     },
     {
-      title: '14. Accessibility & User Content',
-      body: 'Kolot Music strives in good faith to comply with Israeli Standard 5568 (WCAG 2.1 AA) as detailed in its Accessibility Statement, but cannot warrant accessibility of user-uploaded audio or creator-disabled subtitles.',
+      title: '14. Privacy Policy (Israeli Privacy Law Amendment 13), Analytics & Account Deletion',
+      body: 'We collect Google sign-in info (UID, name, email, avatar), uploads, preferences, essential cookies, local/session/Cache storage, and analytics (Google Analytics 4 & Tag Manager). Do not include unnecessary ID numbers, bank info, or sensitive data in contact forms or legal proof attachments; redact unneeded details prior to upload. Data is processed on international cloud servers (Cloudflare R2, Google Cloud). Account deletion removes your profile and avatars immediately, but does NOT automatically delete previously uploaded songs/albums (delete tracks beforehand or email kolot-music@googlegroups.com). Prior reports, legal docs, and anonymized analytics may be retained for legal defense and compliance. Data may be disclosed per court order or substantiated infringement claim. Legal/takedown emails are essential service notices, not commercial spam.',
     },
     {
-      title: '15. Maximum Limitation of Liability',
-      body: 'To the fullest extent permitted by law, platform operators shall not be liable for any direct, indirect, incidental, consequential, reputational, or data-loss damages arising from use of the service. Because the platform is free, aggregate liability is capped at 0 NIS (or the legal minimum).',
+      title: '15. Security Protections, Anti-Scraping, PWA Cache & No Backup Warranty',
+      body: 'Unauthorized downloading, scraping, bots, reverse engineering, or bypassing 5-minute/size/copy protections is forbidden. Anti-copy and DevTools protections may block sessions without liability for false positives. PWA offline assets and browser caches may be evicted automatically by OS/browsers (e.g., iOS). The site is not a backup service and may remove content or terminate accounts/service without notice or compensation.',
     },
     {
-      title: '16. Mandatory Pre-Litigation Notice, Governing Law & Exclusive Jurisdiction',
-      body: 'Before initiating any legal action (copyright, defamation, privacy, accessibility, or otherwise), claimants must send detailed written notice with supporting evidence to kolot-music@googlegroups.com and allow at least 7 business days (14 business days for non-urgent/accessibility matters) to review and cure. Governed exclusively by the laws of the State of Israel, with exclusive jurisdiction in the competent courts of Tel Aviv-Jaffa. Any claim must be brought within 12 months. Continued use constitutes acceptance of updated Terms.',
+      title: '16. Accessibility, Browser Speech Synthesis (TTS) & User Content',
+      body: 'Kolot Music strives in good faith to meet Israeli Standard 5568 (WCAG 2.1 AA), but assumes no liability for user-disabled subtitles, third-party audio accessibility, or pronunciation errors in browser Text-to-Speech engines. Prior written notice and reasonable cure time are required.',
+    },
+    {
+      title: '17. Force Majeure',
+      body: 'Operators are not liable for outages, delays, or data loss caused by Cloudflare, Google, AI/CDN providers, cyberattacks/DDoS, war, emergencies, telecommunications failures, or regulatory changes.',
+    },
+    {
+      title: '18. Maximum Limitation of Liability (0 NIS)',
+      body: 'To the fullest extent permitted by law, platform operators shall not be liable for any direct, indirect, incidental, consequential, reputational, equipment, or data-loss damages. Because the service is free, aggregate liability is capped at 0 NIS (or the legal minimum).',
+    },
+    {
+      title: '19. Class Action Waiver & No Legal Advice',
+      body: 'To the fullest extent permitted by law, all claims must be brought strictly on an individual basis and not as a class or representative action. Site notices and terms are informational only and do not constitute legal advice.',
+    },
+    {
+      title: '20. Pre-Litigation Notice, Limitation Period, Jurisdiction & Controlling Language',
+      body: 'Before any legal action (copyright, defamation, privacy, accessibility, etc.), claimants must send detailed written notice with evidence to kolot-music@googlegroups.com and allow 7 business days (14 business days for non-urgent/accessibility matters) to cure. Governed exclusively by the laws of Israel, exclusive venue in Tel Aviv-Jaffa courts, 12-month claim limitation. Continued use constitutes acceptance of updated Terms. In any conflict between Hebrew and English versions, the Hebrew version exclusively controls.',
     },
   ];
 
@@ -899,7 +931,7 @@ export const TermsReaderModal: React.FC<{
                 {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות' : 'Terms of Service, Privacy & Liability'}
               </h3>
               <p className="text-[11px] text-white/50">
-                {isHe ? 'גרסה משפטית מעודכנת (v2) • Kolot Music' : 'Updated Legal Terms (v2) • Kolot Music'}
+                {isHe ? 'גרסה משפטית מעודכנת (v3) • Kolot Music' : 'Updated Legal Terms (v3) • Kolot Music'}
               </p>
             </div>
           </div>
