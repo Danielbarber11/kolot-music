@@ -48,7 +48,6 @@ export async function searchAudiusTracks(query?: string): Promise<JamendoTrack[]
         source: 'Audius Protocol (רשת פתוחה ומבוזרת)',
         license: 'Audius Open Streaming API / Artist Direct Clearance',
         licenseUrl: directArtistUrl,
-        legalStatus: 'תוכן צד שלישי (Audius) — באחריות המפרסם המקורי',
         lyrics: track.description || undefined,
       };
     });

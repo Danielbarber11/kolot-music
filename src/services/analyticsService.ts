@@ -37,12 +37,21 @@ export function trackEvent(eventName: string, params?: Record<string, any>): voi
   });
 }
 
-export function trackSongPlay(track: { id: string; name: string; artistName: string; genre?: string }): void {
+export function trackSongPlay(track: {
+  id: string;
+  name: string;
+  artistName: string;
+  genre?: string;
+  viewsCount?: number;
+}): void {
   trackEvent('play_song', {
     track_id: track.id,
     track_name: track.name,
     artist_name: track.artistName,
     genre: track.genre || 'general',
+    ...(typeof track.viewsCount === 'number' && Number.isFinite(track.viewsCount)
+      ? { views_count: track.viewsCount }
+      : {}),
   });
 }
 

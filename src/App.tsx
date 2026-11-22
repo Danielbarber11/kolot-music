@@ -169,7 +169,7 @@ export default function App() {
         : prev
     );
     incrementTrackViewsInCloud(track);
-    trackSongPlay(track);
+    trackSongPlay({ ...track, viewsCount: nextViews });
     trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
     syncSongQueryParam(track.id);
     setActivePlayerTrack(updatedTrack);
@@ -232,7 +232,8 @@ export default function App() {
             : [hydrated, ...prev]
         );
         incrementTrackViewsInCloud(targetTrack);
-        trackSongPlay(targetTrack);
+        trackSongPlay({ ...targetTrack, viewsCount: nextViews });
+        trackPageView(`/?song=${encodeURIComponent(targetTrack.id)}`, targetTrack.name);
         setActivePlayerTrack(hydrated);
       }
     };

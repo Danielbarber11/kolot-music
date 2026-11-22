@@ -1793,7 +1793,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       license: 'User Upload — Sole Uploader Responsibility',
       licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       source: 'Kolot Cloud Storage',
-      legalStatus: 'מוצהר ע״י המעלה כתוכן באחריותו הבלעדית',
       lyrics: includeSubtitles ? (sanitizedPrimaryHe || sanitizedPrimaryEn || undefined) : undefined,
       lyricsHe: includeSubtitles ? (sanitizedPrimaryHe || undefined) : undefined,
       lyricsEn: includeSubtitles ? (sanitizedPrimaryEn || undefined) : undefined,

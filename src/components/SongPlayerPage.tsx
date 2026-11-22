@@ -1517,8 +1517,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               </div>
             )}
             <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
-              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'באחריות המעלה בלבד' : 'Uploader Responsibility')}</span>
+              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'צפיות:' : 'Views:'}</span>
+              <span className="font-bold text-white font-mono tabular-nums truncate block">
+                {Math.max(1, Number(track.viewsCount) || 0).toLocaleString()}
+              </span>
             </div>
           </div>
         </div>
