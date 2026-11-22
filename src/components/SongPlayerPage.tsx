@@ -1518,7 +1518,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             )}
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'סטטוס זכויות:' : 'Rights Status:'}</span>
-              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'מאושר להאזנה' : 'Licensed')}</span>
+              <span className="font-bold text-white truncate block">{track.legalStatus || (isHe ? 'באחריות המעלה בלבד' : 'Uploader Responsibility')}</span>
             </div>
           </div>
         </div>

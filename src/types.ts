@@ -182,7 +182,7 @@ export interface JamendoTrack {
   karaokeEnabled?: boolean;
 }
 
-export const CURRENT_TERMS_VERSION = 1;
+export const CURRENT_TERMS_VERSION = 2;
 
 export interface ArtistProfile {
   id: string;

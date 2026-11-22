@@ -67,25 +67,25 @@ export const CookieBanner: React.FC<CookieBannerProps> = ({ lang, currentUser, a
           <p className="font-normal text-white/85 leading-relaxed">
             {isHe ? (
               <>
-                הישארותך באתר מהווה הסכמה לקבצי עוגיות ול
+                המשך גלישתך באתר מהווה הסכמה לשימוש בקבצי עוגיות, אחסון מקומי וכלי מדידה ואנליטיקה (Google Analytics / Tag Manager), וכן ל
                 <button
                   type="button"
                   onClick={onOpenTerms}
                   className="font-normal text-white underline underline-offset-4 decoration-white/80 bg-white/10 hover:bg-white/20 px-1.5 py-0.5 mx-0.5 rounded transition-colors cursor-pointer"
                 >
-                  תנאי השימוש
+                  תנאי השימוש ומדיניות הפרטיות
                 </button>
                 {' '}באתר
               </>
             ) : (
               <>
-                Your stay on the site constitutes consent to cookies and{' '}
+                Continuing to browse constitutes consent to cookies, local storage, measurement analytics (Google Analytics / Tag Manager), and our{' '}
                 <button
                   type="button"
                   onClick={onOpenTerms}
                   className="font-normal text-white underline underline-offset-4 decoration-white/80 bg-white/10 hover:bg-white/20 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
                 >
-                  terms of use
+                  Terms of Service & Privacy Policy
                 </button>
               </>
             )}

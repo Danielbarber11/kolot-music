@@ -10,55 +10,58 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
   const isHe = lang === 'he';
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8" dir={isHe ? 'rtl' : 'ltr'}>
       <div className="bg-white border border-slate-200 rounded-3xl p-8 sm:p-12 shadow-sm space-y-6">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 text-slate-800 text-xs font-extrabold border border-slate-200">
           <ShieldCheck className="w-4 h-4 text-indigo-600" />
-          <span>TERMS OF SERVICE & LEGAL DISCLAIMER</span>
+          <span>TERMS OF SERVICE, PRIVACY & LEGAL DISCLAIMER (v2)</span>
         </div>
 
         <h1 className="text-3xl font-black text-slate-900 tracking-tight">
-          {isHe ? 'תנאי שימוש והצהרה משפטית' : 'Terms of Service & Legal Notice'}
+          {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות' : 'Terms of Service, Privacy & Legal Notice'}
         </h1>
 
-        <div className="bg-indigo-50/80 border border-indigo-200 p-6 rounded-2xl text-slate-900 text-sm leading-relaxed font-medium space-y-3">
-          <p className="font-bold text-base text-indigo-950">
-            📌 הצהרת אחריות, דיוק נתונים ותוכן מבוסס בינה מלאכותית (AI):
+        <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl text-slate-900 text-sm leading-relaxed font-medium space-y-3">
+          <p className="font-bold text-base text-slate-950">
+            הצהרת אחריות, זכויות יוצרים, פרטיות ובינה מלאכותית (AI):
           </p>
           <p>
-            האתר אינו מתחייב לדיוק מוחלט של התוכן והנתונים המוצגים בו. השירים, פרטי היצירות, תיאורי האמנים, המטא-דאטה והמדיה מוצגים בחלקם מהזנות משתמשים וממאגרים ציבוריים חיצוניים, ועשויים לכלול אי-דיוקים או טעויות סופר.
+            1. <strong>שירות "AS IS" וכמות שהוא:</strong> האתר ניתן בחינם לשימוש אישי ולא-מסחרי בלבד ללא כל מצג או התחייבות לזמינות רציפה, גיבוי קבצים או היעדר תקלות. השימוש מותר לבני 18+ בלבד (או 13+ בהסכמת הורה/אפוטרופוס ובאחריותו המלאה).
           </p>
           <p>
-            כתוביות השירים, התמלולים והתרגומים האוטומטיים באתר מופקים בחלקם באמצעות מנגנוני בינה מלאכותית (AI) ועיבוד שמע אוטומטי, ועלולים לכלול שגיאות טקסט, השמטות, סטיות תרגום או חוסר סנכרון זמני. תכנים אלו מסופקים כמות שהם ("AS IS") ללא אחריות מכל סוג.
+            2. <strong>אחריות בלעדית של המעלה ושיפוי מלא:</strong> כל תוכן שהועלה לאתר (שירים עד 5 דקות, קישורי שמע, מילים, עטיפות, תיאורים) הינו באחריותו הבלעדית של בעל הפרופיל המעלה בלבד. האתר אינו מבצע בדיקה משפטית מוקדמת ואינו נושא באחריות לתביעות, תמלוגים או נזקים. בכל תביעה שתיטען כלפינו, האחריות והחובה לשפותנו במלואם חלות על המעלה בלבד, ואחריותנו מוגבלת להסרת התוכן במידת הצורך ומשלוח הודעה למייל האישי של המעלה.
           </p>
           <p>
-            מספרי הצפיות, ההשמעות, האהבות והנתונים הסטטיסטיים המופיעים בפלטפורמה הינם אומדן טכני ומשוער בלבד, ועלולים להיות מושפעים ממנגנוני מטמון (Cache), השהיות עדכון ותנאי רשת; אין לראות בהם נתון רשמי או מחייב.
+            3. <strong>איסור לשון הרע, התחזות, תכנים פוגעניים ודיווחי שווא:</strong> חל איסור מוחלט להעלות תכני לשון הרע, הסתה, אלימות, הטרדה, פגיעה בפרטיות, תוכן מיני, קוד זדוני, להתחזות לאמנים/מותגים או להגיש דיווחי סרק בחוסר תום לב.
           </p>
           <p>
-            כל תוכן שהועלה לאתר הינו באחריותו הבלעדית והמלאה של בעל הפרופיל המעלה בלבד. בכל תביעה, דרישה או טענה משפטית שתופנה כלפינו בקשר לתוכן שהועלה, האחריות המלאה חלה על המעלה בלבד, ואנו אחראים רק להסיר את התוכן מהפלטפורמה במידת הצורך. במקרה של קבלת תלונה על בעיית זכויות יוצרים או כל תלונה אחרת, המשתמש המעלה יקבל הודעה לכתובת המייל האישית שלו.
+            4. <strong>AI, כתוביות, תרגומים ומדדים:</strong> כתוביות מסונכרנות, תמלולים, תרגומים וסיווגי ז׳אנר מבוססי AI (בענן ובדפדפן) מסופקים "AS IS" ועלולים לכלול שגיאות טקסט/תזמון/תרגום או מילים שגויות ללא אחריות או עילת לשון הרע. מספרי צפיות והשמעות הינם אומדן טכני מושפע Cache בלבד.
+          </p>
+          <p>
+            5. <strong>פרטיות, עוגיות, אנליטיקה וענן חוצה-גבולות:</strong> האתר עושה שימוש באימות Google, בעוגיות, באחסון מקומי בדפדפן וב-Google Analytics 4 / Tag Manager. תכנים, פניות ומסמכים משפטיים נשמרים בשרתי ענן בינלאומיים (Cloudflare R2 / Google Cloud) ועשויים להימסר על פי צו או דרישה מבוססת להפרת זכויות. המשתמש אחראי לבטיחות שמע (עוצמת קול) ולשימוש במנגנון Wake Lock.
+          </p>
+          <p>
+            6. <strong>חובת פנייה מוקדמת ושיפוט בלעדי בישראל:</strong> סך אחריות מפעילי האתר מוגבל ל-0 ש״ח. טרם כל הליך משפטי חובה לפנות בכתב עם אסמכתאות ל-<span dir="ltr" className="font-mono">kolot-music@googlegroups.com</span> ולאפשר 7–14 ימי עסקים לטיפול. דין מדינת ישראל חל בלעדית, והסמכות הבלעדית נתונה לבתי המשפט במחוז תל-אביב-יפו.
           </p>
         </div>
 
         <div className="space-y-4 text-xs text-slate-600 leading-relaxed border-t border-slate-100 pt-6">
-          <h3 className="font-bold text-sm text-slate-900">{isHe ? 'רשימת ה-APIs הציבוריים שבשימוש האתר:' : 'Public APIs Integrated:'}</h3>
+          <h3 className="font-bold text-sm text-slate-900">{isHe ? 'תשתיות ושירותי צד שלישי בשימוש הפלטפורמה:' : 'Infrastructure & Third-Party Services:'}</h3>
           <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3 font-mono">
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Wikipedia & Wikidata Public API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Internet Archive & LMA API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● DuckDuckGo Instant Answer API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Audius Open Music API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Jamendo CC Music API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Radio Browser API</li>
-            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Project Gutenberg & OpenLibrary</li>
+            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Google OAuth & Google Analytics / GTM</li>
+            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Cloudflare Workers & R2 Cloud Storage</li>
+            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Gemini AI & In-Browser Whisper WASM</li>
+            <li className="p-3 bg-slate-50 border border-slate-200 rounded-xl">● Audius Protocol & External Audio Streams</li>
           </ul>
         </div>
 
         <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
             <Mail className="w-4 h-4 text-indigo-600" />
-            <span>פניות בנושאי תוכן וזכויות (Google Groups): <b dir="ltr">kolot-music@googlegroups.com</b></span>
+            <span>פניות, דיווחי זכויות ונגישות (Google Groups): <b dir="ltr">kolot-music@googlegroups.com</b></span>
           </div>
 
-          <span className="text-[11px] font-mono text-slate-400">Cloud-Native Architecture</span>
+          <span className="text-[11px] font-mono text-slate-400">Kolot Music Legal v2</span>
         </div>
       </div>
     </div>

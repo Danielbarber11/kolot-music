@@ -105,7 +105,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           {/* Main Google Sign-In Button */}
-          <div className="pt-2">
+          <div className="pt-2 space-y-3">
             <button
               type="button"
               onClick={handleGoogleSignIn}
@@ -129,6 +129,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </>
               )}
             </button>
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              {isHe
+                ? 'בהתחברותך הנך מצהיר/ה כי הינך בן/ת 18 ומעלה (או פועל/ת באישור הורה/אפוטרופוס) ומאשר/ת את תנאי השימוש ומדיניות הפרטיות של Kolot Music.'
+                : 'By signing in, you confirm you are 18+ (or have guardian consent) and agree to the Kolot Music Terms of Service and Privacy Policy.'}
+            </p>
           </div>
         </motion.div>
       </div>
