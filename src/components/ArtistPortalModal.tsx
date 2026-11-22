@@ -271,9 +271,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   );
   const [customGenreText, setCustomGenreText] = useState('');
   const [fileUploadError, setFileUploadError] = useState<string | null>(null);
+  const [selectedAudioDurationSec, setSelectedAudioDurationSec] = useState<number | null>(null);
 
-  // 1GB file size limit for audio and image uploads (direct R2 presigned PUT)
+  // 1GB file size limit + strict 5-minute (300s) song duration limit
   const MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024; // 1GB
+  const MAX_SONG_DURATION_SECONDS = 300; // 5 minutes max
 
   // Album creation song selector modal & search states
   const [isAlbumSongSelectorOpen, setIsAlbumSongSelectorOpen] = useState(false);
@@ -688,15 +690,19 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let nextGenre = editGenre.trim() || editingTrack.genre;
     if (!nextGenre || nextGenre === 'ללא סגנון מוזיקלי') {
       const combinedSubLyrics = [nextLyricsOrig, nextLyricsHe, nextLyricsEn].filter(Boolean).join('\n').trim();
+      setEditSaveProgressText(isHe ? 'מנתח את השיר לבחירת הז׳אנר המתאים ביותר...' : 'Analyzing track for best AI genre...');
       try {
-        const cls = await classifyTrackAudio({
-          audioUrl: !editIncludeSubtitles ? resolvedAudioUrl : undefined,
-          songTitle: editTitle.trim() || editingTrack.name,
-          artistName: editPerformingArtist.trim() || editingTrack.artistName,
-          lyrics: editIncludeSubtitles ? combinedSubLyrics : '',
-          deepClassify: !editIncludeSubtitles,
-        });
-        if (cls.success && cls.genre) {
+        const cls = await Promise.race([
+          classifyTrackAudio({
+            audioUrl: resolvedAudioUrl || undefined,
+            songTitle: editTitle.trim() || editingTrack.name,
+            artistName: editPerformingArtist.trim() || editingTrack.artistName,
+            lyrics: combinedSubLyrics,
+            deepClassify: true,
+          }),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
+        ]);
+        if (cls?.success && cls.genre) {
           nextGenre = cls.genre;
         }
       } catch {}
@@ -1002,6 +1008,34 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     }
   };
 
+  const probeAudioDurationSeconds = (src: string): Promise<number | null> => {
+    return new Promise((resolve) => {
+      try {
+        const probe = new Audio();
+        probe.preload = 'metadata';
+        let done = false;
+        const finish = (val: number | null) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          probe.onloadedmetadata = null;
+          probe.onerror = null;
+          probe.src = '';
+          resolve(val);
+        };
+        const timer = setTimeout(() => finish(null), 5000);
+        probe.onloadedmetadata = () => {
+          const d = probe.duration;
+          finish(d && Number.isFinite(d) && d > 0 ? d : null);
+        };
+        probe.onerror = () => finish(null);
+        probe.src = src;
+      } catch {
+        resolve(null);
+      }
+    });
+  };
+
   const processAudioFile = (file: File) => {
     if (!file) return;
     setFileUploadError(null);
@@ -1009,27 +1043,49 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setFileUploadError(isHe ? 'קובץ השמע חורג מ-1GB. יש לבחור קובץ עד 1GB.' : 'Audio file exceeds 1GB limit.');
       return;
     }
-    setRawAudioFile(file);
-    setAudioFileName(file.name);
+
     const blobUrl = URL.createObjectURL(file);
-    setAudioStreamUrl(blobUrl);
     const cleanName = file.name.replace(/\.[^/.]+$/, '');
-    if (!songTitle.trim()) {
-      setSongTitle(cleanName);
-    }
-
     audioDurationRef.current = 180;
-    try {
-      const probe = new Audio(blobUrl);
-      probe.onloadedmetadata = () => {
-        if (probe.duration && Number.isFinite(probe.duration)) {
-          audioDurationRef.current = Math.max(10, Math.round(probe.duration));
-        }
-      };
-    } catch {}
+    setSelectedAudioDurationSec(null);
 
-    // Trigger invisible background subtitle generation the instant the audio file is uploaded
-    void startSilentAutoSubtitles(file, undefined, songTitle.trim() || cleanName);
+    void probeAudioDurationSeconds(blobUrl).then((probedDur) => {
+      if (probedDur !== null && probedDur > MAX_SONG_DURATION_SECONDS + 0.9) {
+        stopSilentAutoSubtitles();
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {}
+        audioDurationRef.current = 180;
+        setSelectedAudioDurationSec(null);
+        setRawAudioFile(null);
+        setAudioFileName('');
+        setAudioStreamUrl('');
+        setWhisperUploadNotice(null);
+        if (audioInputRef.current) audioInputRef.current.value = '';
+        setFileUploadError(
+          isHe
+            ? 'ניתן להעלות לאתר שירים באורך של עד 5 דקות בלבד (הקובץ שנבחר ארוך מ-5:00).'
+            : 'Songs up to 5 minutes (5:00) max are allowed.'
+        );
+        return;
+      }
+
+      const validDur = probedDur !== null ? Math.max(10, Math.round(probedDur)) : 180;
+      audioDurationRef.current = validDur;
+      if (probedDur !== null) {
+        setSelectedAudioDurationSec(Math.round(probedDur));
+      }
+
+      setRawAudioFile(file);
+      setAudioFileName(file.name);
+      setAudioStreamUrl(blobUrl);
+      if (!songTitle.trim()) {
+        setSongTitle(cleanName);
+      }
+
+      // Trigger invisible background subtitle generation once duration <= 5:00 is confirmed
+      void startSilentAutoSubtitles(file, undefined, songTitle.trim() || cleanName);
+    });
   };
 
   const processCoverFile = (file: File) => {
@@ -1467,6 +1523,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const handleResetAudio = () => {
     stopSilentAutoSubtitles();
     audioDurationRef.current = 180;
+    setSelectedAudioDurationSec(null);
     setRawAudioFile(null);
     setAudioFileName('');
     setAudioStreamUrl('');
@@ -1513,8 +1570,27 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     setIsPublishing(true);
     setPublishErrorMessage(null);
-    setUploadProgressPercent(5);
+    setUploadProgressPercent(4);
     setPublishProgressStep('');
+
+    // Verify 5-minute max duration for both file uploads and direct URLs
+    const probedDur = await probeAudioDurationSeconds(audioStreamUrl.trim()).catch(() => null);
+    const checkedDur = probedDur !== null ? probedDur : (selectedAudioDurationSec ?? audioDurationRef.current);
+    if (checkedDur > MAX_SONG_DURATION_SECONDS + 0.9) {
+      setIsPublishing(false);
+      setUploadProgressPercent(0);
+      setPublishErrorMessage(
+        isHe
+          ? 'ניתן להעלות לאתר שירים באורך של עד 5 דקות בלבד.'
+          : 'Only songs up to 5 minutes (5:00) can be uploaded.'
+      );
+      return;
+    }
+    if (probedDur !== null && probedDur > 0) {
+      audioDurationRef.current = Math.max(10, Math.round(probedDur));
+    }
+
+    setUploadProgressPercent(6);
 
     let verifiedUser = getCurrentAuthUser() || currentUser;
     if (!verifiedUser?.uid) {
@@ -1613,9 +1689,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       finalDetectedLangCode = undefined;
       finalDetectedLangLabel = undefined;
 
-      // When AI Subtitles are OFF, keep the existing audio genre engine
+      // When AI Subtitles are OFF, run genuine AI audio classification (Gemini audio or full-chorus AST/DSP)
       if (isAutoGenreSelected) {
         setUploadProgressPercent(18);
+        setPublishProgressStep(isHe ? 'הבינה המלאכותית בוחרת את הז׳אנר המתאים ביותר...' : 'AI selecting best matching genre...');
         try {
           const audioOnlyCls = await Promise.race([
             classifyTrackAudio({
@@ -1626,7 +1703,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
               lyrics: '',
               deepClassify: true,
             }),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
           ]);
           if (audioOnlyCls?.success && audioOnlyCls.genre) {
             effectiveGenre = audioOnlyCls.genre;
@@ -1680,8 +1757,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
       setUploadProgressPercent(40);
 
-      // Automatic Genre via the AI Subtitles Model output (+ audio fallback if lyrics empty)
+      // Automatic Genre using BOTH real audio + AI transcribed lyrics (generous timeout so AI picks accurately, never randomly)
       if (isAutoGenreSelected) {
+        setPublishProgressStep(isHe ? 'הבינה המלאכותית בוחרת את הז׳אנר המתאים ביותר...' : 'AI selecting best matching genre...');
         const aiSubtitlesText = [finalDraftLyricsOrig, finalDraftLyricsHe, finalDraftLyricsEn]
           .filter(Boolean)
           .join('\n')
@@ -1690,12 +1768,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           const subGenreCls = await Promise.race([
             classifyTrackAudio({
               audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
+              audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
               songTitle: songTitle.trim(),
               artistName: finalArtistName,
               lyrics: aiSubtitlesText,
-              deepClassify: !aiSubtitlesText,
+              deepClassify: true,
             }),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
           ]);
           if (subGenreCls?.success && subGenreCls.genre) {
             effectiveGenre = subGenreCls.genre;
@@ -2447,18 +2526,27 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             {isHe ? 'ז׳אנר מוזיקלי' : 'Genre'}
                           </label>
                           <select
-                            value={CANONICAL_GENRES.some((g) => g.id === editGenre) ? editGenre : 'custom'}
+                            value={
+                              editGenre === 'ללא סגנון מוזיקלי'
+                                ? 'ללא סגנון מוזיקלי'
+                                : CANONICAL_GENRES.some((g) => g.id === editGenre)
+                                  ? editGenre
+                                  : 'custom'
+                            }
                             onChange={(e) => {
                               if (e.target.value !== 'custom') setEditGenre(e.target.value);
                             }}
                             className="w-full px-3.5 py-2.5 rounded-xl bg-black border border-white/15 text-white text-xs sm:text-sm focus:outline-none focus:border-white/50 transition-colors cursor-pointer"
                           >
+                            <option value="ללא סגנון מוזיקלי">
+                              {isHe ? 'אוטומטי (בחירת ז׳אנר ע״י בינה מלאכותית)' : 'Automatic (Smart AI Genre)'}
+                            </option>
                             {CANONICAL_GENRES.map((g) => (
                               <option key={g.id} value={g.id}>
                                 {isHe ? `${g.labelHe} (${g.id})` : g.labelEn}
                               </option>
                             ))}
-                            {!CANONICAL_GENRES.some((g) => g.id === editGenre) && (
+                            {editGenre !== 'ללא סגנון מוזיקלי' && !CANONICAL_GENRES.some((g) => g.id === editGenre) && (
                               <option value="custom">{editGenre || (isHe ? 'מותאם אישית' : 'Custom')}</option>
                             )}
                           </select>
@@ -2844,6 +2932,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                 </span>
                                 <span className="block text-[11px] text-neutral-300">
                                   {isHe ? 'מוכן להשמעה ולפרסום' : 'Ready for playback & publish'}
+                                  {selectedAudioDurationSec
+                                    ? ` · ${Math.floor(selectedAudioDurationSec / 60)}:${String(selectedAudioDurationSec % 60).padStart(2, '0')} / 05:00`
+                                    : ''}
                                 </span>
                               </div>
                             </div>
@@ -2892,7 +2983,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             {isHe ? 'גרור לכאן קובץ שיר או לחץ לבחירה מהמכשיר' : 'Drag & drop audio file or click to browse'}
                           </span>
                           <span className="text-[11px] text-neutral-400 mt-1">
-                            MP3, WAV, AAC, M4A, OGG, FLAC (עד 1GB)
+                            {isHe
+                              ? 'MP3, WAV, AAC, M4A, OGG, FLAC (אורך מרבי: עד 5 דקות)'
+                              : 'MP3, WAV, AAC, M4A, OGG, FLAC (Max duration: 5 minutes)'}
                           </span>
                         </div>
                       )}

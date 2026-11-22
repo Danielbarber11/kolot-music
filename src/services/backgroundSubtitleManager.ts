@@ -320,7 +320,8 @@ export function startUploadPrefetchJob(options: {
         accHe = mergeSegLists(accHe, res.segmentsHe);
         accEn = mergeSegLists(accEn, res.segmentsEn);
 
-        const nextCursor = Math.max(cursor + BATCH_SEC, res.processedUpToSec || cursor + BATCH_SEC);
+        const nextCursor =
+          res.processedUpToSec > cursor + 2 ? res.processedUpToSec : cursor + BATCH_SEC;
         const isLast = nextCursor >= effectiveEnd - 2;
         const pct = Math.min(100, Math.round((Math.min(effectiveEnd, nextCursor) / effectiveEnd) * 100));
 
@@ -546,7 +547,8 @@ export function startProgressiveTrackSubtitleJob(options: {
         accHe = mergeSegLists(accHe, res.segmentsHe);
         accEn = mergeSegLists(accEn, res.segmentsEn);
 
-        const nextCursor = Math.max(cursor + BATCH_SEC, res.processedUpToSec || cursor + BATCH_SEC);
+        const nextCursor =
+          res.processedUpToSec > cursor + 2 ? res.processedUpToSec : cursor + BATCH_SEC;
         const isLastBatch = nextCursor >= effectiveEnd - 3;
         const pct = Math.min(100, Math.round((Math.min(effectiveEnd, nextCursor) / effectiveEnd) * 100));
 

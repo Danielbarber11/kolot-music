@@ -1772,9 +1772,9 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
     let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
 
     for (const candidate of [
-      { model: 'gemini-3-flash-preview', timeoutMs: 28000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
-      { model: 'gemini-2.5-flash', timeoutMs: 25000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
-      { model: 'gemini-2.5-flash-lite', timeoutMs: 18000, config: { maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-3-flash-preview', timeoutMs: 48000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash', timeoutMs: 42000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash-lite', timeoutMs: 30000, config: { maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
     ]) {
       try {
         const response = await withTimeout(
@@ -1891,7 +1891,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
           model: 'gemini-3.5-transcribe',
           contents: { parts: [audioPart, { text: transcribeInstruction }] },
         }),
-        20000,
+        35000,
         'gemini-3.5-transcribe'
       );
       transcribedText = (response.text || '').trim();
@@ -2028,28 +2028,32 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
       }
     }
 
-    // Primary: True multimodal Audio Classification with @google/genai (gemini-4-hydrogen)
-    if (ai && audioBuffer && audioBuffer.length > 0) {
+    // Primary: True multimodal Audio + Lyrics Classification with @google/genai (gemini-3-flash-preview -> gemini-2.5-flash)
+    if (ai && ((audioBuffer && audioBuffer.length > 0) || lyrics || songTitle)) {
       try {
-        const base64Audio = audioBuffer.toString('base64');
-        const audioPart = {
-          inlineData: {
-            mimeType,
-            data: base64Audio,
-          },
-        };
+        const parts: any[] = [];
+        if (audioBuffer && audioBuffer.length > 0) {
+          parts.push({
+            inlineData: {
+              mimeType,
+              data: audioBuffer.toString('base64'),
+            },
+          });
+        }
 
         const hfContext = hfLabels.length > 0
           ? `Acoustic AudioSet labels detected: ${hfLabels.map((l) => `${l.label} (${Math.round(l.score * 100)}%)`).join(', ')}. `
           : '';
 
         const classificationPrompt =
-          `Listen carefully to this actual song audio (instrumentation, rhythm, tempo, beat, vocal phrasing, scales/maqam, production style) and classify its exact musical genre.\n` +
+          `${audioBuffer && audioBuffer.length > 0
+            ? 'Listen carefully to this actual song audio (instrumentation, rhythm, tempo, beat, vocal phrasing, scales/maqam, production style) and also examine the lyrics/title to classify its exact musical genre.'
+            : 'Analyze the song lyrics, theme, rhythmic phrasing, vocabulary, and title carefully to classify its exact musical genre.'}\n` +
           `${songTitle ? `Song title: "${songTitle}". ` : ''}` +
           `${artistName ? `Artist: "${artistName}". ` : ''}` +
-          `${lyrics ? `Lyrics excerpt: "${lyrics.slice(0, 400)}". ` : ''}` +
+          `${lyrics ? `Lyrics excerpt:\n"${lyrics.slice(0, 1200)}"\n` : ''}` +
           `${hfContext}\n` +
-          `Choose ONLY ONE best-fitting canonical genre from the schema enum:\n` +
+          `Choose ONLY ONE best-fitting canonical genre from the schema enum (do NOT pick randomly; pick the single most accurate match):\n` +
           `- Mizrahi: Israeli Mediterranean / Middle Eastern pop, darbukah, bouzouki, Oriental maqam/trills (סלסולים), Hebrew mizrahit vocals.\n` +
           `- Pop: Contemporary mainstream pop, catchy chorus, upbeat polished production.\n` +
           `- Hip Hop: Rap verses, trap/boom-bap beats, 808 bass, rhythmic spoken/melodic flow.\n` +
@@ -2061,61 +2065,72 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
           `- Jazz: Swing, saxophone, brass, walking bass, jazz improvisation.\n` +
           `- Blues: Blues guitar riffs, soul/R&B groove.\n` +
           `- Cinematic: Film score, dramatic orchestral soundtrack, epic trailer music.\n` +
-          `Provide a concise reason in Hebrew explaining what you heard in the audio (e.g. "זוהתה שירה ים-תיכונית עם מקצב דרבוקה וגיטרות סול").`;
+          `Provide a concise reason in Hebrew explaining why this genre fits best.`;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: {
-            parts: [audioPart, { text: classificationPrompt }],
-          },
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                genre: {
-                  type: Type.STRING,
-                  enum: [...CANONICAL_AUDIO_GENRES],
-                  description: 'The canonical genre that best describes the audio.',
-                },
-                confidence: {
-                  type: Type.NUMBER,
-                  description: 'Confidence score between 0 and 1.',
-                },
-                mood: {
-                  type: Type.STRING,
-                  description: 'Short mood description in Hebrew (2-3 words).',
-                },
-                bpmEstimate: {
-                  type: Type.NUMBER,
-                  description: 'Estimated tempo in BPM.',
-                },
-                reasonHe: {
-                  type: Type.STRING,
-                  description: 'Short explanation in Hebrew of acoustic cues heard in the track.',
-                },
-              },
-              required: ['genre', 'confidence', 'mood', 'bpmEstimate', 'reasonHe'],
-            },
-          },
-        });
+        parts.push({ text: classificationPrompt });
 
-        const parsedJson = JSON.parse((response.text || '{}').trim());
-        const detectedGenre = CANONICAL_AUDIO_GENRES.includes(parsedJson.genre)
-          ? parsedJson.genre
-          : 'Pop';
+        let parsedJson: any = null;
+        for (const clsModel of ['gemini-3-flash-preview', 'gemini-2.5-flash']) {
+          try {
+            const response = await ai.models.generateContent({
+              model: clsModel,
+              contents: { parts },
+              config: {
+                thinkingConfig: { thinkingBudget: 0 },
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    genre: {
+                      type: Type.STRING,
+                      enum: [...CANONICAL_AUDIO_GENRES],
+                      description: 'The canonical genre that best describes the song.',
+                    },
+                    confidence: {
+                      type: Type.NUMBER,
+                      description: 'Confidence score between 0 and 1.',
+                    },
+                    mood: {
+                      type: Type.STRING,
+                      description: 'Short mood description in Hebrew (2-3 words).',
+                    },
+                    bpmEstimate: {
+                      type: Type.NUMBER,
+                      description: 'Estimated tempo in BPM.',
+                    },
+                    reasonHe: {
+                      type: Type.STRING,
+                      description: 'Short explanation in Hebrew of musical/lyrical cues.',
+                    },
+                  },
+                  required: ['genre', 'confidence', 'mood', 'bpmEstimate', 'reasonHe'],
+                },
+              } as any,
+            });
+            const candidate = JSON.parse((response.text || '{}').trim());
+            if (candidate && CANONICAL_AUDIO_GENRES.includes(candidate.genre)) {
+              parsedJson = candidate;
+              break;
+            }
+          } catch (modelErr: any) {
+            console.warn(`[Audio Classification] ${clsModel} notice:`, modelErr?.message || modelErr);
+          }
+        }
 
-        return res.json({
-          success: true,
-          provider: hfLabels.length > 0 ? 'hf-ast+gemini-audio' : 'gemini-audio-classifier',
-          genre: detectedGenre,
-          hebrewGenre: HEBREW_GENRE_LABELS[detectedGenre] || detectedGenre,
-          confidence: Math.min(0.99, Math.max(0.5, Number(parsedJson.confidence) || 0.9)),
-          mood: parsedJson.mood || '',
-          bpmEstimate: Number(parsedJson.bpmEstimate) || 110,
-          reasonHe: parsedJson.reasonHe || 'זוהה ישירות מתוך האזנה לקובץ השמע',
-          acousticTags: hfLabels.map((l) => l.label),
-        });
+        if (parsedJson) {
+          const detectedGenre = parsedJson.genre;
+          return res.json({
+            success: true,
+            provider: hfLabels.length > 0 ? 'hf-ast+gemini-audio' : 'gemini-audio-classifier',
+            genre: detectedGenre,
+            hebrewGenre: HEBREW_GENRE_LABELS[detectedGenre] || detectedGenre,
+            confidence: Math.min(0.99, Math.max(0.65, Number(parsedJson.confidence) || 0.9)),
+            mood: parsedJson.mood || '',
+            bpmEstimate: Number(parsedJson.bpmEstimate) || 110,
+            reasonHe: parsedJson.reasonHe || 'זוהה ישירות באמצעות בינה מלאכותית',
+            acousticTags: hfLabels.map((l) => l.label),
+          });
+        }
       } catch (aiErr: any) {
         console.warn('[Audio Classification] Gemini audio analysis failed, trying fallback:', aiErr?.message);
       }

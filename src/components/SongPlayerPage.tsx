@@ -202,6 +202,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [favoriteAuthNotice, setFavoriteAuthNotice] = useState(false);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const wakeLockRef = useRef<any>(null);
+  const lyricsScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeLyricsLineRef = useRef<HTMLDivElement | null>(null);
   const [isAppHidden, setIsAppHidden] = useState<boolean>(() =>
     typeof document !== 'undefined' ? document.visibilityState === 'hidden' : false
@@ -414,11 +415,22 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const targetLyricsLineIndex = activeLineIndex >= 0 ? activeLineIndex : upcomingLineIndex;
 
   useEffect(() => {
-    if (isLyricsExpanded && targetLyricsLineIndex >= 0 && activeLyricsLineRef.current) {
+    if (!isLyricsExpanded || targetLyricsLineIndex < 0) return;
+    const rafId = requestAnimationFrame(() => {
+      const container = lyricsScrollContainerRef.current;
+      const targetEl = activeLyricsLineRef.current;
+      if (!container || !targetEl) return;
       try {
-        activeLyricsLineRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        const containerRect = container.getBoundingClientRect();
+        const elRect = targetEl.getBoundingClientRect();
+        const elTopWithinScroll = elRect.top - containerRect.top + container.scrollTop;
+        const idealCenterTop = elTopWithinScroll - container.clientHeight / 2 + elRect.height / 2;
+        const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        const clampedTop = Math.max(0, Math.min(maxTop, idealCenterTop));
+        container.scrollTo({ top: clampedTop, behavior: 'smooth' });
       } catch {}
-    }
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [targetLyricsLineIndex, isLyricsExpanded]);
 
   useEffect(() => {
@@ -1617,7 +1629,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             {/* EXPANDED SCROLLABLE LYRICS CONTAINER */}
             {isLyricsExpanded && (
               <div className="pt-3 border-t border-white/10 space-y-3">
-                <div className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar scroll-smooth">
+                <div
+                  ref={lyricsScrollContainerRef}
+                  className="max-h-72 sm:max-h-80 overflow-y-auto pe-2 space-y-2.5 select-none custom-scrollbar"
+                >
                   {syncedLyrics.lines.map((line, lIdx) => {
                     const isLineActive = lIdx === activeLineIndex;
                     const isLineUpcoming = !isLineActive && lIdx === upcomingLineIndex;

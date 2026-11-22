@@ -1,5 +1,10 @@
 import { JamendoTrack } from '../types';
-import { decodeAudioToMono16k, getOnDeviceAudioClassifierPipeline } from './onDeviceWhisperService';
+import {
+  decodeAudioToMono16k,
+  extractFastAudioWavBlob,
+  getOnDeviceAudioClassifierPipeline,
+  isServerAiConfigured,
+} from './onDeviceWhisperService';
 
 export interface CanonicalGenreMeta {
   id: string;
@@ -212,7 +217,7 @@ function mapAudioSetLabelsToGenre(
   const combinedText = `${titleHint} ${artistHint} ${lyricsHint}`.toLowerCase();
   const scores: Record<string, number> = {
     Mizrahi: 0,
-    Pop: 0.15,
+    Pop: 0.04,
     'Hip Hop': 0,
     Rock: 0,
     Electronic: 0,
@@ -226,19 +231,22 @@ function mapAudioSetLabelsToGenre(
 
   // 1. Acoustic Spectral & Rhythm Waveform Scoring
   if (features) {
-    if (features.bassRatio > 0.42 && features.bpm >= 118) scores.Electronic += 0.42;
-    if (features.bassRatio > 0.40 && features.bpm < 110 && features.bpm >= 75) scores['Hip Hop'] += 0.38;
-    if (features.highRatio > 0.30 && features.zeroCrossingRate > 0.14) scores.Rock += 0.34;
-    if (features.midRatio > 0.50 && features.bassRatio < 0.30) {
-      scores.Acoustic += 0.28;
-      scores.Mizrahi += 0.22;
+    if (features.bassRatio > 0.42 && features.bpm >= 118) scores.Electronic += 0.44;
+    if (features.bassRatio > 0.39 && features.bpm < 112 && features.bpm >= 72) scores['Hip Hop'] += 0.40;
+    if (features.highRatio > 0.28 && features.zeroCrossingRate > 0.13) scores.Rock += 0.38;
+    if (features.midRatio > 0.49 && features.bassRatio < 0.32) {
+      scores.Acoustic += 0.32;
+      scores.Mizrahi += 0.28;
     }
-    if (features.bpm < 88 && features.rms < 0.14) {
-      scores.Chill += 0.35;
-      scores.Classical += 0.18;
+    if (features.bpm < 90 && features.rms < 0.16) {
+      scores.Chill += 0.36;
+      scores.Classical += 0.24;
     }
-    if (features.dynamicVariance > 0.65 && features.midRatio > 0.44) {
-      scores.Cinematic += 0.22;
+    if (features.dynamicVariance > 0.60 && features.midRatio > 0.42) {
+      scores.Cinematic += 0.28;
+    }
+    if (features.bpm >= 104 && features.bpm <= 130 && features.midRatio >= 0.36 && features.highRatio >= 0.18 && features.dynamicVariance < 0.55) {
+      scores.Pop += 0.22;
     }
   }
 
@@ -375,11 +383,6 @@ function mapAudioSetLabelsToGenre(
   };
 }
 
-/**
- * Runs 100% On-Device Audio Classification directly in the browser (0 API keys, $0 cost, unlimited).
- * - Quick mode (`deepClassify: false`): Sub-second Web Audio DSP waveform analysis (<250ms).
- * - Deep mode (`deepClassify: true`, default): Runs Web Audio DSP + On-Device HuggingFace AST neural classifier.
- */
 export async function classifyTrackAudio(params: {
   audioFile?: File | Blob | null;
   track?: Partial<JamendoTrack>;
@@ -392,18 +395,96 @@ export async function classifyTrackAudio(params: {
 }): Promise<AudioClassificationResult> {
   const title = params.songTitle || params.track?.name || '';
   const artist = params.artistName || params.track?.artistName || '';
-  const lyrics = params.lyrics || params.track?.lyrics || '';
+  const lyrics = params.lyrics || params.track?.lyrics || params.track?.lyricsHe || params.track?.lyricsEn || '';
   const source = params.audioFile || params.audioUrl || params.track?.audioUrl;
 
+  // 1. Try Server AI Multimodal Classification (listens to real audio + reads lyrics/title) when configured
+  try {
+    const serverReady = await isServerAiConfigured().catch(() => false);
+    if (serverReady && (source || lyrics.trim().length > 12 || title.trim().length > 2)) {
+      params.onProgress?.('בינה מלאכותית מאזינה לשיר ומזהה ז׳אנר מתאים...', 25);
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 14000) : null;
+      try {
+        let uploadBlob: Blob | null = null;
+        if (source) {
+          const compact = await extractFastAudioWavBlob(source, 90, controller?.signal).catch(() => null);
+          if (compact?.blob && compact.blob.size <= 10 * 1024 * 1024) {
+            uploadBlob = compact.blob;
+          } else if (params.audioFile && params.audioFile.size <= 12 * 1024 * 1024) {
+            uploadBlob = params.audioFile;
+          }
+        }
+
+        let res: Response;
+        if (uploadBlob) {
+          const fd = new FormData();
+          fd.append('file', uploadBlob, 'sample.wav');
+          if (title) fd.append('songTitle', title);
+          if (artist) fd.append('artistName', artist);
+          if (lyrics) fd.append('lyrics', lyrics.slice(0, 1500));
+          res = await fetch('/api/ai/classify-audio', {
+            method: 'POST',
+            body: fd,
+            credentials: 'include',
+            signal: controller?.signal,
+          });
+        } else {
+          res = await fetch('/api/ai/classify-audio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              audioUrl: typeof source === 'string' ? source : '',
+              songTitle: title,
+              artistName: artist,
+              lyrics: lyrics.slice(0, 1500),
+            }),
+            signal: controller?.signal,
+          });
+        }
+
+        if (res.ok) {
+          const data: any = await res.json().catch(() => null);
+          if (data?.success && data.genre && data.provider && data.provider !== 'heuristic-metadata') {
+            const canonical = normalizeGenreId(data.genre) || 'Pop';
+            const foundMeta = CANONICAL_GENRES.find((g) => g.id === canonical);
+            return {
+              success: true,
+              genre: canonical,
+              hebrewGenre: foundMeta?.labelHe || data.hebrewGenre || canonical,
+              confidence: Number(data.confidence) || 0.9,
+              mood: data.mood || '',
+              bpmEstimate: Number(data.bpmEstimate) || 110,
+              reasonHe: data.reasonHe || 'זוהה באמצעות בינה מלאכותית מהשמע והמילים',
+              provider: data.provider,
+              acousticTags: Array.isArray(data.acousticTags) ? data.acousticTags : [],
+            };
+          }
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+  } catch (serverClsErr) {
+    console.warn('[AI AudioClassify] Server AI notice, falling back to on-device neural/DSP:', serverClsErr);
+  }
+
+  // 2. Full On-Device Acoustic Waveform DSP + Chorus AST Neural Classifier fallback
   let features: WaveformFeatures | null = null;
   let pcm: Float32Array | null = null;
 
   if (source) {
     try {
-      params.onProgress?.('מנתח את תדרי השמע והקצב במכשיר...', 15);
-      const decoded = await decodeAudioToMono16k(source, 25);
+      params.onProgress?.('מנתח את תדרי השמע והקצב במכשיר...', 45);
+      const decoded = await decodeAudioToMono16k(source, 120);
       pcm = decoded.pcm;
-      features = analyzeWaveformFeatures(pcm);
+      // Analyze energetic/chorus section (skip quiet intro when track has >= 45s)
+      const analyzePcm =
+        pcm.length > 16000 * 45
+          ? pcm.subarray(Math.floor(pcm.length * 0.25), Math.min(pcm.length, Math.floor(pcm.length * 0.25) + 16000 * 40))
+          : pcm;
+      features = analyzeWaveformFeatures(analyzePcm);
     } catch (err) {
       console.warn('[OnDeviceAudioClassify] Decode notice:', err);
     }
@@ -414,7 +495,12 @@ export async function classifyTrackAudio(params: {
     try {
       const classifier = await getOnDeviceAudioClassifierPipeline(params.onProgress);
       params.onProgress?.('מזהה כלים וז׳אנר על המכשיר (100% חינם)...', 96);
-      const rawOut = await classifier(pcm, { top_k: 6 });
+      // Sample up to 20s from the chorus/middle so quiet intros don't fool AST
+      const astSlice =
+        pcm.length > 16000 * 40
+          ? pcm.subarray(Math.floor(pcm.length * 0.32), Math.min(pcm.length, Math.floor(pcm.length * 0.32) + 16000 * 20))
+          : pcm;
+      const rawOut = await classifier(astSlice, { top_k: 6 });
       if (Array.isArray(rawOut)) {
         astLabels = rawOut.map((x: any) => ({
           label: String(x.label || ''),

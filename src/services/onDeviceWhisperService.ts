@@ -250,7 +250,7 @@ export async function decodeAudioToMono16k(
   const isConstrained = isMobileOrConstrainedDevice();
   const isFullSong = Boolean(options?.fullSong || maxSeconds > 120);
   const maxBytes = isFullSong
-    ? (isConstrained ? 24 * 1024 * 1024 : 40 * 1024 * 1024)
+    ? (isConstrained ? 36 * 1024 * 1024 : 60 * 1024 * 1024)
     : (isConstrained ? 4 * 1024 * 1024 : 8 * 1024 * 1024);
   let arrayBuffer: ArrayBuffer;
 
@@ -883,13 +883,13 @@ export async function generateSubtitlesWithGeminiMethod(options: {
     }
 
     const controller = new AbortController();
-    const hardTimeout = setTimeout(() => controller.abort(), 45000);
+    const hardTimeout = setTimeout(() => controller.abort(), 115000);
     const onParentAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onParentAbort, { once: true });
 
     let serverRes: Response;
     try {
-      const extracted = await extractFastAudioWavBlob(source, 480, controller.signal).catch(() => null);
+      const extracted = await extractFastAudioWavBlob(source, 600, controller.signal).catch(() => null);
       if (options.signal?.aborted) {
         return emptyFail('יצירת הכתוביות בוטלה', true);
       }
@@ -897,7 +897,7 @@ export async function generateSubtitlesWithGeminiMethod(options: {
       const detectedDuration = Math.max(10, Math.round(extracted?.duration || options.duration || 180));
       const langParam = options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he';
 
-      if (extracted?.blob && extracted.blob.size <= 10 * 1024 * 1024) {
+      if (extracted?.blob && extracted.blob.size <= 12 * 1024 * 1024) {
         const fd = new FormData();
         fd.append('file', extracted.blob, 'track-16k.wav');
         fd.append('language', langParam);
@@ -1474,12 +1474,15 @@ export async function transcribeAudioOnDevice(options: {
     }
 
     const gpuAvailable = await hasWebGpuQuick();
-    options.onProgress?.('מכין שמע לתמלול חינמי בדפדפן...', 12);
-    const { pcm, duration } = await decodeAudioToMono16k(source, gpuAvailable ? 88 : 44, {
+    options.onProgress?.('מכין את כל השיר לתמלול חינמי בדפדפן...', 12);
+    const { pcm, duration } = await decodeAudioToMono16k(source, 600, {
       isolateVocals: true,
+      fullSong: true,
       signal: options.signal,
     });
-    const totalDuration = options.trackDuration && options.trackDuration > 10 ? options.trackDuration : duration || 180;
+    const actualDecodedDur = Math.max(10, pcm.length / 16000);
+    const totalDuration = options.trackDuration && options.trackDuration > 10 ? options.trackDuration : duration || actualDecodedDur || 180;
+    const effectiveEnd = Math.min(totalDuration, actualDecodedDur);
 
     if (options.signal?.aborted) {
       return { success: false, aborted: true, error: 'יצירת הכתוביות בוטלה' };
@@ -1495,7 +1498,12 @@ export async function transcribeAudioOnDevice(options: {
     );
 
     let finalOrdered: SubtitleSegment[] = [];
-    let lockedLang: 'hebrew' | 'english' | undefined;
+    let lockedLang: 'hebrew' | 'english' | undefined =
+      options.subtitleLanguageHint === 'he'
+        ? 'hebrew'
+        : options.subtitleLanguageHint === 'en'
+          ? 'english'
+          : undefined;
     let usedProvider = 'whisper-worker';
 
     if (chromeNativeSegs && chromeNativeSegs.length > 0) {
@@ -1503,20 +1511,53 @@ export async function transcribeAudioOnDevice(options: {
       usedProvider = 'chrome-built-in-audio-ai';
       options.onProgress?.('תומלל במהירות במנוע הדפדפן!', 88);
     } else {
-      const workerResult = await runWorkerOnPcmSlice({
-        pcmSlice: pcm,
-        pcmOffsetSec: options.startTimeSeconds || 0,
-        totalDuration,
-        maxProcessSeconds: gpuAvailable ? 88 : 44,
-        hintTitle: options.hintTitle,
-        subtitleLanguageHint: options.subtitleLanguageHint,
-        signal: options.signal,
-        onProgress: options.onProgress,
-        onPartialSegments: options.onPartialSegments,
-      });
-      finalOrdered = workerResult.segments;
-      lockedLang = workerResult.lockedWhisperLang;
-      usedProvider = workerResult.backend === 'webgpu' ? 'whisper-worker-webgpu' : 'whisper-worker-wasm';
+      const BATCH_SEC = gpuAvailable ? 66 : 44;
+      let cursor = Math.max(0, options.startTimeSeconds || 0);
+      while (cursor < effectiveEnd - 0.8 && !options.signal?.aborted) {
+        const startSample = Math.floor(cursor * 16000);
+        const endSample = Math.min(pcm.length, Math.ceil((cursor + BATCH_SEC) * 16000));
+        if (startSample >= pcm.length) break;
+        const pcmSlice = pcm.subarray(startSample, endSample);
+        const workerResult = await runWorkerOnPcmSlice({
+          pcmSlice,
+          pcmOffsetSec: cursor,
+          totalDuration: effectiveEnd,
+          maxProcessSeconds: Math.ceil(pcmSlice.length / 16000) + 1,
+          hintTitle: options.hintTitle,
+          subtitleLanguageHint: options.subtitleLanguageHint,
+          lockedWhisperLang: lockedLang,
+          signal: options.signal,
+          onProgress: (statusText, pct) => {
+            const overallPct = Math.min(
+              92,
+              Math.max(15, Math.round(((cursor + ((pct || 50) / 100) * BATCH_SEC) / Math.max(10, effectiveEnd)) * 88))
+            );
+            options.onProgress?.(statusText, overallPct);
+          },
+          onPartialSegments: (partial) => {
+            const combinedPartial = [...finalOrdered, ...partial.segments].sort((a, b) => a.startTime - b.startTime);
+            const partialText = combinedPartial.map((s) => s.text).join('\n');
+            options.onPartialSegments?.({
+              segments: combinedPartial,
+              segmentsHe: combinedPartial,
+              segmentsEn: combinedPartial,
+              lyricsHe: partialText,
+              lyricsEn: '',
+              completedChunks: partial.completedChunks,
+              totalChunks: Math.max(1, Math.ceil(effectiveEnd / 22)),
+            });
+          },
+        });
+        if (workerResult.segments?.length) {
+          finalOrdered = [...finalOrdered, ...workerResult.segments].sort((a, b) => a.startTime - b.startTime);
+        }
+        if (workerResult.lockedWhisperLang && !lockedLang) {
+          lockedLang = workerResult.lockedWhisperLang;
+        }
+        usedProvider = workerResult.backend === 'webgpu' ? 'whisper-worker-webgpu' : 'whisper-worker-wasm';
+        const nextPos = workerResult.processedUpToSec > cursor + 2 ? workerResult.processedUpToSec : cursor + BATCH_SEC;
+        cursor = nextPos;
+      }
     }
 
     if (!finalOrdered || finalOrdered.length === 0) {

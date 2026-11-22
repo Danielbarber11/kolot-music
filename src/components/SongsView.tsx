@@ -1094,19 +1094,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   onClick={handleProfileClick}
-                  className="w-9.5 h-9.5 aspect-square rounded-full bg-white/10 hover:bg-white/20 border-2 border-white/85 ring-1 ring-white/40 p-[2px] text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+                  className="w-10 h-10 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-[0_4px_18px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.35)] shrink-0"
                   title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
                 >
-                  {(() => {
-                    const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
-                    return avatar ? (
-                      <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
-                    ) : (
-                      <span className="text-xs font-bold text-white">
-                        {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
-                      </span>
-                    );
-                  })()}
+                  <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
+                    {(() => {
+                      const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
+                      return avatar ? (
+                        <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
+                      ) : (
+                        <span className="text-xs font-bold text-white">
+                          {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
+                        </span>
+                      );
+                    })()}
+                  </div>
                 </button>
               </div>
             )}
@@ -1267,19 +1269,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
         ) : (
           <button
             onClick={handleProfileClick}
-            className="w-10 h-10 aspect-square rounded-full bg-white/10 hover:bg-white/20 border-2 border-white/85 ring-1 ring-white/40 p-[2px] text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+            className="w-10 h-10 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-[0_4px_18px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.35)] shrink-0"
             title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
           >
-            {(() => {
-              const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
-              return avatar ? (
-                <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
-              ) : (
-                <span className="text-xs font-bold text-white">
-                  {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
-                </span>
-              );
-            })()}
+            <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
+              {(() => {
+                const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
+                return avatar ? (
+                  <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
+                ) : (
+                  <span className="text-xs font-bold text-white">
+                    {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
+                  </span>
+                );
+              })()}
+            </div>
           </button>
         )}
 
@@ -1644,15 +1648,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
-                          className="w-10 h-10 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition-all shadow-md"
+                          className="w-10.5 h-10.5 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 flex items-center justify-center shrink-0 cursor-pointer active:scale-95 transition-all shadow-[0_6px_20px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.35)]"
                           title={isHe ? 'פרופיל אמן' : 'Artist Profile'}
                           aria-label={featuredTrack.artistName}
                         >
-                          {artistAvatarImg ? (
-                            <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
-                          ) : (
-                            <User className="w-4 h-4 text-white" />
-                          )}
+                          <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
+                            {artistAvatarImg ? (
+                              <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
+                            ) : (
+                              <User className="w-4 h-4 text-white" />
+                            )}
+                          </div>
                         </button>
 
                         <button
@@ -1732,19 +1738,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             />
                           </button>
 
-                          {/* Artist Circular Avatar Button (Image Only, No Name Text) */}
+                          {/* Artist Circular Avatar Button (Image Only, No Name Text, Frosted Glass Frame) */}
                           <button
                             type="button"
                             onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
-                            className="w-11 h-11 aspect-square rounded-full overflow-hidden bg-white/10 hover:bg-white/20 border border-white/25 flex items-center justify-center shrink-0 cursor-pointer shadow-md active:scale-95 transition-all"
+                            className="w-11.5 h-11.5 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 flex items-center justify-center shrink-0 cursor-pointer shadow-[0_6px_20px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.35)] active:scale-95 transition-all"
                             title={isHe ? 'פרופיל אמן' : 'Artist Profile'}
                             aria-label={featuredTrack.artistName}
                           >
-                            {artistAvatarImg ? (
-                              <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
-                            ) : (
-                              <User className="w-4.5 h-4.5 text-white" />
-                            )}
+                            <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
+                              {artistAvatarImg ? (
+                                <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
+                              ) : (
+                                <User className="w-4.5 h-4.5 text-white" />
+                              )}
+                            </div>
                           </button>
                         </div>
                       </div>

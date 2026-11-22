@@ -1215,9 +1215,9 @@ export default {
         };
 
         for (const candidate of [
-          { model: 'gemini-3-flash-preview', timeoutMs: 28000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
-          { model: 'gemini-2.5-flash', timeoutMs: 25000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
-          { model: 'gemini-2.5-flash-lite', timeoutMs: 18000, genConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-3-flash-preview', timeoutMs: 48000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-2.5-flash', timeoutMs: 42000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-2.5-flash-lite', timeoutMs: 30000, genConfig: { maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
         ]) {
           try {
             const gRes = await fetch(
@@ -1320,7 +1320,7 @@ export default {
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-              signal: AbortSignal.timeout(20000),
+              signal: AbortSignal.timeout(35000),
               body: JSON.stringify({
                 contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
               }),
@@ -1461,56 +1461,80 @@ export default {
           audioBytes = audioBytes.subarray(0, 15 * 1024 * 1024);
         }
 
-        if (env.GEMINI_API_KEY && audioBytes && audioBytes.length > 0) {
-          const b64 = uint8ToBase64(audioBytes);
-          const geminiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-              body: JSON.stringify({
-                contents: [
-                  {
-                    parts: [
-                      { inlineData: { mimeType, data: b64 } },
-                      {
-                        text: `Listen to this song audio and classify its exact musical genre from: ${canonicalGenres.join(', ')}. Context: title="${songTitle}", artist="${artistName}". Return strict JSON with keys: genre, confidence (0..1), mood (Hebrew), bpmEstimate (number), reasonHe (Hebrew).`,
-                      },
-                    ],
-                  },
-                ],
-                generationConfig: { responseMimeType: 'application/json' },
-              }),
-            }
-          );
+        if (env.GEMINI_API_KEY && ((audioBytes && audioBytes.length > 0) || lyrics || songTitle)) {
+          const parts: any[] = [];
+          if (audioBytes && audioBytes.length > 0) {
+            parts.push({ inlineData: { mimeType, data: uint8ToBase64(audioBytes) } });
+          }
+          parts.push({
+            text:
+              `${audioBytes && audioBytes.length > 0
+                ? 'Listen carefully to this song audio (instruments, beat, vocal phrasing, scales) and read any lyrics below to pick the single most fitting canonical genre.'
+                : 'Analyze these song lyrics and title to pick the single most fitting canonical genre.'} ` +
+              `Allowed genres: ${canonicalGenres.join(', ')}. ` +
+              `Context: title="${songTitle}", artist="${artistName}"${lyrics ? `, lyrics="${lyrics.slice(0, 1200)}"` : ''}. ` +
+              `Do not pick randomly — choose the true closest genre. Return strict JSON with keys: genre, confidence (0..1), mood (Hebrew), bpmEstimate (number), reasonHe (Hebrew).`,
+          });
 
-          if (geminiRes.ok) {
-            const gJson: any = await geminiRes.json();
-            const txt = gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-            const parsed = JSON.parse(txt);
-            const detectedGenre = (canonicalGenres as readonly string[]).includes(parsed.genre) ? parsed.genre : 'Pop';
-            return jsonResponse({
-              success: true,
-              provider: 'gemini-audio-classifier',
-              genre: detectedGenre,
-              hebrewGenre: hebrewLabels[detectedGenre] || detectedGenre,
-              confidence: Number(parsed.confidence) || 0.9,
-              mood: parsed.mood || '',
-              bpmEstimate: Number(parsed.bpmEstimate) || 110,
-              reasonHe: parsed.reasonHe || 'זוהה מתוך ניתוח השמע',
-            });
+          for (const clsModel of ['gemini-3-flash-preview', 'gemini-2.5-flash']) {
+            try {
+              const geminiRes = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${clsModel}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
+                  signal: AbortSignal.timeout(15000),
+                  body: JSON.stringify({
+                    contents: [{ parts }],
+                    generationConfig: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json' },
+                  }),
+                }
+              );
+
+              if (geminiRes.ok) {
+                const gJson: any = await geminiRes.json();
+                const txt = gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                const parsed = JSON.parse(txt);
+                if ((canonicalGenres as readonly string[]).includes(parsed.genre)) {
+                  const detectedGenre = parsed.genre;
+                  return jsonResponse({
+                    success: true,
+                    provider: 'gemini-audio-classifier',
+                    genre: detectedGenre,
+                    hebrewGenre: hebrewLabels[detectedGenre] || detectedGenre,
+                    confidence: Math.min(0.99, Math.max(0.65, Number(parsed.confidence) || 0.9)),
+                    mood: parsed.mood || '',
+                    bpmEstimate: Number(parsed.bpmEstimate) || 110,
+                    reasonHe: parsed.reasonHe || 'זוהה ישירות באמצעות בינה מלאכותית',
+                  });
+                }
+              }
+            } catch {}
           }
         }
+
+        const heuristicText = `${songTitle} ${artistName} ${lyrics}`.toLowerCase();
+        let fallbackGenre = 'Pop';
+        if (/מזרח|חפלה|סלסול|דרבוקה|נשמה|לב|יאללה|עיניים|mizrahi|habibi/.test(heuristicText)) fallbackGenre = 'Mizrahi';
+        else if (/ראפ|ביט|היפ|טראפ|rap|hip|trap|drill|flow/.test(heuristicText)) fallbackGenre = 'Hip Hop';
+        else if (/רוק|גיטרה|מטאל|rock|metal|punk|indie/.test(heuristicText)) fallbackGenre = 'Rock';
+        else if (/אלקטרו|טראנס|האוס|רמיקס|edm|house|techno|trance|synth/.test(heuristicText)) fallbackGenre = 'Electronic';
+        else if (/אקוסט|שקט|מדורה|acoustic|folk|unplugged/.test(heuristicText)) fallbackGenre = 'Acoustic';
+        else if (/צ׳יל|צ'יל|רגיעה|רוגע|chill|lofi|ambient/.test(heuristicText)) fallbackGenre = 'Chill';
+        else if (/קלאס|תזמורת|כינור|classic|piano|symphony/.test(heuristicText)) fallbackGenre = 'Classical';
+        else if (/ג׳אז|ג'אז|סקסופון|jazz|sax/.test(heuristicText)) fallbackGenre = 'Jazz';
+        else if (/בלוז|כאב|blues|soul/.test(heuristicText)) fallbackGenre = 'Blues';
+        else if (/סרט|פסקול|דרמה|cinematic|soundtrack/.test(heuristicText)) fallbackGenre = 'Cinematic';
 
         return jsonResponse({
           success: true,
           provider: 'heuristic-metadata',
-          genre: 'Pop',
-          hebrewGenre: 'פופ',
-          confidence: 0.65,
-          mood: 'קצבי',
+          genre: fallbackGenre,
+          hebrewGenre: hebrewLabels[fallbackGenre] || fallbackGenre,
+          confidence: 0.72,
+          mood: 'מוזיקלי',
           bpmEstimate: 112,
-          reasonHe: 'סווג אוטומטית',
+          reasonHe: 'סווג לפי ניתוח הטקסט והמאפיינים',
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Classification error' }, 500);
