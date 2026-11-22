@@ -482,6 +482,8 @@ export interface ContactMessageRecord {
   trackId?: string;
   trackName?: string;
   artistName?: string;
+  legalDocumentKey?: string;
+  legalDocumentName?: string;
   subject: string;
   message: string;
   createdAt: string;

@@ -102,6 +102,8 @@ export interface TrackReport {
   reporterEmail?: string;
   uploaderEmail?: string;
   uploadedByUid?: string;
+  legalDocumentKey?: string;
+  legalDocumentName?: string;
 }
 
 export interface Album {

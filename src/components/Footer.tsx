@@ -11,6 +11,8 @@ import {
   AlertCircle,
   Share2,
   Copy,
+  Upload,
+  Paperclip,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
@@ -53,6 +55,7 @@ export const Footer: React.FC<FooterProps> = ({
   const [contactMessage, setContactMessage] = useState('');
   const [isSendingContact, setIsSendingContact] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
+  const [contactLegalDocFile, setContactLegalDocFile] = useState<File | null>(null);
   const [copiedGroupEmail, setCopiedGroupEmail] = useState(false);
   const [sentNotice, setSentNotice] = useState<{
     mode: 'email' | 'inbox';
@@ -107,6 +110,29 @@ export const Footer: React.FC<FooterProps> = ({
       };
       const categoryLabel = categoryLabelsHe[contactCategory];
 
+      let legalDocumentKey: string | undefined;
+      let legalDocumentName: string | undefined;
+
+      if (contactCategory === 'copyright' && contactLegalDocFile) {
+        const fd = new FormData();
+        fd.append('file', contactLegalDocFile);
+        const docRes = await fetch('/api/storage/legal-doc', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          credentials: 'include',
+          signal: controller.signal,
+          body: fd,
+        });
+        const docData = await docRes.json().catch(() => null);
+        if (!docRes.ok || !docData?.key) {
+          throw new Error(
+            docData?.error || (isHe ? 'העלאת המסמך המשפטי נכשלה' : 'Failed to upload legal document')
+          );
+        }
+        legalDocumentKey = docData.key;
+        legalDocumentName = docData.fileName || contactLegalDocFile.name;
+      }
+
       const res = await fetch('/api/contact', {
         method: 'POST',
         headers: {
@@ -120,6 +146,8 @@ export const Footer: React.FC<FooterProps> = ({
           senderContact,
           subject,
           message,
+          legalDocumentKey,
+          legalDocumentName,
         }),
       });
       const data = await res.json().catch(() => null);
@@ -141,8 +169,11 @@ export const Footer: React.FC<FooterProps> = ({
             _replyto: 'noreply@kolot-music.app',
             name: senderContact || 'משתמש מהאפליקציה',
             category: categoryLabel,
+            subject,
+            message,
+            legal_document: legalDocumentName || 'ללא',
+            full_details: `סוג פנייה: ${categoryLabel}\nשולח: ${senderContact || 'אנונימי מהאפליקציה'}\nנושא: ${subject}\n\nתוכן ההודעה:\n${message}${legalDocumentName ? `\n\nמסמך משפטי מצורף: ${legalDocumentName}` : ''}`,
             _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
-            message: `סוג פנייה: ${categoryLabel}\nשולח: ${senderContact || 'אנונימי מהאפליקציה'}\nנושא: ${subject}\n\n${message}`,
             _captcha: 'false',
             _template: 'table',
           }),
@@ -163,6 +194,7 @@ export const Footer: React.FC<FooterProps> = ({
       setContactSenderEmail('');
       setContactSubject('');
       setContactMessage('');
+      setContactLegalDocFile(null);
       setContactError(null);
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -539,6 +571,54 @@ export const Footer: React.FC<FooterProps> = ({
                       className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35 resize-none"
                     />
                   </div>
+
+                  {/* 5. COPYRIGHT LEGAL PROOF UPLOAD */}
+                  {contactCategory === 'copyright' && (
+                    <div className="space-y-1.5 p-3 rounded-2xl bg-white/[0.04] border border-white/15">
+                      <label className="text-xs text-white/85 block font-semibold">
+                        {isHe
+                          ? 'מסמך משפטי / הוכחת בעלות להסרת שיר (אופציונלי, עד 10MB):'
+                          : 'Legal Ownership Proof Document (Optional, up to 10MB):'}
+                      </label>
+                      {contactLegalDocFile ? (
+                        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-xs text-white">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">{contactLegalDocFile.name}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setContactLegalDocFile(null)}
+                            className="p-1 rounded-full hover:bg-white/20 text-white/70 hover:text-white cursor-pointer shrink-0"
+                            aria-label={isHe ? 'הסר קובץ' : 'Remove file'}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className="flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-dashed border-white/25 text-xs text-white/85 cursor-pointer transition-colors">
+                          <Upload className="w-4 h-4" />
+                          <span>{isHe ? 'בחר מסמך (PDF, תמונה, Word)' : 'Choose file (PDF, Image, Word)'}</span>
+                          <input
+                            type="file"
+                            accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              e.target.value = '';
+                              if (!file) return;
+                              if (file.size > 10 * 1024 * 1024) {
+                                setContactError(isHe ? 'גודל הקובץ חורג מ-10MB.' : 'File exceeds 10MB limit.');
+                                return;
+                              }
+                              setContactError(null);
+                              setContactLegalDocFile(file);
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  )}
 
                   {contactError && (
                     <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-200 text-xs flex items-center gap-2">

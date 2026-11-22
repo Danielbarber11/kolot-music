@@ -1002,6 +1002,18 @@ export default {
       const filePath = decodeURIComponent(pathname.replace(/^\/api\/storage\/raw\//, '')).replace(/^\/+/, '');
       if (!filePath) return new Response('Missing path', { status: 400 });
 
+      const lowerPath = filePath.toLowerCase();
+      if (
+        lowerPath.startsWith('legal_docs/') ||
+        lowerPath.startsWith('reports/') ||
+        lowerPath.startsWith('contact_messages/')
+      ) {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+      }
+
       const rangeHeader = request.headers.get('range');
       if (env.R2_BUCKET) {
         const obj = await env.R2_BUCKET.get(filePath, rangeHeader ? { range: request.headers } : undefined);
@@ -1715,11 +1727,21 @@ export default {
           uploadedByUid: String(rep.uploadedByUid || ''),
           artistName: String(rep.artistName || ''),
         });
+        const legalDocKey =
+          typeof rep.legalDocumentKey === 'string' &&
+          rep.legalDocumentKey.startsWith('legal_docs/') &&
+          !rep.legalDocumentKey.includes('..')
+            ? rep.legalDocumentKey.slice(0, 260)
+            : '';
+        const legalDocName =
+          typeof rep.legalDocumentName === 'string' ? rep.legalDocumentName.trim().slice(0, 180) : '';
         const enrichedReport = {
           ...rep,
           ...(reporterEmail ? { reporterEmail } : {}),
           ...(sess?.uid ? { reporterUid: sess.uid } : {}),
           ...(uploaderEmail ? { uploaderEmail } : {}),
+          ...(legalDocKey ? { legalDocumentKey: legalDocKey } : {}),
+          ...(legalDocName ? { legalDocumentName: legalDocName } : {}),
         };
         const key = `reports/${String(rep.id).replace(/[^a-zA-Z0-9_\-]/g, '')}.json`;
         await r2WriteJson(key, enrichedReport);
@@ -2160,6 +2182,10 @@ export default {
         const uploadedByUid = String(body?.uploadedByUid || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 120);
         const artistName = String(body?.artistName || '').trim().slice(0, 160);
         const trackName = String(body?.trackName || '').trim().slice(0, 200);
+        const rawLegalKey = String(body?.legalDocumentKey || '').trim().slice(0, 260);
+        const legalDocumentKey =
+          rawLegalKey.startsWith('legal_docs/') && !rawLegalKey.includes('..') ? rawLegalKey : '';
+        const legalDocumentName = String(body?.legalDocumentName || '').trim().slice(0, 180);
 
         if (!message && !rawSubject) {
           return jsonResponse({ success: false, error: 'יש להזין נושא או תוכן להודעה' }, 400);
@@ -2174,6 +2200,7 @@ export default {
         };
         const categoryLabel = categoryLabels[category] || category || 'פנייה';
         const subject = rawSubject || categoryLabel;
+        const messageBody = message || rawSubject;
         const targetGroupEmail = 'kolot-music@googlegroups.com';
 
         let uploaderEmail: string | undefined;
@@ -2201,8 +2228,10 @@ export default {
           ...(trackName ? { trackName } : {}),
           ...(artistName ? { artistName } : {}),
           ...(uploaderEmail ? { uploaderEmail } : {}),
+          ...(legalDocumentKey ? { legalDocumentKey } : {}),
+          ...(legalDocumentName ? { legalDocumentName } : {}),
           subject,
-          message: message || subject,
+          message: messageBody,
           createdAt: new Date().toISOString(),
           status: 'new',
         };
@@ -2222,7 +2251,10 @@ export default {
             ? `\nמייל בעל הפרופיל שהעלה את השיר: ${uploaderEmail}`
             : '';
         const reporterInfoLine = `\nמייל מפרסם הדיווח: ${reporterEmail || 'לא סופק (מדווח לא מחובר)'}`;
-        const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}${reporterInfoLine}${uploaderInfoLine}\nנושא: ${subject}\n\nתוכן:\n${record.message}\n\nמזהה: ${msgId}`;
+        const legalDocInfoLine = legalDocumentName
+          ? `\nמסמך משפטי / אישור בעלות מצורף: ${legalDocumentName} (זמין להורדה בפאנל המנהל)`
+          : '';
+        const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}${reporterInfoLine}${uploaderInfoLine}${legalDocInfoLine}\nנושא: ${subject}\n\nתוכן ההודעה:\n${messageBody}\n\nמזהה: ${msgId}`;
         const resendKey = String((env as any).RESEND_API_KEY || '').trim();
         if (resendKey && !emailDispatched) {
           try {
@@ -2259,7 +2291,13 @@ export default {
                 name: record.senderEmail,
                 category: categoryLabel,
                 _subject: emailSubject,
-                message: emailBodyText,
+                subject,
+                reporter_email: reporterEmail || 'לא סופק',
+                ...(uploaderEmail ? { uploader_email: uploaderEmail } : {}),
+                ...(trackName ? { track: `${trackName}${artistName ? ` - ${artistName}` : ''}` } : {}),
+                ...(legalDocumentName ? { legal_document: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
+                message: messageBody,
+                full_details: emailBodyText,
                 _captcha: 'false',
                 _template: 'table',
               }),
@@ -2318,6 +2356,85 @@ export default {
         return jsonResponse({ success: true, id: cleanId });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'מחיקת הפנייה נכשלה' }, 500);
+      }
+    }
+
+    // 13e. Copyright Legal Proof Document Upload & Admin-Only Retrieval
+    if (pathname === '/api/storage/legal-doc' && request.method === 'POST') {
+      try {
+        const form = await request.formData();
+        const file = form.get('file') as File | null;
+        if (!file) {
+          return jsonResponse({ success: false, error: 'לא נבחר קובץ להעלאה' }, 400);
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (bytes.length === 0) {
+          return jsonResponse({ success: false, error: 'הקובץ ריק' }, 400);
+        }
+        if (bytes.length > 10 * 1024 * 1024) {
+          return jsonResponse({ success: false, error: 'גודל הקובץ חורג מ-10MB' }, 400);
+        }
+        const origName = String(file.name || 'document.pdf').slice(0, 140);
+        const extMatch = origName.toLowerCase().match(/\.(pdf|jpg|jpeg|png|webp|doc|docx)$/);
+        if (!extMatch) {
+          return jsonResponse({ success: false, error: 'ניתן להעלות קבצי PDF, Word או תמונה בלבד' }, 400);
+        }
+        const safeName = origName.replace(/[^a-zA-Z0-9._\-]/g, '_') || `legal_doc${extMatch[0]}`;
+        const randBytes = new Uint8Array(4);
+        crypto.getRandomValues(randBytes);
+        const randHex = Array.from(randBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+        const key = `legal_docs/report_${Date.now()}_${randHex}_${safeName}`;
+        const cType = file.type || 'application/octet-stream';
+
+        if (env.R2_BUCKET) {
+          await env.R2_BUCKET.put(key, bytes, { httpMetadata: { contentType: cType } });
+        } else {
+          const putRes = await signedR2Fetch(
+            creds,
+            'PUT',
+            `/${creds.bucket}/${encodeS3Path(key)}`,
+            {},
+            bytes,
+            { 'Content-Type': cType }
+          );
+          if (!putRes.ok) {
+            throw new Error(`R2 PUT failed (${putRes.status})`);
+          }
+        }
+        return jsonResponse({ success: true, key, fileName: origName });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'העלאת המסמך נכשלה' }, 500);
+      }
+    }
+
+    if (pathname === '/api/admin/legal-doc' && request.method === 'GET') {
+      try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const rawKey = String(url.searchParams.get('key') || '').trim().replace(/^\/+/, '');
+        if (!rawKey.startsWith('legal_docs/') || rawKey.includes('..')) {
+          return jsonResponse({ success: false, error: 'מזהה קובץ לא תקין' }, 400);
+        }
+        const fallbackName = (rawKey.split('/').pop() || 'legal-document').replace(/"/g, '');
+        if (env.R2_BUCKET) {
+          const obj = await env.R2_BUCKET.get(rawKey);
+          if (!obj) return new Response('Document not found', { status: 404 });
+          const headers = new Headers();
+          headers.set('Content-Type', obj.httpMetadata?.contentType || 'application/octet-stream');
+          headers.set('Content-Disposition', `inline; filename="${fallbackName}"`);
+          headers.set('Cache-Control', 'no-store');
+          return new Response(obj.body, { headers });
+        }
+        const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(rawKey)}`);
+        if (!s3Res.ok) return new Response('Document not found', { status: 404 });
+        const headers = new Headers(s3Res.headers);
+        headers.set('Content-Disposition', `inline; filename="${fallbackName}"`);
+        headers.set('Cache-Control', 'no-store');
+        return new Response(s3Res.body, { status: 200, headers });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'טעינת המסמך נכשלה' }, 500);
       }
     }
 

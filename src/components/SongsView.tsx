@@ -5,7 +5,6 @@ import {
   Heart,
   User,
   Plus,
-  ShieldCheck,
   ChevronLeft,
   ChevronRight,
   Globe,
@@ -1093,29 +1092,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
               </button>
             ) : (
               <div className="flex items-center gap-2 shrink-0">
-                {authUser.isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAdminPanelInitialTab('messages');
-                      setIsAdminPanelOpen(true);
-                    }}
-                    className="h-9.5 px-3 rounded-full bg-white/15 hover:bg-white/25 border border-white/30 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-md shrink-0"
-                    title={isHe ? 'תיבת דיווחים והודעות (מנהל בלבד)' : 'Admin Reports & Messages'}
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-white" />
-                    <span className="hidden lg:inline">{isHe ? 'דיווחים והודעות' : 'Reports'}</span>
-                  </button>
-                )}
                 <button
                   onClick={handleProfileClick}
-                  className="w-9.5 h-9.5 aspect-square rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+                  className="w-9.5 h-9.5 aspect-square rounded-full bg-white/10 hover:bg-white/20 border-2 border-white/85 ring-1 ring-white/40 p-[2px] text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
                   title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
                 >
                   {(() => {
                     const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
                     return avatar ? (
-                      <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
+                      <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
                     ) : (
                       <span className="text-xs font-bold text-white">
                         {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
@@ -1282,13 +1267,13 @@ export const SongsView: React.FC<SongsViewProps> = ({
         ) : (
           <button
             onClick={handleProfileClick}
-            className="w-10 h-10 aspect-square rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
+            className="w-10 h-10 aspect-square rounded-full bg-white/10 hover:bg-white/20 border-2 border-white/85 ring-1 ring-white/40 p-[2px] text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-md shrink-0"
             title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
           >
             {(() => {
               const avatar = getEffectiveUserAvatar(authUser, activeArtistProfile);
               return avatar ? (
-                <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover" />
+                <img src={avatar} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
               ) : (
                 <span className="text-xs font-bold text-white">
                   {(authUser.displayName || activeArtistProfile?.name)?.[0]?.toUpperCase() || 'U'}
@@ -1629,12 +1614,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
 
                 return (
-                  <section className="relative overflow-hidden rounded-3xl bg-[#0a0b0e] border border-white/15 p-3.5 sm:p-6 md:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
-                    {/* MOBILE HERO SPOTLIGHT CARD: Compact Above-the-Fold so Spotlight + 4 Quick Options fit before scrolling */}
-                    <div className="relative z-10 flex flex-col items-center text-center gap-2.5 md:hidden">
+                  <section className="relative overflow-hidden rounded-3xl bg-[#0a0b0e] border border-white/15 p-5 sm:p-7 md:p-9 lg:p-10 min-h-[345px] md:min-h-[320px] flex flex-col justify-center shadow-[0_20px_50px_rgba(0,0,0,0.8)]">
+                    {/* MOBILE HERO SPOTLIGHT CARD: Proportional Vertical Card + 4 Quick Options fit above the fold */}
+                    <div className="relative z-10 flex flex-col items-center text-center gap-3.5 md:hidden">
                       <div
                         onClick={() => openSongPlayer(featuredTrack)}
-                        className="relative w-32 h-32 rounded-2xl overflow-hidden shadow-[0_14px_34px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 cursor-pointer active:scale-98 transition-transform"
+                        className="relative w-40 h-40 rounded-2xl overflow-hidden shadow-[0_14px_34px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 cursor-pointer active:scale-98 transition-transform"
                       >
                         <TrackCoverArt
                           coverUrl={featuredTrack.coverUrl}
@@ -1655,7 +1640,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         </h1>
                       </div>
 
-                      <div className="flex items-center justify-center gap-2.5 pt-0.5">
+                      <div className="flex items-center justify-center gap-2.5 pt-1">
                         <button
                           type="button"
                           onClick={() => openArtistProfile(featuredTrack.artistName, featuredTrack.uploadedByUid)}
@@ -1767,7 +1752,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       {/* Big Artwork Showcase (Left side in RTL) */}
                       <div
                         onClick={() => openSongPlayer(featuredTrack)}
-                        className="relative w-56 h-56 lg:w-60 lg:h-60 rounded-3xl overflow-hidden shadow-[0_16px_40px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 group cursor-pointer"
+                        className="relative w-60 h-60 lg:w-68 lg:h-68 rounded-3xl overflow-hidden shadow-[0_16px_40px_rgba(0,0,0,0.85)] border border-white/25 shrink-0 group cursor-pointer"
                       >
                         <TrackCoverArt
                           coverUrl={featuredTrack.coverUrl}

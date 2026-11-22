@@ -11,6 +11,8 @@ import {
   HardDrive,
   User,
   Mail,
+  Paperclip,
+  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, ArtistProfile, Language } from '../types';
@@ -21,6 +23,7 @@ import {
   ContactMessageRecord,
   getContactMessagesInAdmin,
   dismissContactMessageInAdmin,
+  getAuthHeaders,
 } from '../services/authService';
 import {
   getCloudStorageConfig,
@@ -57,7 +60,37 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [deletingUid, setDeletingUid] = useState<string | null>(null);
   const [accountActionError, setAccountActionError] = useState<string | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [downloadingDocKey, setDownloadingDocKey] = useState<string | null>(null);
+  const [docDownloadError, setDocDownloadError] = useState<string | null>(null);
   const adminScrollRef = React.useRef<HTMLDivElement>(null);
+
+  const handleDownloadLegalDoc = async (docKey: string, docName?: string) => {
+    setDocDownloadError(null);
+    setDownloadingDocKey(docKey);
+    try {
+      const res = await fetch(`/api/admin/legal-doc?key=${encodeURIComponent(docKey)}`, {
+        method: 'GET',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        throw new Error(isHe ? 'טעינת המסמך המשפטי נכשלה' : 'Failed to fetch legal document');
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = docName || docKey.split('/').pop() || 'legal-document';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+    } catch (err: any) {
+      setDocDownloadError(err?.message || (isHe ? 'שגיאה בהורדת המסמך' : 'Download error'));
+    } finally {
+      setDownloadingDocKey(null);
+    }
+  };
 
   useEffect(() => {
     if (isOpen && initialTab) {
@@ -603,6 +636,30 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                             </div>
                           )}
                           <span className="text-[10px] text-white/40 block">{report.reportedAt}</span>
+                          {report.legalDocumentKey && (
+                            <div className="pt-1.5">
+                              <button
+                                type="button"
+                                disabled={downloadingDocKey === report.legalDocumentKey}
+                                onClick={() =>
+                                  handleDownloadLegalDoc(report.legalDocumentKey!, report.legalDocumentName)
+                                }
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer disabled:opacity-60"
+                              >
+                                <Paperclip className="w-3.5 h-3.5" />
+                                <span>
+                                  {downloadingDocKey === report.legalDocumentKey
+                                    ? isHe
+                                      ? 'מוריד מסמך...'
+                                      : 'Downloading...'
+                                    : isHe
+                                      ? `הורד מסמך משפטי (${report.legalDocumentName || 'קובץ'})`
+                                      : `Download Legal Doc (${report.legalDocumentName || 'File'})`}
+                                </span>
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2 flex-shrink-0">
@@ -617,6 +674,9 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       </div>
                     ))}
                   </div>
+                )}
+                {docDownloadError && (
+                  <p className="text-xs text-rose-400">{docDownloadError}</p>
                 )}
               </div>
             )}
@@ -680,6 +740,30 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                           <span className="text-[10px] text-white/40 block">
                             {msg.createdAt?.replace('T', ' ').substring(0, 19)}
                           </span>
+                          {msg.legalDocumentKey && (
+                            <div className="pt-1.5">
+                              <button
+                                type="button"
+                                disabled={downloadingDocKey === msg.legalDocumentKey}
+                                onClick={() =>
+                                  handleDownloadLegalDoc(msg.legalDocumentKey!, msg.legalDocumentName)
+                                }
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer disabled:opacity-60"
+                              >
+                                <Paperclip className="w-3.5 h-3.5" />
+                                <span>
+                                  {downloadingDocKey === msg.legalDocumentKey
+                                    ? isHe
+                                      ? 'מוריד מסמך...'
+                                      : 'Downloading...'
+                                    : isHe
+                                      ? `הורד מסמך משפטי (${msg.legalDocumentName || 'קובץ'})`
+                                      : `Download Legal Doc (${msg.legalDocumentName || 'File'})`}
+                                </span>
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-2 flex-shrink-0">
@@ -694,6 +778,9 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                       </div>
                     ))}
                   </div>
+                )}
+                {docDownloadError && (
+                  <p className="text-xs text-rose-400">{docDownloadError}</p>
                 )}
               </div>
             )}

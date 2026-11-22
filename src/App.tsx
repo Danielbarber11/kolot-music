@@ -95,7 +95,7 @@ function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> 
 export default function App() {
   const [lang] = useState<Language>('he');
   const [activePlayerTrack, setActivePlayerTrack] = useState<JamendoTrack | null>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
+  const [isInitializing, setIsInitializing] = useState(() => getInstantSongPool().length === 0);
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [allAlbums, setAllAlbums] = useState<Album[]>(() => getCachedAlbums());
@@ -170,6 +170,7 @@ export default function App() {
     );
     incrementTrackViewsInCloud(track);
     trackSongPlay(track);
+    trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
     syncSongQueryParam(track.id);
     setActivePlayerTrack(updatedTrack);
   };
@@ -202,6 +203,7 @@ export default function App() {
 
   const handleExitTrack = () => {
     syncSongQueryParam(null);
+    trackPageView('/', 'Kolot Music');
     setActivePlayerTrack(null);
     refreshCloudTracksInBackground(true);
   };
@@ -254,13 +256,13 @@ export default function App() {
           ...boot.profiles.slice(0, 12).map((a) => a.avatarUrl),
           ...boot.albums.slice(0, 8).map((al) => al.coverUrl),
         ];
-        await preloadAndDecodeImages(topImageUrls);
+        void preloadAndDecodeImages(topImageUrls);
       } catch {
         // Non-fatal
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 2800));
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 800));
 
     Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
       if (active) setIsInitializing(false);

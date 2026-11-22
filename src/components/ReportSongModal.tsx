@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, ShieldAlert, Check, FileText } from 'lucide-react';
+import { X, ShieldAlert, Check, FileText, Upload, Paperclip, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, Language } from '../types';
 import { saveTrackReportToR2, getCurrentAuthUser, getAuthHeaders } from '../services/authService';
@@ -25,6 +25,8 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
   const [reason, setReason] = useState(isHe ? 'הפרת זכויות יוצרים' : 'Copyright Infringement');
   const [reporterEmailInput, setReporterEmailInput] = useState(currentUser?.email || '');
   const [details, setDetails] = useState('');
+  const [legalDocFile, setLegalDocFile] = useState<File | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
 
@@ -53,10 +55,39 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError(null);
     setIsSubmitting(true);
 
     const authUser = getCurrentAuthUser();
     const resolvedReporterEmail = (authUser?.email || reporterEmailInput || '').trim();
+
+    let legalDocumentKey: string | undefined;
+    let legalDocumentName: string | undefined;
+
+    if (reason === 'הפרת זכויות יוצרים' && legalDocFile) {
+      try {
+        const fd = new FormData();
+        fd.append('file', legalDocFile);
+        const docRes = await fetch('/api/storage/legal-doc', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          credentials: 'include',
+          body: fd,
+        });
+        const docData = await docRes.json().catch(() => null);
+        if (!docRes.ok || !docData?.key) {
+          throw new Error(
+            docData?.error || (isHe ? 'העלאת המסמך המשפטי נכשלה' : 'Failed to upload legal document')
+          );
+        }
+        legalDocumentKey = docData.key;
+        legalDocumentName = docData.fileName || legalDocFile.name;
+      } catch (err: any) {
+        setSubmitError(err?.message || (isHe ? 'שגיאה בהעלאת המסמך המשפטי' : 'Legal document upload error'));
+        setIsSubmitting(false);
+        return;
+      }
+    }
 
     const report: TrackReport = {
       id: `report_${Date.now()}`,
@@ -70,16 +101,20 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       reporterUid: authUser?.uid,
       reporterEmail: resolvedReporterEmail || undefined,
       uploadedByUid: track.uploadedByUid,
+      legalDocumentKey,
+      legalDocumentName,
     };
 
     // Save to Cloudflare R2 backend + in-app admin inbox + kolot-music@googlegroups.com (no email sent back to reporter)
     const senderLabel = resolvedReporterEmail || authUser?.displayName || 'משתמש מהאפליקציה';
-    const subjectLine = `דיווח על שיר: ${track.name} (${track.artistName})`;
+    const subjectLine = `דיווח על שיר (${reason}): ${track.name} - ${track.artistName}`;
     const bodyDetails =
+      `נושא: ${subjectLine}\n` +
       `סיבת הדיווח: ${reason}\n` +
       `שיר: ${track.name} (ID: ${track.id})\n` +
       `אמן: ${track.artistName}` +
       `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : ''}` +
+      `${legalDocumentName ? `\nמסמך משפטי להסרה: ${legalDocumentName}` : ''}` +
       `${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
 
     const [, contactResult] = await Promise.allSettled([
@@ -101,6 +136,8 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           uploadedByUid: track.uploadedByUid || '',
           subject: subjectLine,
           message: bodyDetails,
+          legalDocumentKey,
+          legalDocumentName,
         }),
       }).then((r) => r.json().catch(() => null)),
     ]);
@@ -120,8 +157,11 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           name: senderLabel,
           reporter_email: resolvedReporterEmail || 'לא סופק',
           category: reason,
-          _subject: `[Kolot Music - דיווח שיר] ${subjectLine}`,
+          subject: subjectLine,
           message: bodyDetails,
+          legal_document: legalDocumentName || 'ללא',
+          full_details: bodyDetails,
+          _subject: `[Kolot Music - דיווח שיר] ${subjectLine}`,
           _captcha: 'false',
           _template: 'table',
         }),
@@ -129,6 +169,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
     }
 
     setIsSubmitting(false);
+    setLegalDocFile(null);
     setIsSubmitted(true);
     setTimeout(() => {
       setIsSubmitted(false);
@@ -258,6 +299,61 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
                 </div>
               )}
 
+              {/* LEGAL DOCUMENT UPLOAD FOR COPYRIGHT INFRINGEMENT */}
+              {reason === 'הפרת זכויות יוצרים' && (
+                <div className="space-y-2 p-4 rounded-2xl bg-neutral-100 border border-neutral-300">
+                  <label className="block text-xs font-extrabold text-neutral-900">
+                    {isHe
+                      ? 'העלאת מסמך משפטי המוכיח שהשיר שייך לך (לצורך הסרה מהפלטפורמה)'
+                      : 'Upload Legal Document Proving Ownership (for song removal)'}
+                  </label>
+                  <p className="text-[11px] text-neutral-600">
+                    {isHe
+                      ? 'ניתן לצרף תעודת זכויות יוצרים, אישור אקו״ם/פדרציה, חוזה או מסמך משפטי חתום (PDF, תמונה או Word, עד 10MB). המסמך גלוי למנהל המערכת בלבד.'
+                      : 'Attach copyright certificate, signed affidavit, or legal proof (PDF, Image, Word, up to 10MB). Visible to platform admin only.'}
+                  </p>
+                  {legalDocFile ? (
+                    <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-white border border-neutral-300 text-xs font-semibold text-neutral-900">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Paperclip className="w-4 h-4 text-neutral-700 shrink-0" />
+                        <span className="truncate">{legalDocFile.name}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setLegalDocFile(null)}
+                        className="p-1 rounded-full hover:bg-neutral-200 text-neutral-600 hover:text-black cursor-pointer shrink-0"
+                        title={isHe ? 'הסר מסמך' : 'Remove document'}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white hover:bg-neutral-50 border-2 border-dashed border-neutral-400 text-xs font-bold text-neutral-800 cursor-pointer transition-colors">
+                      <Upload className="w-4 h-4" />
+                      <span>{isHe ? 'בחר קובץ מסמך משפטי להעלאה' : 'Choose Legal Document File'}</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          if (file.size > 10 * 1024 * 1024) {
+                            setSubmitError(
+                              isHe ? 'הקובץ גדול מ-10MB. נא לבחור קובץ קטן יותר.' : 'File size exceeds 10MB.'
+                            );
+                            return;
+                          }
+                          setSubmitError(null);
+                          setLegalDocFile(file);
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+
               {/* DETAILS TEXTAREA */}
               <div className="space-y-2">
                 <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
@@ -277,6 +373,13 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
                   className="w-full px-4 py-3 rounded-2xl bg-neutral-50 border border-neutral-300 text-black placeholder-neutral-400 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all"
                 />
               </div>
+
+              {submitError && (
+                <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{submitError}</span>
+                </div>
+              )}
 
               {/* SUBMIT BUTTON */}
               <div className="pt-4 border-t border-neutral-200">

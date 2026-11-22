@@ -36,6 +36,8 @@ import {
   Wand2,
   Mail,
   ShieldAlert,
+  Paperclip,
+  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, TrackReport, CURRENT_TERMS_VERSION } from '../types';
@@ -57,6 +59,7 @@ import {
   dismissContactMessageInAdmin,
   getTrackReportsFromR2,
   dismissTrackReportInR2,
+  getAuthHeaders,
 } from '../services/authService';
 import {
   uploadTrackToCloud,
@@ -3894,6 +3897,38 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           </div>
                         )}
                         {rep.details && <p className="text-xs text-neutral-200 whitespace-pre-wrap">{rep.details}</p>}
+                        {rep.legalDocumentKey && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(
+                                  `/api/admin/legal-doc?key=${encodeURIComponent(rep.legalDocumentKey!)}`,
+                                  { headers: getAuthHeaders(), credentials: 'include' }
+                                );
+                                if (!res.ok) return;
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = rep.legalDocumentName || 'legal-document';
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                setTimeout(() => URL.revokeObjectURL(url), 2500);
+                              } catch {}
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer"
+                          >
+                            <Paperclip className="w-3 h-3" />
+                            <span>
+                              {isHe
+                                ? `הורד מסמך משפטי (${rep.legalDocumentName || 'קובץ'})`
+                                : `Download Legal Doc (${rep.legalDocumentName || 'File'})`}
+                            </span>
+                            <Download className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                     ))}
                     {adminMessages.map((msg) => (
@@ -3931,6 +3966,38 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           </div>
                         )}
                         <p className="text-xs text-neutral-200 whitespace-pre-wrap leading-relaxed">{msg.message}</p>
+                        {msg.legalDocumentKey && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(
+                                  `/api/admin/legal-doc?key=${encodeURIComponent(msg.legalDocumentKey!)}`,
+                                  { headers: getAuthHeaders(), credentials: 'include' }
+                                );
+                                if (!res.ok) return;
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = msg.legalDocumentName || 'legal-document';
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                setTimeout(() => URL.revokeObjectURL(url), 2500);
+                              } catch {}
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer"
+                          >
+                            <Paperclip className="w-3 h-3" />
+                            <span>
+                              {isHe
+                                ? `הורד מסמך משפטי (${msg.legalDocumentName || 'קובץ'})`
+                                : `Download Legal Doc (${msg.legalDocumentName || 'File'})`}
+                            </span>
+                            <Download className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
