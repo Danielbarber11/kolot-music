@@ -586,6 +586,22 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                             {isHe ? 'סיבת הדיווח:' : 'Reason:'} {report.reason}
                           </p>
                           {report.details && <p className="text-white/70 text-[11px]">{report.details}</p>}
+                          {(report.uploaderEmail || report.reporterEmail) && (
+                            <div className="space-y-0.5 pt-1 text-[11px] text-white/80">
+                              {report.uploaderEmail && (
+                                <div>
+                                  <span className="text-white/55">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
+                                  <span className="font-mono text-white" dir="ltr">{report.uploaderEmail}</span>
+                                </div>
+                              )}
+                              {report.reporterEmail && (
+                                <div>
+                                  <span className="text-white/55">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
+                                  <span className="font-mono text-white" dir="ltr">{report.reporterEmail}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <span className="text-[10px] text-white/40 block">{report.reportedAt}</span>
                         </div>
 
@@ -640,8 +656,24 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
                             <span className="text-white font-semibold text-sm">{msg.subject}</span>
                           </div>
                           <p className="text-white/75 font-mono text-[11px]" dir="ltr">
-                            {msg.senderEmail}
+                            {msg.reporterEmail || msg.senderEmail}
                           </p>
+                          {(msg.uploaderEmail || msg.reporterEmail) && (
+                            <div className="space-y-0.5 text-[11px] text-white/80">
+                              {msg.uploaderEmail && (
+                                <div>
+                                  <span className="text-white/55">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
+                                  <span className="font-mono text-white" dir="ltr">{msg.uploaderEmail}</span>
+                                </div>
+                              )}
+                              {msg.reporterEmail && (
+                                <div>
+                                  <span className="text-white/55">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
+                                  <span className="font-mono text-white" dir="ltr">{msg.reporterEmail}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <p className="text-white/90 text-xs whitespace-pre-wrap leading-relaxed bg-black/40 p-3 rounded-xl border border-white/10">
                             {msg.message}
                           </p>

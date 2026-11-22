@@ -99,6 +99,9 @@ export interface TrackReport {
   reportedAt: string;
   status: 'pending' | 'reviewed' | 'dismissed';
   reporterUid?: string;
+  reporterEmail?: string;
+  uploaderEmail?: string;
+  uploadedByUid?: string;
 }
 
 export interface Album {

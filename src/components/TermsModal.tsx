@@ -55,6 +55,11 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
               </li>
               <li>
                 {isHe
+                  ? 'כל תוכן שהועלה לאתר הינו באחריות בעל הפרופיל המעלה בלבד. בכל תביעה או דרישה שתופנה כלפינו בקשר לתוכן שהועלה, האחריות המלאה חלה על המעלה בלבד, ואנו אחראים רק להסיר את התוכן מהפלטפורמה במידת הצורך. במקרה של תלונה על זכויות יוצרים או כל תלונה אחרת, המשתמש יקבל הודעה לכתובת המייל האישית שלו.'
+                  : 'All uploaded content is under the sole responsibility of the uploading profile owner. For any claim directed against us regarding uploaded content, full responsibility rests solely with the uploader and our responsibility is limited strictly to removing the content from the platform if needed. If a copyright or other complaint is submitted, the user will receive a notification at their personal email address.'}
+              </li>
+              <li>
+                {isHe
                   ? 'במקרה של הפרת זכויות יוצרים או דיווח פוגעני, לבעלי האתר שמורה הסמכות המלאה להסיר את השיר או לסגור את פרופיל האמן באופן מיידי.'
                   : 'Platform admins reserve full right to delete infringing tracks or suspend accounts.'}
               </li>

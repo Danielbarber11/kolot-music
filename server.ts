@@ -794,9 +794,13 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
         const sess = getReqSession();
         const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
         const incomingUid = String(incoming?.uploadedByUid || '').replace(/^artist_/, '').trim();
-        if (!existing) {
+          if (!existing) {
           if (!sess || !cleanSessUid || (incomingUid && incomingUid !== cleanSessUid)) {
             return res.status(403).json({ success: false, error: 'רק בעל הפרופיל המחובר יכול להוסיף שירים.' });
+          }
+          if (incoming && typeof incoming === 'object' && sess.email) {
+            incoming.uploadedByEmail = sess.email;
+            body = Buffer.from(JSON.stringify(incoming, null, 2), 'utf-8');
           }
         } else {
           const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
@@ -816,6 +820,13 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
               optimisticTrackViewCounts.get(trackId) || 0
             );
             incoming.viewsCount = preservedViews;
+            if (!incoming.uploadedByEmail) {
+              if (existing.uploadedByEmail) {
+                incoming.uploadedByEmail = existing.uploadedByEmail;
+              } else if (sess?.email && (!existingUid || cleanSessUid === existingUid)) {
+                incoming.uploadedByEmail = sess.email;
+              }
+            }
             const incomingHasSubs = Boolean(
               (Array.isArray(incoming.subtitleSegments) && incoming.subtitleSegments.length > 0) ||
               (Array.isArray(incoming.subtitleSegmentsHe) && incoming.subtitleSegmentsHe.length > 0) ||
@@ -1015,8 +1026,9 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
     if (Array.isArray(indexData)) {
       indexData.forEach((t: any) => {
         if (t?.id && t?.name && t?.audioUrl) {
-          const opt = optimisticTrackViewCounts.get(t.id) || 0;
-          trackMap.set(t.id, opt > (Number(t.viewsCount) || 0) ? { ...t, viewsCount: opt } : t);
+          const { uploadedByEmail: _omit, ...cleanTrack } = t;
+          const opt = optimisticTrackViewCounts.get(cleanTrack.id) || 0;
+          trackMap.set(cleanTrack.id, opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack);
         }
       });
     }
@@ -1033,13 +1045,14 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
         const items = await Promise.all(slice.map((k) => readJsonKey(k)));
         items.forEach((t: any) => {
           if (t?.id && t?.name && t?.audioUrl) {
-            const prev = trackMap.get(t.id);
+            const { uploadedByEmail: _omit, ...cleanTrack } = t;
+            const prev = trackMap.get(cleanTrack.id);
             const mergedViews = Math.max(
               Number(prev?.viewsCount) || 0,
-              Number(t.viewsCount) || 0,
-              optimisticTrackViewCounts.get(t.id) || 0
+              Number(cleanTrack.viewsCount) || 0,
+              optimisticTrackViewCounts.get(cleanTrack.id) || 0
             );
-            trackMap.set(t.id, { ...t, viewsCount: mergedViews });
+            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
           }
         });
       }
@@ -1697,9 +1710,10 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
     };
 
     const structuredPrompt =
-      `זהה את השפה המרכזית שבה השיר מושר או מדובר בקובץ השמע ותמלל את המילים לשורות כתוביות קצרות ומסונכרנות היטב לקצב.\n` +
+      `זהה את השפה המרכזית שבה השיר מושר או מדובר בקובץ השמע ותמלל את כל המילים במלואן מתחילת השיר (00:00) ועד סופו המלא לכל אורך קובץ השמע ללא קטיעה באמצע, לשורות כתוביות קצרות ומסונכרנות היטב לקצב.\n` +
       `${songTitle ? `שם השיר: "${songTitle}". ` : ''}` +
       `${artistName ? `שם הזמר/אמן: "${artistName}". ` : ''}` +
+      `${duration ? `משך השיר המשוער: ${Math.round(duration)} שניות — ודא שכל חלקי השיר מההתחלה ועד הסיום מכוסים בכתוביות. ` : ''}` +
       `חוקי חובה:\n` +
       `1. detectedLanguageCode: קוד שפה קצר (ISO-639-1) של השפה הנשמעת בשיר, לדוגמה "he", "en", "ar", "es", "fr", "ru", "yi", "it", "pt", "de", "ja".\n` +
       `2. detectedLanguageLabel: שם השפה לקורא (לדוגמה "עברית", "English", "العربية", "Español", "Français", "Русский", "ייִדיש").\n` +
@@ -1708,6 +1722,7 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
       `   - text: המילים המקוריות בדיוק בשפה שבה הן מושרות בפועל.\n` +
       `   - textHe (ברירת מחדל חובה): המילים בעברית (אם השיר בעברית - התמלול המדויק בעברית; אם באנגלית או בכל שפה אחרת - תרגום טבעי ומדויק לעברית).\n` +
       `   - textEn (ברירת מחדל חובה): המילים באנגלית (אם השיר באנגלית - התמלול המדויק באנגלית; אם בעברית או בכל שפה אחרת - תרגום טבעי ומדויק לאנגלית).\n` +
+      `4. אל תפסיק באמצע השיר — תמלל גם בתים חוזרים ופזמונים עד שנגמרת השירה.\n` +
       `אם השיר אינסטרומנטלי לחלוטין ללא שירה או דיבור, החזר segments ריק []. אל תמציא מילים או הערות.`;
 
     const subtitleResponseSchema = {
@@ -1740,9 +1755,9 @@ app.post('/api/ai/transcribe', upload.single('file'), async (req: any, res) => {
     let structuredItems: Array<{ start: string; end: string; text: string; textHe?: string; textEn?: string }> = [];
 
     for (const candidate of [
-      { model: 'gemini-3-flash-preview', timeoutMs: 22000, config: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
-      { model: 'gemini-2.5-flash', timeoutMs: 20000, config: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
-      { model: 'gemini-2.5-flash-lite', timeoutMs: 14000, config: { responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-3-flash-preview', timeoutMs: 28000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash', timeoutMs: 25000, config: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
+      { model: 'gemini-2.5-flash-lite', timeoutMs: 18000, config: { maxOutputTokens: 8192, responseMimeType: 'application/json', responseSchema: subtitleResponseSchema } },
     ]) {
       try {
         const response = await withTimeout(
@@ -2769,20 +2784,105 @@ app.post('/api/ai/translate-subtitles', async (req, res) => {
   }
 });
 
-// 4h. Public Track Report fallback endpoint (saves directly in R2 reports/)
+// Server-side private uploader email resolver (NEVER exposed to public endpoints; admin/internal reports only)
+async function resolveTrackUploaderEmailR2(
+  client: S3Client,
+  bucket: string,
+  params: { trackId?: string; uploadedByUid?: string; artistName?: string }
+): Promise<string | undefined> {
+  const readJsonR2 = async (key: string) => {
+    try {
+      const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+      return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  let targetUid = String(params.uploadedByUid || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+  const cleanTrackId = String(params.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+  let trackObj: any = null;
+
+  if (cleanTrackId) {
+    trackObj = await readJsonR2(`tracks/${cleanTrackId}.json`);
+    if (trackObj) {
+      const directEmail = String(trackObj.uploadedByEmail || '').trim();
+      if (directEmail && directEmail.includes('@')) return directEmail;
+      if (!targetUid && trackObj.uploadedByUid) {
+        targetUid = String(trackObj.uploadedByUid).replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+      }
+    }
+  }
+
+  if (targetUid) {
+    const p1 = await readJsonR2(`profiles/${targetUid}.json`);
+    const p1Email = String(p1?.googleEmail || p1?.email || '').trim();
+    if (p1Email && p1Email.includes('@')) return p1Email;
+
+    const p2 = await readJsonR2(`profiles/artist_${targetUid}.json`);
+    const p2Email = String(p2?.googleEmail || p2?.email || '').trim();
+    if (p2Email && p2Email.includes('@')) return p2Email;
+  }
+
+  const targetArtist = String(params.artistName || trackObj?.artistName || '').trim().toLowerCase();
+  if (targetUid || targetArtist) {
+    try {
+      const listData = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'profiles/' }));
+      const keys = (listData.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+      for (let i = 0; i < keys.length; i += 20) {
+        const batch = await Promise.all(keys.slice(i, i + 20).map((k) => readJsonR2(k)));
+        for (const prof of batch) {
+          if (!prof || typeof prof !== 'object') continue;
+          const profEmail = String(prof.googleEmail || prof.email || '').trim();
+          if (!profEmail || !profEmail.includes('@')) continue;
+          const profUid = String(prof.googleUid || prof.id || '').replace(/^artist_/, '').trim();
+          if (targetUid && profUid === targetUid) return profEmail;
+          if (targetArtist && String(prof.name || '').trim().toLowerCase() === targetArtist) return profEmail;
+        }
+      }
+    } catch {}
+  }
+
+  return undefined;
+}
+
+// 4h. Public Track Report fallback endpoint (saves directly in R2 reports/ with server-resolved uploader & reporter emails)
 app.post('/api/storage/report', async (req, res) => {
   try {
     const rep = req.body;
     if (!rep?.id || !rep?.trackId || !rep?.trackName) {
       return res.status(400).json({ success: false, error: 'Missing report fields' });
     }
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsedSession = extractSessionFromRequest(req, sessionSecret);
+    const reporterEmail = String(
+      parsedSession?.session?.email ||
+        rep.reporterEmail ||
+        ''
+    )
+      .trim()
+      .slice(0, 160);
+
     const { client, bucket } = await getR2Context(req);
+    const uploaderEmail = await resolveTrackUploaderEmailR2(client, bucket, {
+      trackId: String(rep.trackId || ''),
+      uploadedByUid: String(rep.uploadedByUid || ''),
+      artistName: String(rep.artistName || ''),
+    });
+
+    const enrichedReport = {
+      ...rep,
+      ...(reporterEmail ? { reporterEmail } : {}),
+      ...(parsedSession?.session?.uid ? { reporterUid: parsedSession.session.uid } : {}),
+      ...(uploaderEmail ? { uploaderEmail } : {}),
+    };
+
     const key = `reports/${String(rep.id).replace(/[^a-zA-Z0-9_\-]/g, '')}.json`;
     await client.send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: Buffer.from(JSON.stringify(rep, null, 2), 'utf-8'),
+        Body: Buffer.from(JSON.stringify(enrichedReport, null, 2), 'utf-8'),
         ContentType: 'application/json',
       })
     );
@@ -3039,23 +3139,27 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Track not found in storage' });
     }
 
-    if (existing.subtitlesDisabled === true) {
+    const forceReplace = Boolean(req.body?.forceReplace);
+    if (existing.subtitlesDisabled === true && !forceReplace) {
       return res.json({ success: false, disabled: true });
     }
 
     const incomingIncomplete = Boolean(req.body?.subtitlesIncomplete);
     const incomingCompletedUpTo = Math.max(0, Number(req.body?.subtitlesCompletedUpTo) || 0);
-    const existingHasSubs =
-      (Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) ||
-      (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) ||
-      (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0);
-    const existingCompletedUpTo = Math.max(0, Number(existing.subtitlesCompletedUpTo) || 0);
+    const existingHasSubs = Boolean(
+      !forceReplace &&
+      ((Array.isArray(existing.subtitleSegments) && existing.subtitleSegments.length > 0) ||
+        (Array.isArray(existing.subtitleSegmentsHe) && existing.subtitleSegmentsHe.length > 0) ||
+        (Array.isArray(existing.subtitleSegmentsEn) && existing.subtitleSegmentsEn.length > 0))
+    );
+    const existingCompletedUpTo = forceReplace ? 0 : Math.max(0, Number(existing.subtitlesCompletedUpTo) || 0);
 
-    if (existingHasSubs && existing.subtitlesIncomplete !== true) {
+    if (!forceReplace && existingHasSubs && existing.subtitlesIncomplete !== true) {
       return res.json({ success: true, alreadyExists: true, track: existing });
     }
 
     if (
+      !forceReplace &&
       existingHasSubs &&
       existing.subtitlesIncomplete === true &&
       incomingCompletedUpTo > 0 &&
@@ -3095,21 +3199,21 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
     const mergedSegments = existingHasSubs ? mergeSegmentArrays(existing.subtitleSegments || [], nextBase) : nextBase;
     const mergedHe = incomingHe.length > 0
       ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsHe || [], incomingHe) : incomingHe)
-      : existing.subtitleSegmentsHe;
+      : (forceReplace ? undefined : existing.subtitleSegmentsHe);
     const mergedEn = incomingEn.length > 0
       ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsEn || [], incomingEn) : incomingEn)
-      : existing.subtitleSegmentsEn;
+      : (forceReplace ? undefined : existing.subtitleSegmentsEn);
     const mergedOrig = incomingOrig.length > 0
       ? (existingHasSubs ? mergeSegmentArrays(existing.subtitleSegmentsOrig || [], incomingOrig) : incomingOrig)
-      : existing.subtitleSegmentsOrig;
+      : (forceReplace ? undefined : existing.subtitleSegmentsOrig);
 
     const nextCompletedUpTo = Math.max(existingCompletedUpTo, incomingCompletedUpTo);
     const nextIncomplete = incomingIncomplete;
 
-    const nextLyricsHe = mergedHe?.length ? mergedHe.map((s: any) => s.text).join('\n') : (req.body?.lyricsHe ? String(req.body.lyricsHe) : existing.lyricsHe);
-    const nextLyricsEn = mergedEn?.length ? mergedEn.map((s: any) => s.text).join('\n') : (req.body?.lyricsEn ? String(req.body.lyricsEn) : existing.lyricsEn);
-    const nextLyricsOrig = mergedOrig?.length ? mergedOrig.map((s: any) => s.text).join('\n') : (req.body?.lyricsOrig ? String(req.body.lyricsOrig) : existing.lyricsOrig);
-    const nextLyrics = mergedSegments?.length ? mergedSegments.map((s: any) => s.text).join('\n') : (req.body?.lyrics ? String(req.body.lyrics) : existing.lyrics);
+    const nextLyricsHe = mergedHe?.length ? mergedHe.map((s: any) => s.text).join('\n') : (req.body?.lyricsHe ? String(req.body.lyricsHe) : (forceReplace ? undefined : existing.lyricsHe));
+    const nextLyricsEn = mergedEn?.length ? mergedEn.map((s: any) => s.text).join('\n') : (req.body?.lyricsEn ? String(req.body.lyricsEn) : (forceReplace ? undefined : existing.lyricsEn));
+    const nextLyricsOrig = mergedOrig?.length ? mergedOrig.map((s: any) => s.text).join('\n') : (req.body?.lyricsOrig ? String(req.body.lyricsOrig) : (forceReplace ? undefined : existing.lyricsOrig));
+    const nextLyrics = mergedSegments?.length ? mergedSegments.map((s: any) => s.text).join('\n') : (req.body?.lyrics ? String(req.body.lyrics) : (forceReplace ? undefined : existing.lyrics));
 
     const updated = {
       ...existing,
@@ -3124,6 +3228,7 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
       ...(incomingOrigCode ? { detectedLanguageCode: incomingOrigCode } : {}),
       ...(incomingOrigLabel ? { detectedLanguageLabel: incomingOrigLabel } : {}),
       hasWhisperSubtitles: true,
+      subtitlesDisabled: false,
       subtitlesIncomplete: nextIncomplete,
       ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
       viewsCount: Math.max(Number(existing.viewsCount) || 0, optimisticTrackViewCounts.get(cleanId) || 0),
@@ -3204,6 +3309,14 @@ app.post('/api/contact', async (req, res) => {
   try {
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
+    const reporterEmail = String(
+      parsedSession?.session?.email ||
+        req.body?.reporterEmail ||
+        req.body?.senderEmail ||
+        ''
+    )
+      .trim()
+      .slice(0, 160);
     const optionalSender = String(
       parsedSession?.session?.email ||
         parsedSession?.session?.displayName ||
@@ -3216,6 +3329,10 @@ app.post('/api/contact', async (req, res) => {
     const category = String(req.body?.category || 'general').trim().slice(0, 48);
     const rawSubject = String(req.body?.subject || '').trim().slice(0, 200);
     const message = String(req.body?.message || '').trim().slice(0, 5000);
+    const trackId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 120);
+    const uploadedByUid = String(req.body?.uploadedByUid || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 120);
+    const artistName = String(req.body?.artistName || '').trim().slice(0, 160);
+    const trackName = String(req.body?.trackName || '').trim().slice(0, 200);
 
     if (!message && !rawSubject) {
       return res.status(400).json({ success: false, error: 'יש להזין נושא או תוכן להודעה' });
@@ -3233,14 +3350,33 @@ app.post('/api/contact', async (req, res) => {
     const msgId = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const targetGroupEmail = 'kolot-music@googlegroups.com';
 
+    let r2Ctx: { client: S3Client; bucket: string } | null = null;
+    try {
+      r2Ctx = await getR2Context(req);
+    } catch {}
+
+    let uploaderEmail: string | undefined;
+    if (r2Ctx && (trackId || uploadedByUid || artistName)) {
+      uploaderEmail = await resolveTrackUploaderEmailR2(r2Ctx.client, r2Ctx.bucket, {
+        trackId,
+        uploadedByUid,
+        artistName,
+      }).catch(() => undefined);
+    }
+
     const record = {
       id: msgId,
       to: targetGroupEmail,
       category,
       categoryLabel,
       senderEmail: optionalSender || 'משתמש אנונימי מהאפליקציה',
+      ...(reporterEmail ? { reporterEmail } : {}),
       senderUid: parsedSession?.session?.uid || undefined,
       senderName: parsedSession?.session?.displayName || undefined,
+      ...(trackId ? { trackId } : {}),
+      ...(trackName ? { trackName } : {}),
+      ...(artistName ? { artistName } : {}),
+      ...(uploaderEmail ? { uploaderEmail } : {}),
       subject,
       message: message || subject,
       createdAt: new Date().toISOString(),
@@ -3248,18 +3384,19 @@ app.post('/api/contact', async (req, res) => {
     };
 
     let storedInR2 = false;
-    try {
-      const { client, bucket } = await getR2Context(req);
-      await client.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: `contact_messages/${msgId}.json`,
-          Body: Buffer.from(JSON.stringify(record, null, 2), 'utf-8'),
-          ContentType: 'application/json',
-        })
-      );
-      storedInR2 = true;
-    } catch {}
+    if (r2Ctx) {
+      try {
+        await r2Ctx.client.send(
+          new PutObjectCommand({
+            Bucket: r2Ctx.bucket,
+            Key: `contact_messages/${msgId}.json`,
+            Body: Buffer.from(JSON.stringify(record, null, 2), 'utf-8'),
+            ContentType: 'application/json',
+          })
+        );
+        storedInR2 = true;
+      } catch {}
+    }
 
     // Dispatch silently to kolot-music@googlegroups.com (NEVER email the reporter back)
     let emailDispatched = false;
@@ -3268,7 +3405,13 @@ app.post('/api/contact', async (req, res) => {
     const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
     const originUrl = `${proto}://${host}`;
     const emailSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
-    const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}\nנושא: ${subject}\n\nתוכן:\n${record.message}\n\nמזהה: ${msgId}`;
+    const uploaderInfoLine = trackId
+      ? `\nמייל בעל הפרופיל שהעלה את השיר: ${uploaderEmail || 'לא זמין במערכת'}`
+      : uploaderEmail
+        ? `\nמייל בעל הפרופיל שהעלה את השיר: ${uploaderEmail}`
+        : '';
+    const reporterInfoLine = `\nמייל מפרסם הדיווח: ${reporterEmail || 'לא סופק (מדווח לא מחובר)'}`;
+    const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}${reporterInfoLine}${uploaderInfoLine}\nנושא: ${subject}\n\nתוכן:\n${record.message}\n\nמזהה: ${msgId}`;
 
     const resendKey = process.env.RESEND_API_KEY?.trim();
     if (resendKey && !emailDispatched) {

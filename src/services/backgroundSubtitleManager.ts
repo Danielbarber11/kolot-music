@@ -146,7 +146,8 @@ export function isTrackSubtitleJobRunning(trackId: string): boolean {
  */
 async function persistBatchToTrack(
   baseTrack: JamendoTrack,
-  snap: SubtitleDraftSnapshot
+  snap: SubtitleDraftSnapshot,
+  forceReplace = false
 ): Promise<JamendoTrack | null> {
   if (!baseTrack.id || snap.segments.length === 0) return null;
 
@@ -163,6 +164,7 @@ async function persistBatchToTrack(
     detectedLanguageLabel: snap.detectedLanguageLabel,
     subtitlesIncomplete: !snap.isComplete,
     subtitlesCompletedUpTo: snap.completedUpTo,
+    forceReplace,
   });
 
   if (saved) {
@@ -174,12 +176,12 @@ async function persistBatchToTrack(
   // Still keep memory synced if network save transiently returned null
   const mergedLocal: JamendoTrack = {
     ...baseTrack,
-    subtitleSegments: mergeSegLists(baseTrack.subtitleSegments, snap.segments),
-    subtitleSegmentsHe: mergeSegLists(baseTrack.subtitleSegmentsHe, snap.segmentsHe),
-    subtitleSegmentsEn: mergeSegLists(baseTrack.subtitleSegmentsEn, snap.segmentsEn),
+    subtitleSegments: forceReplace ? snap.segments : mergeSegLists(baseTrack.subtitleSegments, snap.segments),
+    subtitleSegmentsHe: forceReplace ? snap.segmentsHe : mergeSegLists(baseTrack.subtitleSegmentsHe, snap.segmentsHe),
+    subtitleSegmentsEn: forceReplace ? snap.segmentsEn : mergeSegLists(baseTrack.subtitleSegmentsEn, snap.segmentsEn),
     subtitleSegmentsOrig: snap.segmentsOrig?.length
-      ? mergeSegLists(baseTrack.subtitleSegmentsOrig, snap.segmentsOrig)
-      : baseTrack.subtitleSegmentsOrig,
+      ? (forceReplace ? snap.segmentsOrig : mergeSegLists(baseTrack.subtitleSegmentsOrig, snap.segmentsOrig))
+      : (forceReplace ? undefined : baseTrack.subtitleSegmentsOrig),
     lyrics: snap.lyrics || baseTrack.lyrics,
     lyricsHe: snap.lyricsHe || baseTrack.lyricsHe,
     lyricsEn: snap.lyricsEn || baseTrack.lyricsEn,
@@ -187,6 +189,7 @@ async function persistBatchToTrack(
     detectedLanguageCode: snap.detectedLanguageCode || baseTrack.detectedLanguageCode,
     detectedLanguageLabel: snap.detectedLanguageLabel || baseTrack.detectedLanguageLabel,
     hasWhisperSubtitles: true,
+    subtitlesDisabled: false,
     subtitlesIncomplete: !snap.isComplete,
     subtitlesCompletedUpTo: snap.completedUpTo,
   };
@@ -414,9 +417,13 @@ export function startProgressiveTrackSubtitleJob(options: {
 }): Promise<void> {
   const targetTrack = options.track;
   const trackId = targetTrack?.id;
-  if (!trackId || targetTrack.subtitlesDisabled) {
+  if (!trackId || (targetTrack.subtitlesDisabled && !options.forceRestart)) {
     options.onFirstBatchReady?.(null, null);
     return Promise.resolve();
+  }
+
+  if (options.forceRestart) {
+    failedTrackIds.delete(trackId);
   }
 
   const audioUrl = getStreamingMediaUrl(targetTrack.audioUrl);
@@ -436,6 +443,7 @@ export function startProgressiveTrackSubtitleJob(options: {
 
   const lang = options.language || 'he';
   let firstBatchNotified = false;
+  let isFirstPersist = true;
   const notifyFirst = (t: JamendoTrack | null, s: SubtitleDraftSnapshot | null) => {
     if (firstBatchNotified) return;
     firstBatchNotified = true;
@@ -487,7 +495,8 @@ export function startProgressiveTrackSubtitleJob(options: {
               percent: 100,
               progressText: 'נוצרו כתוביות מלאות לכל השיר!',
             };
-            const saved = await persistBatchToTrack(targetTrack, snap);
+            const saved = await persistBatchToTrack(targetTrack, snap, Boolean(options.forceRestart && isFirstPersist));
+            isFirstPersist = false;
             options.onBatchSaved?.(saved || targetTrack, snap);
             notifyFirst(saved || targetTrack, snap);
             return;
@@ -558,7 +567,8 @@ export function startProgressiveTrackSubtitleJob(options: {
             lang
           );
 
-          const saved = await persistBatchToTrack(latestTrack, snap);
+          const saved = await persistBatchToTrack(latestTrack, snap, Boolean(options.forceRestart && isFirstPersist));
+          isFirstPersist = false;
           if (saved) latestTrack = saved;
           options.onBatchSaved?.(latestTrack, snap);
           notifyFirst(latestTrack, snap);

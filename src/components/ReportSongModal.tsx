@@ -21,7 +21,9 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
   if (!isOpen || !track) return null;
   const isHe = lang === 'he';
 
+  const currentUser = getCurrentAuthUser();
   const [reason, setReason] = useState(isHe ? 'הפרת זכויות יוצרים' : 'Copyright Infringement');
+  const [reporterEmailInput, setReporterEmailInput] = useState(currentUser?.email || '');
   const [details, setDetails] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -53,6 +55,9 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
     e.preventDefault();
     setIsSubmitting(true);
 
+    const authUser = getCurrentAuthUser();
+    const resolvedReporterEmail = (authUser?.email || reporterEmailInput || '').trim();
+
     const report: TrackReport = {
       id: `report_${Date.now()}`,
       trackId: track.id,
@@ -62,13 +67,20 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       details: details.trim() || undefined,
       reportedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
       status: 'pending',
+      reporterUid: authUser?.uid,
+      reporterEmail: resolvedReporterEmail || undefined,
+      uploadedByUid: track.uploadedByUid,
     };
 
     // Save to Cloudflare R2 backend + in-app admin inbox + kolot-music@googlegroups.com (no email sent back to reporter)
-    const currentUser = getCurrentAuthUser();
-    const senderLabel = currentUser?.email || currentUser?.displayName || 'משתמש מהאפליקציה';
+    const senderLabel = resolvedReporterEmail || authUser?.displayName || 'משתמש מהאפליקציה';
     const subjectLine = `דיווח על שיר: ${track.name} (${track.artistName})`;
-    const bodyDetails = `סיבת הדיווח: ${reason}\nשיר: ${track.name} (ID: ${track.id})\nאמן: ${track.artistName}${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
+    const bodyDetails =
+      `סיבת הדיווח: ${reason}\n` +
+      `שיר: ${track.name} (ID: ${track.id})\n` +
+      `אמן: ${track.artistName}` +
+      `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : ''}` +
+      `${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
 
     const [, contactResult] = await Promise.allSettled([
       saveTrackReportToR2(report),
@@ -82,6 +94,11 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         body: JSON.stringify({
           category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
           senderContact: senderLabel,
+          reporterEmail: resolvedReporterEmail,
+          trackId: track.id,
+          trackName: track.name,
+          artistName: track.artistName,
+          uploadedByUid: track.uploadedByUid || '',
           subject: subjectLine,
           message: bodyDetails,
         }),
@@ -101,6 +118,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           email: 'noreply@kolot-music.app',
           _replyto: 'noreply@kolot-music.app',
           name: senderLabel,
+          reporter_email: resolvedReporterEmail || 'לא סופק',
           category: reason,
           _subject: `[Kolot Music - דיווח שיר] ${subjectLine}`,
           message: bodyDetails,
@@ -224,10 +242,28 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
                 </div>
               </div>
 
+              {!currentUser?.email && (
+                <div className="space-y-2">
+                  <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
+                    {isHe ? '2. כתובת המייל שלך (אופציונלי — מוצגת למנהל בדיווח)' : '2. Your Email (Optional — visible to admin in report)'}
+                  </label>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={reporterEmailInput}
+                    onChange={(e) => setReporterEmailInput(e.target.value)}
+                    placeholder="name@example.com"
+                    className="w-full px-4 py-3 rounded-2xl bg-neutral-50 border border-neutral-300 text-black placeholder-neutral-400 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all"
+                  />
+                </div>
+              )}
+
               {/* DETAILS TEXTAREA */}
               <div className="space-y-2">
                 <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
-                  {isHe ? '2. פירוט נוסף (אופציונלי)' : '2. Additional Details (Optional)'}
+                  {!currentUser?.email
+                    ? (isHe ? '3. פירוט נוסף (אופציונלי)' : '3. Additional Details (Optional)')
+                    : (isHe ? '2. פירוט נוסף (אופציונלי)' : '2. Additional Details (Optional)')}
                 </label>
                 <textarea
                   rows={3}

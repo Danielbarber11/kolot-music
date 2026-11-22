@@ -888,6 +888,7 @@ export async function saveGeneratedSubtitlesToCloud(
     detectedLanguageLabel?: string;
     subtitlesIncomplete?: boolean;
     subtitlesCompletedUpTo?: number;
+    forceReplace?: boolean;
   }
 ): Promise<JamendoTrack | null> {
   try {
@@ -911,6 +912,7 @@ export async function saveGeneratedSubtitlesToCloud(
         detectedLanguageLabel: subData.detectedLanguageLabel,
         subtitlesIncomplete: Boolean(subData.subtitlesIncomplete),
         subtitlesCompletedUpTo: Number(subData.subtitlesCompletedUpTo || 0),
+        forceReplace: Boolean(subData.forceReplace),
       }),
     });
     if (!res.ok) return null;

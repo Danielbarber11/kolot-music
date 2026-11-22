@@ -477,6 +477,11 @@ export interface ContactMessageRecord {
   categoryLabel?: string;
   senderEmail: string;
   senderName?: string;
+  reporterEmail?: string;
+  uploaderEmail?: string;
+  trackId?: string;
+  trackName?: string;
+  artistName?: string;
   subject: string;
   message: string;
   createdAt: string;

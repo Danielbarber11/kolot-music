@@ -250,7 +250,7 @@ export async function decodeAudioToMono16k(
   const isConstrained = isMobileOrConstrainedDevice();
   const isFullSong = Boolean(options?.fullSong || maxSeconds > 120);
   const maxBytes = isFullSong
-    ? (isConstrained ? 16 * 1024 * 1024 : 28 * 1024 * 1024)
+    ? (isConstrained ? 24 * 1024 * 1024 : 40 * 1024 * 1024)
     : (isConstrained ? 4 * 1024 * 1024 : 8 * 1024 * 1024);
   let arrayBuffer: ArrayBuffer;
 
@@ -883,13 +883,13 @@ export async function generateSubtitlesWithGeminiMethod(options: {
     }
 
     const controller = new AbortController();
-    const hardTimeout = setTimeout(() => controller.abort(), 26000);
+    const hardTimeout = setTimeout(() => controller.abort(), 45000);
     const onParentAbort = () => controller.abort();
     options.signal?.addEventListener('abort', onParentAbort, { once: true });
 
     let serverRes: Response;
     try {
-      const extracted = await extractFastAudioWavBlob(source, 220, controller.signal).catch(() => null);
+      const extracted = await extractFastAudioWavBlob(source, 480, controller.signal).catch(() => null);
       if (options.signal?.aborted) {
         return emptyFail('יצירת הכתוביות בוטלה', true);
       }
@@ -911,42 +911,64 @@ export async function generateSubtitlesWithGeminiMethod(options: {
           2,
           controller.signal
         );
-      } else if (options.audioFile) {
-        const fd = new FormData();
-        const cappedFile =
-          options.audioFile.size > 14 * 1024 * 1024
-            ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
-            : options.audioFile;
-        fd.append('file', cappedFile, options.audioFile instanceof File ? options.audioFile.name : 'track.mp3');
-        fd.append('language', langParam);
-        if (options.songTitle) fd.append('songTitle', options.songTitle);
-        if (options.artistName) fd.append('artistName', options.artistName);
-        fd.append('duration', String(detectedDuration));
-
-        serverRes = await fetchWithRetry(
-          '/api/ai/transcribe',
-          { method: 'POST', body: fd, credentials: 'include' },
-          2,
-          controller.signal
-        );
       } else {
-        serverRes = await fetchWithRetry(
-          '/api/ai/transcribe',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              audioUrl: options.audioUrl,
-              language: langParam,
-              songTitle: options.songTitle || '',
-              artistName: options.artistName || '',
-              duration: detectedDuration,
-            }),
-          },
-          2,
-          controller.signal
-        );
+        let uploadBlob: Blob | null = null;
+        let uploadName = 'track.mp3';
+
+        if (options.audioFile) {
+          uploadBlob =
+            options.audioFile.size > 14 * 1024 * 1024
+              ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
+              : options.audioFile;
+          uploadName = options.audioFile instanceof File ? options.audioFile.name : 'track.mp3';
+        } else if (options.audioUrl) {
+          try {
+            const audioFetchRes = await fetch(options.audioUrl, { signal: controller.signal });
+            if (audioFetchRes.ok) {
+              const rawBlob = await audioFetchRes.blob();
+              if (rawBlob.size > 0) {
+                uploadBlob =
+                  rawBlob.size > 14 * 1024 * 1024
+                    ? rawBlob.slice(0, 14 * 1024 * 1024, rawBlob.type || 'audio/mpeg')
+                    : rawBlob;
+              }
+            }
+          } catch {}
+        }
+
+        if (uploadBlob && uploadBlob.size > 0) {
+          const fd = new FormData();
+          fd.append('file', uploadBlob, uploadName);
+          fd.append('language', langParam);
+          if (options.songTitle) fd.append('songTitle', options.songTitle);
+          if (options.artistName) fd.append('artistName', options.artistName);
+          fd.append('duration', String(detectedDuration));
+
+          serverRes = await fetchWithRetry(
+            '/api/ai/transcribe',
+            { method: 'POST', body: fd, credentials: 'include' },
+            2,
+            controller.signal
+          );
+        } else {
+          serverRes = await fetchWithRetry(
+            '/api/ai/transcribe',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({
+                audioUrl: options.audioUrl,
+                language: langParam,
+                songTitle: options.songTitle || '',
+                artistName: options.artistName || '',
+                duration: detectedDuration,
+              }),
+            },
+            2,
+            controller.signal
+          );
+        }
       }
     } finally {
       clearTimeout(hardTimeout);

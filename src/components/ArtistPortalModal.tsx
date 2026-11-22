@@ -67,15 +67,10 @@ import {
   getCloudStorageConfig,
   checkR2StorageStatus,
   getStreamingMediaUrl,
-  uploadBinaryFastToR2,
 } from '../services/cloudStorageService';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getTrackInstantColor, globalTrackColorCache, extractImageColor, useExtractedColor } from '../services/colorService';
 import { sanitizeSubtitleLettersOnly } from '../services/onDeviceWhisperService';
-import {
-  generateFullSongKaraokeAudio,
-  generateAndUploadKaraokeToR2,
-} from '../services/karaokeAudioService';
 import {
   startUploadPrefetchJob,
   getUploadPrefetchJob,
@@ -214,22 +209,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [detectedSubLangLabel, setDetectedSubLangLabel] = useState<string | undefined>(undefined);
   const [uploadSubPercent, setUploadSubPercent] = useState<number>(0);
   const [uploadSubComplete, setUploadSubComplete] = useState<boolean>(false);
-  const [uploadKaraokeReady, setUploadKaraokeReady] = useState<boolean>(false);
   const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
-  const [includeKaraoke, setIncludeKaraoke] = useState<boolean>(false);
-  const [isGeneratingUploadKaraoke, setIsGeneratingUploadKaraoke] = useState<boolean>(false);
-  const [uploadKaraokeNotice, setUploadKaraokeNotice] = useState<string | null>(null);
   const [whisperUploadNotice, setWhisperUploadNotice] = useState<string | null>(null);
   const autoSubAbortRef = useRef<AbortController | null>(null);
   const autoSubJobIdRef = useRef<number>(0);
   const autoSubPromiseRef = useRef<Promise<SubtitleDraftSnapshot | null> | null>(null);
   const autoSubResultRef = useRef<SubtitleDraftSnapshot | null>(null);
-  const uploadKaraokeBlobRef = useRef<Blob | null>(null);
-  const uploadKaraokePromiseRef = useRef<Promise<Blob | null> | null>(null);
-  const uploadKaraokeAbortRef = useRef<AbortController | null>(null);
   const uploadJobKeyRef = useRef<string>('');
   const includeSubtitlesRef = useRef<boolean>(true);
-  const includeKaraokeRef = useRef<boolean>(false);
   const audioDurationRef = useRef<number>(180);
   const [isClassifyingGenre, setIsClassifyingGenre] = useState(false);
   const [genreProgressText, setGenreProgressText] = useState('');
@@ -315,12 +302,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editDetectedLangCode, setEditDetectedLangCode] = useState<string | undefined>(undefined);
   const [editDetectedLangLabel, setEditDetectedLangLabel] = useState<string | undefined>(undefined);
   const [editSubComplete, setEditSubComplete] = useState<boolean>(false);
-  const [editIncludeKaraoke, setEditIncludeKaraoke] = useState<boolean>(false);
-  const [editKaraokeAudioUrl, setEditKaraokeAudioUrl] = useState<string>('');
   const [isGeneratingEditSubs, setIsGeneratingEditSubs] = useState(false);
-  const [isGeneratingEditKaraoke, setIsGeneratingEditKaraoke] = useState(false);
   const [editWhisperNotice, setEditWhisperNotice] = useState<string | null>(null);
-  const [editKaraokeNotice, setEditKaraokeNotice] = useState<string | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [editSaveProgressText, setEditSaveProgressText] = useState<string>('');
   const [editProgressPercent, setEditProgressPercent] = useState<number>(0);
@@ -344,17 +327,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   useEffect(() => {
     return () => {
       autoSubAbortRef.current?.abort();
-      uploadKaraokeAbortRef.current?.abort();
     };
   }, []);
 
   useEffect(() => {
     includeSubtitlesRef.current = includeSubtitles;
   }, [includeSubtitles]);
-
-  useEffect(() => {
-    includeKaraokeRef.current = includeKaraoke;
-  }, [includeKaraoke]);
 
   useEffect(() => {
     if (isOpen && currentUser?.isAdmin) {
@@ -376,13 +354,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     autoSubAbortRef.current = null;
     autoSubPromiseRef.current = null;
     autoSubResultRef.current = null;
-    uploadKaraokeAbortRef.current?.abort();
-    uploadKaraokeAbortRef.current = null;
-    uploadKaraokePromiseRef.current = null;
-    uploadKaraokeBlobRef.current = null;
-    setUploadKaraokeReady(false);
-    setIsGeneratingUploadKaraoke(false);
-    setUploadKaraokeNotice(null);
     setUploadSubComplete(false);
     setUploadSubPercent(0);
     if (uploadJobKeyRef.current) {
@@ -412,68 +383,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setDetectedSubLangCode(snap.detectedLanguageCode);
       setDetectedSubLangLabel(snap.detectedLanguageLabel);
     }
-  };
-
-  const handleGenerateUploadKaraoke = async () => {
-    if (isGeneratingUploadKaraoke) return;
-    const srcFile = rawAudioFile;
-    const srcUrl = !srcFile ? audioStreamUrl.trim() : undefined;
-    if (!srcFile && !srcUrl) {
-      setUploadKaraokeNotice(isHe ? 'יש להעלות קובץ שמע או להזין קישור לשיר תחילה.' : 'Please upload an audio file or enter an audio URL first.');
-      return;
-    }
-
-    uploadKaraokeAbortRef.current?.abort();
-    const kController = new AbortController();
-    uploadKaraokeAbortRef.current = kController;
-
-    setIncludeKaraoke(true);
-    setIsGeneratingUploadKaraoke(true);
-    setUploadKaraokeReady(false);
-    setUploadKaraokeNotice(
-      isHe
-        ? 'מפריד את שירת הזמר ומשאיר את המנגינה האינסטרומנטלית לכל השיר...'
-        : 'Removing vocals and creating instrumental karaoke audio...'
-    );
-
-    const kPromise = generateFullSongKaraokeAudio({
-      audioFile: srcFile,
-      audioUrl: srcUrl,
-      signal: kController.signal,
-    })
-      .then((res) => {
-        if (kController.signal.aborted) return null;
-        if (res?.blob) {
-          uploadKaraokeBlobRef.current = res.blob;
-          setUploadKaraokeReady(true);
-          setUploadKaraokeNotice(
-            isHe
-              ? 'פסקול הקריוקי (מנגינה ללא זמר) נוצר ומוכן לשמירה בעת פרסום השיר!'
-              : 'Vocal-removed karaoke track ready for publishing!'
-          );
-          return res.blob;
-        }
-        setUploadKaraokeNotice(
-          isHe ? 'לא ניתן היה להפריד את השירה בקובץ זה.' : 'Could not isolate vocals from this audio.'
-        );
-        return null;
-      })
-      .catch(() => {
-        if (!kController.signal.aborted) {
-          setUploadKaraokeNotice(
-            isHe ? 'שגיאה ביצירת פסקול הקריוקי.' : 'Error generating karaoke instrumental.'
-          );
-        }
-        return null;
-      })
-      .finally(() => {
-        if (!kController.signal.aborted) {
-          setIsGeneratingUploadKaraoke(false);
-        }
-      });
-
-    uploadKaraokePromiseRef.current = kPromise;
-    await kPromise;
   };
 
   const startSilentAutoSubtitles = (
@@ -557,46 +466,66 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       track.subtitleSegmentsOrig?.length
     );
     setEditSubComplete(hasExistingSubs && track.subtitlesIncomplete !== true);
-    const publisherKaraokeActive =
-      track.karaokeEnabled === true || (track.karaokeEnabled !== false && Boolean(track.karaokeAudioUrl));
-    setEditIncludeKaraoke(publisherKaraokeActive);
-    setEditKaraokeAudioUrl(track.karaokeAudioUrl || '');
     setIsGeneratingEditSubs(false);
-    setIsGeneratingEditKaraoke(false);
     setEditSaveProgressText('');
     setEditProgressPercent(0);
     setEditIncludeSubtitles(track.subtitlesDisabled !== true);
     setEditWhisperNotice(null);
-    setEditKaraokeNotice(null);
     setEditIsAiGenerated(!!track.isAiGenerated);
   };
 
-  const applySavedTrackToEditUi = (savedTrack: JamendoTrack) => {
-    const segs = savedTrack.subtitleSegments;
-    const segsHe = savedTrack.subtitleSegmentsHe || segs;
-    const segsEn = savedTrack.subtitleSegmentsEn;
-    const primaryTxt = savedTrack.lyricsHe || savedTrack.lyrics || savedTrack.lyricsEn || '';
+  const applySavedTrackToEditUi = (savedTrack: JamendoTrack, snap?: SubtitleDraftSnapshot) => {
+    const segs =
+      snap && snap.segments.length >= (savedTrack.subtitleSegments?.length || 0)
+        ? snap.segments
+        : savedTrack.subtitleSegments;
+    const segsHe =
+      snap && snap.segmentsHe.length >= (savedTrack.subtitleSegmentsHe?.length || 0)
+        ? snap.segmentsHe
+        : savedTrack.subtitleSegmentsHe || segs;
+    const segsEn =
+      snap && snap.segmentsEn.length >= (savedTrack.subtitleSegmentsEn?.length || 0)
+        ? snap.segmentsEn
+        : savedTrack.subtitleSegmentsEn;
+    const segsOrig =
+      snap && snap.segmentsOrig && snap.segmentsOrig.length >= (savedTrack.subtitleSegmentsOrig?.length || 0)
+        ? snap.segmentsOrig
+        : savedTrack.subtitleSegmentsOrig;
+
+    const mergedSavedTrack: JamendoTrack = {
+      ...savedTrack,
+      subtitleSegments: segs,
+      subtitleSegmentsHe: segsHe,
+      subtitleSegmentsEn: segsEn,
+      subtitleSegmentsOrig: segsOrig,
+      lyrics: snap?.lyrics || savedTrack.lyrics,
+      lyricsHe: snap?.lyricsHe || savedTrack.lyricsHe,
+      lyricsEn: snap?.lyricsEn || savedTrack.lyricsEn,
+      lyricsOrig: snap?.lyricsOrig || savedTrack.lyricsOrig,
+      detectedLanguageCode: snap?.detectedLanguageCode || savedTrack.detectedLanguageCode,
+      detectedLanguageLabel: snap?.detectedLanguageLabel || savedTrack.detectedLanguageLabel,
+      hasWhisperSubtitles: !!(segs?.length || segsHe?.length || segsEn?.length),
+      subtitlesDisabled: false,
+      subtitlesIncomplete: snap ? !snap.isComplete : savedTrack.subtitlesIncomplete,
+      subtitlesCompletedUpTo: snap ? snap.completedUpTo : savedTrack.subtitlesCompletedUpTo,
+    };
+
+    const primaryTxt = mergedSavedTrack.lyricsHe || mergedSavedTrack.lyrics || mergedSavedTrack.lyricsEn || '';
     setEditWhisperSegments(segs);
     setEditWhisperSegmentsHe(segsHe);
     setEditWhisperSegmentsEn(segsEn);
-    setEditWhisperSegmentsOrig(savedTrack.subtitleSegmentsOrig);
-    setEditLyricsHe(savedTrack.lyricsHe || primaryTxt);
-    setEditLyricsEn(savedTrack.lyricsEn || '');
-    setEditLyricsOrig(savedTrack.lyricsOrig || '');
-    setEditDetectedLangCode(savedTrack.detectedLanguageCode);
-    setEditDetectedLangLabel(savedTrack.detectedLanguageLabel);
-    if (savedTrack.karaokeAudioUrl) {
-      setEditKaraokeAudioUrl(savedTrack.karaokeAudioUrl);
-    }
-    if (savedTrack.karaokeEnabled !== undefined) {
-      setEditIncludeKaraoke(Boolean(savedTrack.karaokeEnabled));
-    }
+    setEditWhisperSegmentsOrig(segsOrig);
+    setEditLyricsHe(mergedSavedTrack.lyricsHe || primaryTxt);
+    setEditLyricsEn(mergedSavedTrack.lyricsEn || '');
+    setEditLyricsOrig(mergedSavedTrack.lyricsOrig || '');
+    setEditDetectedLangCode(mergedSavedTrack.detectedLanguageCode);
+    setEditDetectedLangLabel(mergedSavedTrack.detectedLanguageLabel);
     setEditSubComplete(
-      !!(segs?.length || segsHe?.length || segsEn?.length) && savedTrack.subtitlesIncomplete !== true
+      !!(segs?.length || segsHe?.length || segsEn?.length) && mergedSavedTrack.subtitlesIncomplete !== true
     );
-    upsertTrackInMemory(savedTrack);
-    onTrackPublished(savedTrack);
-    setEditingTrack((prev) => (prev && prev.id === savedTrack.id ? { ...prev, ...savedTrack } : prev));
+    upsertTrackInMemory(mergedSavedTrack);
+    onTrackPublished(mergedSavedTrack);
+    setEditingTrack((prev) => (prev && prev.id === mergedSavedTrack.id ? { ...prev, ...mergedSavedTrack } : prev));
   };
 
   const handleGenerateEditSubtitles = async () => {
@@ -609,10 +538,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     setIsGeneratingEditSubs(true);
     setEditIncludeSubtitles(true);
+    setEditSubComplete(false);
+    setEditWhisperSegments(undefined);
+    setEditWhisperSegmentsHe(undefined);
+    setEditWhisperSegmentsEn(undefined);
+    setEditWhisperSegmentsOrig(undefined);
     setEditWhisperNotice(
       isHe
-        ? 'מייצר כתוביות מסונכרנות לכל השיר ושומר בענן...'
-        : 'Generating full-song synchronized subtitles and saving to cloud...'
+        ? 'מייצר כתוביות מסונכרנות לכל השיר (100%) ושומר בענן...'
+        : 'Generating full-song synchronized subtitles (100%) and saving to cloud...'
     );
 
     try {
@@ -621,6 +555,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         name: editTitle.trim() || editingTrack.name,
         artistName: editPerformingArtist.trim() || editingTrack.artistName,
         subtitlesDisabled: false,
+        subtitlesIncomplete: undefined,
+        subtitlesCompletedUpTo: undefined,
+        subtitleSegments: undefined,
+        subtitleSegmentsHe: undefined,
+        subtitleSegmentsEn: undefined,
+        subtitleSegmentsOrig: undefined,
       };
 
       let latestSnap: SubtitleDraftSnapshot | null = null;
@@ -633,7 +573,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         },
         onBatchSaved: (savedTrack, snap) => {
           latestSnap = snap;
-          applySavedTrackToEditUi(savedTrack);
+          applySavedTrackToEditUi(savedTrack, snap);
         },
       });
 
@@ -655,66 +595,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       );
     } finally {
       setIsGeneratingEditSubs(false);
-    }
-  };
-
-  const handleGenerateEditKaraoke = async () => {
-    if (!editingTrack || !canManageTrack(editingTrack) || isGeneratingEditKaraoke) return;
-    const resolvedAudioUrl = getStreamingMediaUrl(editingTrack.audioUrl);
-    if (!resolvedAudioUrl) {
-      setEditKaraokeNotice(isHe ? 'לא נמצא קובץ שמע זמין לשיר זה' : 'No audio source available');
-      return;
-    }
-
-    setIsGeneratingEditKaraoke(true);
-    setEditIncludeKaraoke(true);
-    setEditKaraokeNotice(
-      isHe
-        ? 'מפריד את שירת הזמר ומשאיר את המנגינה האינסטרומנטלית לכל השיר...'
-        : 'Stripping lead vocals and preserving instrumental track...'
-    );
-
-    try {
-      const karaokeRes = await generateAndUploadKaraokeToR2({
-        trackId: editingTrack.id,
-        audioUrl: resolvedAudioUrl,
-        onProgress: (_pct, stageTxt) => {
-          if (stageTxt) setEditKaraokeNotice(stageTxt);
-        },
-      });
-
-      if (karaokeRes.success && karaokeRes.karaokeAudioUrl) {
-        setEditKaraokeAudioUrl(karaokeRes.karaokeAudioUrl);
-        const mergedFinal: JamendoTrack = {
-          ...editingTrack,
-          name: editTitle.trim() || editingTrack.name,
-          artistName: editPerformingArtist.trim() || editingTrack.artistName,
-          featuredArtist: editFeaturedArtist.trim() || undefined,
-          writers: editWriters.trim() || undefined,
-          genre: editGenre.trim() || editingTrack.genre,
-          albumName: editAlbum.trim() || editingTrack.albumName,
-          isAiGenerated: editIsAiGenerated,
-          karaokeEnabled: true,
-          karaokeAudioUrl: karaokeRes.karaokeAudioUrl,
-        };
-        await uploadTrackToCloud(mergedFinal).catch(() => {});
-        applySavedTrackToEditUi(mergedFinal);
-        setEditKaraokeNotice(
-          isHe
-            ? 'פסקול הקריוקי (מנגינה ללא זמר) נוצר ונשמר בענן בהצלחה!'
-            : 'Instrumental karaoke track generated and saved to cloud!'
-        );
-      } else {
-        setEditKaraokeNotice(
-          karaokeRes.error || (isHe ? 'יצירת פסקול הקריוקי נכשלה. נסה שוב.' : 'Karaoke creation failed.')
-        );
-      }
-    } catch (err: any) {
-      setEditKaraokeNotice(
-        err?.message || (isHe ? 'שגיאה ביצירת פסקול הקריוקי' : 'Error generating karaoke')
-      );
-    } finally {
-      setIsGeneratingEditKaraoke(false);
     }
   };
 
@@ -741,7 +621,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let nextLyricsOrig = editIncludeSubtitles && editLyricsOrig.trim() ? sanitizeMultilineLyrics(editLyricsOrig.trim()) : '';
     let nextDetectedCode = editIncludeSubtitles ? editDetectedLangCode : undefined;
     let nextDetectedLabel = editIncludeSubtitles ? editDetectedLangLabel : undefined;
-    let nextKaraokeUrl = editIncludeKaraoke ? (editKaraokeAudioUrl || editingTrack.karaokeAudioUrl) : undefined;
     let completedFullSubs = editSubComplete;
 
     const resolvedAudioUrl = getStreamingMediaUrl(editingTrack.audioUrl);
@@ -751,64 +630,53 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         editIncludeSubtitles &&
         (!completedFullSubs ||
           !(nextSegments?.length || nextSegmentsHe?.length || nextSegmentsEn?.length) ||
-          editingTrack.subtitlesIncomplete === true);
-      const needsKaraoke = editIncludeKaraoke && !nextKaraokeUrl;
+          editingTrack.subtitlesIncomplete === true ||
+          editingTrack.subtitlesDisabled === true);
 
-      if (needsFullSubs || needsKaraoke) {
+      if (needsFullSubs) {
         setEditProgressPercent(22);
-        const tasks: Promise<void>[] = [];
-
-        if (needsFullSubs) {
-          tasks.push(
-            (async () => {
-              await startProgressiveTrackSubtitleJob({
-                track: {
-                  ...editingTrack,
-                  name: editTitle.trim() || editingTrack.name,
-                  artistName: editPerformingArtist.trim() || editingTrack.artistName,
-                  subtitlesDisabled: false,
-                },
-                language: isHe ? 'he' : 'en',
-                forceRestart: !(nextSegments?.length || nextSegmentsHe?.length || nextSegmentsEn?.length),
-                onProgress: () => {
-                  setEditProgressPercent((p) => (p < 68 ? p + 6 : p));
-                },
-                onBatchSaved: (savedTrack, snap) => {
-                  nextSegments = savedTrack.subtitleSegments;
-                  nextSegmentsHe = savedTrack.subtitleSegmentsHe || savedTrack.subtitleSegments;
-                  nextSegmentsEn = savedTrack.subtitleSegmentsEn;
-                  nextSegmentsOrig = savedTrack.subtitleSegmentsOrig;
-                  nextLyricsHe = savedTrack.lyricsHe || savedTrack.lyrics || '';
-                  nextLyricsEn = savedTrack.lyricsEn || '';
-                  nextLyricsOrig = savedTrack.lyricsOrig || '';
-                  nextDetectedCode = savedTrack.detectedLanguageCode;
-                  nextDetectedLabel = savedTrack.detectedLanguageLabel;
-                  if (snap.isComplete) completedFullSubs = true;
-                  setEditProgressPercent((p) => Math.max(p, snap.isComplete ? 72 : 45));
-                },
-              });
-            })()
-          );
-        }
-
-        if (needsKaraoke) {
-          tasks.push(
-            (async () => {
-              const kRes = await generateAndUploadKaraokeToR2({
-                trackId: editingTrack.id,
-                audioUrl: resolvedAudioUrl,
-                onProgress: (pct) => {
-                  setEditProgressPercent((p) => Math.max(p, Math.min(82, Math.round(25 + pct * 0.55))));
-                },
-              });
-              if (kRes.success && kRes.karaokeAudioUrl) {
-                nextKaraokeUrl = kRes.karaokeAudioUrl;
-              }
-            })()
-          );
-        }
-
-        await Promise.allSettled(tasks);
+        try {
+          await startProgressiveTrackSubtitleJob({
+            track: {
+              ...editingTrack,
+              name: editTitle.trim() || editingTrack.name,
+              artistName: editPerformingArtist.trim() || editingTrack.artistName,
+              subtitlesDisabled: false,
+              subtitlesIncomplete: undefined,
+              subtitlesCompletedUpTo: undefined,
+            },
+            language: isHe ? 'he' : 'en',
+            forceRestart: true,
+            onProgress: () => {
+              setEditProgressPercent((p) => (p < 72 ? p + 6 : p));
+            },
+            onBatchSaved: (savedTrack, snap) => {
+              nextSegments =
+                snap.segments.length >= (savedTrack.subtitleSegments?.length || 0)
+                  ? snap.segments
+                  : savedTrack.subtitleSegments;
+              nextSegmentsHe =
+                snap.segmentsHe.length >= (savedTrack.subtitleSegmentsHe?.length || 0)
+                  ? snap.segmentsHe
+                  : savedTrack.subtitleSegmentsHe || savedTrack.subtitleSegments;
+              nextSegmentsEn =
+                snap.segmentsEn.length >= (savedTrack.subtitleSegmentsEn?.length || 0)
+                  ? snap.segmentsEn
+                  : savedTrack.subtitleSegmentsEn;
+              nextSegmentsOrig =
+                snap.segmentsOrig && snap.segmentsOrig.length >= (savedTrack.subtitleSegmentsOrig?.length || 0)
+                  ? snap.segmentsOrig
+                  : savedTrack.subtitleSegmentsOrig;
+              nextLyricsHe = snap.lyricsHe || savedTrack.lyricsHe || savedTrack.lyrics || '';
+              nextLyricsEn = snap.lyricsEn || savedTrack.lyricsEn || '';
+              nextLyricsOrig = snap.lyricsOrig || savedTrack.lyricsOrig || '';
+              nextDetectedCode = snap.detectedLanguageCode || savedTrack.detectedLanguageCode;
+              nextDetectedLabel = snap.detectedLanguageLabel || savedTrack.detectedLanguageLabel;
+              if (snap.isComplete) completedFullSubs = true;
+              setEditProgressPercent((p) => Math.max(p, snap.isComplete ? 78 : 50));
+            },
+          });
+        } catch {}
       }
     }
 
@@ -860,8 +728,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       subtitlesIncomplete: editIncludeSubtitles ? false : undefined,
       subtitlesCompletedUpTo: hasSubSegments ? Math.round(editingTrack.duration || 180) : undefined,
       subtitlesDisabled: !editIncludeSubtitles,
-      karaokeEnabled: editIncludeKaraoke,
-      karaokeAudioUrl: editIncludeKaraoke ? (nextKaraokeUrl || undefined) : undefined,
+      karaokeEnabled: false,
+      karaokeAudioUrl: undefined,
       isAiGenerated: editIsAiGenerated,
     };
 
@@ -1721,7 +1589,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     let uploadJobIsComplete = false;
     let uploadCompletedUpTo = 0;
-    let uploadedKaraokeAudioUrl: string | undefined = undefined;
 
     if (!includeSubtitles) {
       autoSubJobIdRef.current += 1;
@@ -1847,36 +1714,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setUploadProgressPercent(45);
     }
 
-    if (includeKaraoke) {
-      setUploadProgressPercent(Math.max(progressFloor, 48));
-      let karaokeBlob = uploadKaraokeBlobRef.current;
-      if (!karaokeBlob && uploadKaraokePromiseRef.current) {
-        karaokeBlob = await uploadKaraokePromiseRef.current.catch(() => null);
-      }
-      if (!karaokeBlob) {
-        const generated = await generateFullSongKaraokeAudio({
-          audioFile: rawAudioFile,
-          audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
-        }).catch(() => null);
-        karaokeBlob = generated?.blob || null;
-      }
-      if (karaokeBlob) {
-        const kUpload = await uploadBinaryFastToR2(
-          karaokeBlob,
-          `audio/${trackId}_karaoke.wav`,
-          'audio/wav'
-        ).catch(() => null);
-        if (kUpload?.url) {
-          uploadedKaraokeAudioUrl = kUpload.url;
-        }
-      }
-      progressFloor = 58;
-      setUploadProgressPercent(58);
-    } else {
-      uploadKaraokeAbortRef.current?.abort();
-      uploadKaraokeBlobRef.current = null;
-    }
-
     const sanitizedPrimaryHe = finalDraftLyricsHe ? sanitizeMultilineLyrics(finalDraftLyricsHe) : '';
     const sanitizedPrimaryEn = finalDraftLyricsEn ? sanitizeMultilineLyrics(finalDraftLyricsEn) : '';
     const sanitizedPrimaryOrig = finalDraftLyricsOrig ? sanitizeMultilineLyrics(finalDraftLyricsOrig) : '';
@@ -1917,8 +1754,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       subtitlesIncomplete: includeSubtitles ? !uploadJobIsComplete && !hasAnyDraftSubtitles : false,
       ...(uploadCompletedUpTo > 0 ? { subtitlesCompletedUpTo: uploadCompletedUpTo } : {}),
       ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
-      karaokeEnabled: includeKaraoke,
-      karaokeAudioUrl: includeKaraoke ? uploadedKaraokeAudioUrl : undefined,
+      karaokeEnabled: false,
       artistBio: currentArtist.bio,
       artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
@@ -2010,7 +1846,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setAlbumTitle('');
       setIsAiGeneratedInput(false);
       setIncludeSubtitles(true);
-      setIncludeKaraoke(false);
       setWhisperDraftSegments(undefined);
       setWhisperDraftSegmentsHe(undefined);
       setWhisperDraftSegmentsEn(undefined);
@@ -2735,83 +2570,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         </div>
                       )}
                     </div>
-
-                    {/* Section 3: Publisher-Controlled Karaoke Mode Creation ("יצירת קריוקי") */}
-                    <div className="p-5 sm:p-7 space-y-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <Mic2 className="w-4 h-4 text-white shrink-0" />
-                          <div className="min-w-0">
-                            <span className="font-semibold text-white block text-sm">
-                              {isHe ? 'מצב קריוקי לנגן (הפרדת שירה מהמנגינה)' : 'Publisher Karaoke Mode (Vocal Removal)'}
-                            </span>
-                            <span className="text-[11px] text-neutral-400 block">
-                              {editIncludeKaraoke
-                                ? (isHe
-                                    ? 'מצב קריוקי זמין למאזינים — מסיר את קול הזמר ומשאיר את המנגינה בלבד'
-                                    : 'Karaoke enabled for listeners — removes lead vocals and keeps only the instrumental track')
-                                : (isHe
-                                    ? 'כבוי — מצב קריוקי לא יופיע למאזינים לשיר זה עד שתבחר ביצירת קריוקי'
-                                    : 'Off — karaoke is disabled until enabled & created by the publisher')}
-                            </span>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={editIncludeKaraoke}
-                          onClick={() => setEditIncludeKaraoke((v) => !v)}
-                          dir="ltr"
-                          className={`w-12 h-6 rounded-full p-0.5 transition-colors flex items-center cursor-pointer shrink-0 border ${
-                            editIncludeKaraoke ? 'bg-white border-white justify-end' : 'bg-neutral-800 border-white/25 justify-start'
-                          }`}
-                        >
-                          <span className={`w-4.5 h-4.5 rounded-full transition-transform ${editIncludeKaraoke ? 'bg-black' : 'bg-white'}`} />
-                        </button>
-                      </div>
-
-                      <div className="p-3.5 rounded-2xl bg-black border border-white/15 space-y-3 text-xs">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-neutral-200 font-semibold flex items-center gap-2">
-                            <Mic2 className={`w-4 h-4 ${(editKaraokeAudioUrl || editingTrack?.karaokeAudioUrl) ? 'text-emerald-400' : 'text-neutral-500'}`} />
-                            <span>
-                              {(editKaraokeAudioUrl || editingTrack?.karaokeAudioUrl)
-                                ? (isHe ? 'פסקול קריוקי אינסטרומנטלי (מנגינה ללא זמר) שמור בענן' : 'Vocal-removed karaoke track saved in cloud')
-                                : (isHe ? 'טרם נוצר פסקול קריוקי — לחץ על "יצירת קריוקי" להסרת הזמר מהשיר' : 'No karaoke audio yet — click Create Karaoke')}
-                            </span>
-                          </span>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={isGeneratingEditKaraoke || isSavingEdit || !editingTrack?.audioUrl}
-                            onClick={handleGenerateEditKaraoke}
-                            className="px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                          >
-                            {isGeneratingEditKaraoke ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Mic2 className="w-3.5 h-3.5" />
-                            )}
-                            <span>
-                              {isGeneratingEditKaraoke
-                                ? (isHe ? 'יוצר פסקול קריוקי ללא זמר...' : 'Creating karaoke instrumental...')
-                                : (editKaraokeAudioUrl || editingTrack?.karaokeAudioUrl)
-                                  ? (isHe ? 'יצירת קריוקי מחדש' : 'Recreate Karaoke')
-                                  : (isHe ? 'יצירת קריוקי' : 'Create Karaoke')}
-                            </span>
-                          </button>
-                        </div>
-
-                        {editKaraokeNotice && (
-                          <p className="text-[11px] text-neutral-200 bg-white/[0.05] border border-white/15 px-3.5 py-2 rounded-xl">
-                            {editKaraokeNotice}
-                          </p>
-                        )}
-                      </div>
-                    </div>
                   </form>
 
                   {/* Sticky Bottom Studio Bar */}
@@ -3234,7 +2992,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   )}
                 </div>
 
-                {/* 4. SUBTITLES SWITCH (DEFAULT ON) + DEDICATED PUBLISHER KARAOKE CREATOR */}
+                {/* 4. SUBTITLES SWITCH (DEFAULT ON) */}
                 <div className="p-5 sm:p-6 rounded-2xl bg-neutral-950 border border-white/15 space-y-5">
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex items-start gap-3 min-w-0">
@@ -3316,91 +3074,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                       )}
                     </div>
                   ) : null}
-
-                  {/* Dedicated Publisher Karaoke Toggle + "יצירת קריוקי" Button */}
-                  <div className="pt-4 border-t border-white/10 space-y-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-start gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/15 flex items-center justify-center text-white shrink-0 mt-0.5">
-                          <Mic2 className="w-4.5 h-4.5" />
-                        </div>
-                        <div className="min-w-0">
-                          <span className="text-xs sm:text-sm font-black text-white block">
-                            {includeKaraoke
-                              ? (isHe ? 'מצב קריוקי פעיל לשיר זה (מנגינה ללא זמר)' : 'Publisher Karaoke Mode Active')
-                              : (isHe ? 'מצב קריוקי (בחירת מפרסם השיר)' : 'Karaoke Mode (Publisher Choice)')}
-                          </span>
-                          <span className="text-[11px] text-neutral-400 block mt-0.5">
-                            {isHe
-                              ? 'צור פסקול קריוקי שמוציא את שירת הזמר ומשאיר את המנגינה בלבד למאזינים'
-                              : 'Removes lead vocals and leaves only the instrumental backing track for listeners'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={includeKaraoke}
-                        onClick={() => setIncludeKaraoke((prev) => !prev)}
-                        dir="ltr"
-                        className={`w-13 h-7 rounded-full p-1 transition-colors flex items-center cursor-pointer shrink-0 border ${
-                          includeKaraoke
-                            ? 'bg-white border-white justify-end'
-                            : 'bg-neutral-800 border-white/25 justify-start'
-                        }`}
-                      >
-                        <span
-                          className={`w-5 h-5 rounded-full transition-transform shadow-sm ${
-                            includeKaraoke ? 'bg-black' : 'bg-white'
-                          }`}
-                        />
-                      </button>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-black border border-white/15 space-y-2.5 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-neutral-200 font-semibold flex items-center gap-2">
-                          {uploadKaraokeReady ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                          ) : (
-                            <Mic2 className="w-4 h-4 text-neutral-400 shrink-0" />
-                          )}
-                          <span>
-                            {uploadKaraokeReady
-                              ? (isHe ? 'פסקול קריוקי אינסטרומנטלי מוכן לשמירה (100%)' : 'Vocal-removed karaoke audio ready (100%)')
-                              : isGeneratingUploadKaraoke
-                                ? (isHe ? 'מוציא את הזמר ומשאיר את המנגינה...' : 'Removing vocals, keeping instrumental...')
-                                : (isHe ? 'לחץ על "יצירת קריוקי" כדי להפריד את הזמר מהמנגינה' : 'Click Create Karaoke to remove vocals')}
-                          </span>
-                        </span>
-
-                        <button
-                          type="button"
-                          disabled={isGeneratingUploadKaraoke || (!rawAudioFile && !audioStreamUrl.trim())}
-                          onClick={handleGenerateUploadKaraoke}
-                          className="px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black text-[11px] font-black flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-                        >
-                          {isGeneratingUploadKaraoke ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Mic2 className="w-3.5 h-3.5" />
-                          )}
-                          <span>
-                            {isGeneratingUploadKaraoke
-                              ? (isHe ? 'מפריד שירה...' : 'Processing...')
-                              : (isHe ? 'יצירת קריוקי' : 'Create Karaoke')}
-                          </span>
-                        </button>
-                      </div>
-
-                      {uploadKaraokeNotice && (
-                        <p className="text-[11px] text-white/90 font-semibold bg-white/[0.04] border border-white/15 px-3 py-2 rounded-lg">
-                          {uploadKaraokeNotice}
-                        </p>
-                      )}
-                    </div>
-                  </div>
                 </div>
 
                 {/* 5. AI BADGE + COPYRIGHT CERTIFICATION */}
@@ -4204,6 +3877,22 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         <div className="text-[11px] text-neutral-400">
                           {rep.artistName} · {rep.reason}
                         </div>
+                        {(rep.uploaderEmail || rep.reporterEmail) && (
+                          <div className="space-y-0.5 text-[11px] text-neutral-300">
+                            {rep.uploaderEmail && (
+                              <div>
+                                <span className="text-neutral-500">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
+                                <span className="font-mono text-white" dir="ltr">{rep.uploaderEmail}</span>
+                              </div>
+                            )}
+                            {rep.reporterEmail && (
+                              <div>
+                                <span className="text-neutral-500">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
+                                <span className="font-mono text-white" dir="ltr">{rep.reporterEmail}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {rep.details && <p className="text-xs text-neutral-200 whitespace-pre-wrap">{rep.details}</p>}
                       </div>
                     ))}
@@ -4223,8 +3912,24 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           </button>
                         </div>
                         <div className="text-[11px] text-neutral-400">
-                          {msg.senderEmail} · {msg.categoryLabel || msg.category}
+                          {msg.reporterEmail || msg.senderEmail} · {msg.categoryLabel || msg.category}
                         </div>
+                        {(msg.uploaderEmail || msg.reporterEmail) && (
+                          <div className="space-y-0.5 text-[11px] text-neutral-300">
+                            {msg.uploaderEmail && (
+                              <div>
+                                <span className="text-neutral-500">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
+                                <span className="font-mono text-white" dir="ltr">{msg.uploaderEmail}</span>
+                              </div>
+                            )}
+                            {msg.reporterEmail && (
+                              <div>
+                                <span className="text-neutral-500">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
+                                <span className="font-mono text-white" dir="ltr">{msg.reporterEmail}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <p className="text-xs text-neutral-200 whitespace-pre-wrap leading-relaxed">{msg.message}</p>
                       </div>
                     ))}
