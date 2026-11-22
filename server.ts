@@ -813,11 +813,9 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
             return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' });
           }
           if (incoming && typeof incoming === 'object') {
-            const trackId = rawPath.replace(/^tracks\//, '').replace(/\.json$/, '');
             const preservedViews = Math.max(
               Number(existing.viewsCount) || 0,
-              Number(incoming.viewsCount) || 0,
-              optimisticTrackViewCounts.get(trackId) || 0
+              Number(incoming.viewsCount) || 0
             );
             incoming.viewsCount = preservedViews;
             if (!incoming.uploadedByEmail) {
@@ -851,6 +849,30 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
             body = Buffer.from(JSON.stringify(incoming, null, 2), 'utf-8');
           }
         }
+      } else if (rawPath === 'tracks_index.json') {
+        try {
+          const incomingArr = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf-8') : String(body));
+          if (Array.isArray(incomingArr)) {
+            const existingIdx = await readJsonR2('tracks_index.json');
+            if (Array.isArray(existingIdx)) {
+              const existingMap = new Map<string, any>();
+              existingIdx.forEach((item: any) => {
+                if (item?.id) existingMap.set(item.id, item);
+              });
+              const mergedArr = incomingArr.map((item: any) => {
+                if (!item?.id) return item;
+                const prev = existingMap.get(item.id);
+                if (!prev) return item;
+                return {
+                  ...item,
+                  viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(item.viewsCount) || 0),
+                  playsCount: Math.max(Number(prev.playsCount) || 0, Number(item.playsCount) || 0),
+                };
+              });
+              body = Buffer.from(JSON.stringify(mergedArr, null, 2), 'utf-8');
+            }
+          }
+        } catch {}
       } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
         const existing = await readJsonR2(rawPath);
         const sess = getReqSession();
@@ -965,9 +987,11 @@ app.get('/api/storage/list', async (req, res) => {
   }
 });
 
-// 2a. Single Track Lookup - 100% Pure Cloudflare R2 (for deep links & live subtitle hydration)
+// 2a. Single Track Lookup - 100% Pure Cloudflare R2 (authoritative live metadata & views)
 app.get('/api/storage/track/:id', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     const cleanId = decodeURIComponent(String(req.params.id || '')).replace(/[^a-zA-Z0-9_\-]/g, '');
     if (!cleanId) {
@@ -983,13 +1007,9 @@ app.get('/api/storage/track/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Track not found' });
     }
     const { uploadedByEmail: _omitEmail, ...cleanTrack } = parsed;
-    const mergedViews = Math.max(
-      Number(cleanTrack.viewsCount) || 0,
-      optimisticTrackViewCounts.get(cleanId) || 0
-    );
     return res.json({
       success: true,
-      track: { ...cleanTrack, viewsCount: mergedViews },
+      track: { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 },
     });
   } catch (err: any) {
     return res.status(500).json({
@@ -999,9 +1019,11 @@ app.get('/api/storage/track/:id', async (req, res) => {
   }
 });
 
-// 2b. Fast Single-Roundtrip Tracks Feed (reads tracks/*.json + tracks_index.json in parallel server-side)
+// 2b. Fast Single-Roundtrip Tracks Feed (reads tracks/*.json as authoritative source of truth)
 app.get('/api/storage/tracks-feed', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     const { client, bucket } = await getR2Context(req);
     const trackMap = new Map<string, any>();
@@ -1027,8 +1049,7 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
       indexData.forEach((t: any) => {
         if (t?.id && t?.name && t?.audioUrl) {
           const { uploadedByEmail: _omit, ...cleanTrack } = t;
-          const opt = optimisticTrackViewCounts.get(cleanTrack.id) || 0;
-          trackMap.set(cleanTrack.id, opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack);
+          trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
         }
       });
     }
@@ -1038,7 +1059,7 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
       .filter((k) => k.endsWith('.json'));
 
     if (keys.length > 0) {
-      // Read individual track JSONs in fast parallel batches (batch size 25)
+      // Authoritative individual track JSONs override tracks_index.json
       const batchSize = 25;
       for (let i = 0; i < keys.length; i += batchSize) {
         const slice = keys.slice(i, i + batchSize);
@@ -1047,12 +1068,11 @@ app.get('/api/storage/tracks-feed', async (req, res) => {
           if (t?.id && t?.name && t?.audioUrl) {
             const { uploadedByEmail: _omit, ...cleanTrack } = t;
             const prev = trackMap.get(cleanTrack.id);
-            const mergedViews = Math.max(
-              Number(prev?.viewsCount) || 0,
-              Number(cleanTrack.viewsCount) || 0,
-              optimisticTrackViewCounts.get(cleanTrack.id) || 0
-            );
-            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
+            const authoritativeViews =
+              cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
+                ? Number(cleanTrack.viewsCount) || 0
+                : Number(prev?.viewsCount) || 0;
+            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
           }
         });
       }
@@ -3010,145 +3030,191 @@ app.post('/api/storage/track-play', async (req, res) => {
   }
 });
 
-// 4i-2. High-Load Coalesced & Persistent Track Views Counter (starts at 0, safe under burst load)
+// 4i-2. Authoritative Single-Flight + ETag-CAS Persistent Track Views Counter
 const pendingTrackViewDeltas = new Map<string, number>();
-const inFlightTrackViewFlushes = new Set<string>();
-const optimisticTrackViewCounts = new Map<string, number>();
+const activeTrackViewFlushes = new Map<string, Promise<number | null>>();
 let tracksIndexWriteChain: Promise<void> = Promise.resolve();
 
-async function flushTrackViewsToR2(cleanId: string, r2Ctx: { client: S3Client; bucket: string }) {
-  if (inFlightTrackViewFlushes.has(cleanId)) return;
-  inFlightTrackViewFlushes.add(cleanId);
-  try {
-    const { client, bucket } = r2Ctx;
-    while ((pendingTrackViewDeltas.get(cleanId) || 0) > 0) {
-      const delta = pendingTrackViewDeltas.get(cleanId) || 0;
-      pendingTrackViewDeltas.delete(cleanId);
-      if (delta <= 0) break;
+async function flushTrackViewsToR2(
+  cleanId: string,
+  r2Ctx: { client: S3Client; bucket: string }
+): Promise<number | null> {
+  const { client, bucket } = r2Ctx;
+  let lastCommittedCount: number | null = null;
 
-      let committed = false;
-      const key = `tracks/${cleanId}.json`;
+  while ((pendingTrackViewDeltas.get(cleanId) || 0) > 0) {
+    const delta = pendingTrackViewDeltas.get(cleanId) || 0;
+    pendingTrackViewDeltas.delete(cleanId);
+    if (delta <= 0) break;
+
+    let committed = false;
+    const key = `tracks/${cleanId}.json`;
+
+    for (let attempt = 0; attempt < 6; attempt++) {
       try {
         const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-        if (obj.Body) {
-          const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
-          const base = Number(trackData.viewsCount) || 0;
-          const viewsCount = base + delta;
-          const updated = { ...trackData, viewsCount };
+        if (!obj.Body) break;
+        const trackData = JSON.parse(await obj.Body.transformToString('utf-8'));
+        const base = Number(trackData.viewsCount) || 0;
+        const viewsCount = base + delta;
+        const updated = { ...trackData, viewsCount };
+        const bodyBuf = Buffer.from(JSON.stringify(updated, null, 2), 'utf-8');
+
+        try {
           await client.send(
             new PutObjectCommand({
               Bucket: bucket,
               Key: key,
-              Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+              Body: bodyBuf,
               ContentType: 'application/json',
+              ...(obj.ETag ? { IfMatch: obj.ETag } : {}),
             })
           );
-          optimisticTrackViewCounts.set(cleanId, Math.max(optimisticTrackViewCounts.get(cleanId) || 0, viewsCount));
           committed = true;
-          const committedCount = viewsCount;
-          void (tracksIndexWriteChain = tracksIndexWriteChain
-            .then(async () => {
-              try {
-                const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
-                if (idxObj.Body) {
-                  const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
-                  if (Array.isArray(idxData)) {
-                    let changed = false;
-                    const nextArr = idxData.map((t: any) => {
-                      if (t?.id === cleanId) {
-                        const prevV = Number(t.viewsCount) || 0;
-                        if (committedCount > prevV) {
-                          changed = true;
-                          return { ...t, viewsCount: committedCount };
-                        }
-                      }
-                      return t;
-                    });
-                    if (changed) {
-                      await client.send(
-                        new PutObjectCommand({
-                          Bucket: bucket,
-                          Key: 'tracks_index.json',
-                          Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
-                          ContentType: 'application/json',
-                        })
-                      );
-                    }
-                  }
-                }
-              } catch {}
-            })
-            .catch(() => {}));
+          lastCommittedCount = viewsCount;
+          break;
+        } catch (putErr: any) {
+          const code = String(putErr?.name || putErr?.Code || '');
+          const status = Number(putErr?.$metadata?.httpStatusCode || 0);
+          if (status === 412 || code.includes('PreconditionFailed')) {
+            await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+            continue;
+          }
+          if (obj.ETag && (status === 400 || status === 501 || code.includes('NotImplemented'))) {
+            await client.send(
+              new PutObjectCommand({
+                Bucket: bucket,
+                Key: key,
+                Body: bodyBuf,
+                ContentType: 'application/json',
+              })
+            );
+            committed = true;
+            lastCommittedCount = viewsCount;
+            break;
+          }
+          break;
         }
       } catch {
-        // Fallback to tracks_index.json serialized via tracksIndexWriteChain
-      }
-
-      if (!committed) {
-        await (tracksIndexWriteChain = tracksIndexWriteChain
-          .then(async () => {
-            try {
-              const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
-              if (idxObj.Body) {
-                const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
-                if (Array.isArray(idxData)) {
-                  let found = false;
-                  let nextViews = delta;
-                  const nextArr = idxData.map((t: any) => {
-                    if (t?.id === cleanId) {
-                      found = true;
-                      nextViews = (Number(t.viewsCount) || 0) + delta;
-                      return { ...t, viewsCount: nextViews };
-                    }
-                    return t;
-                  });
-                  if (found) {
-                    await client.send(
-                      new PutObjectCommand({
-                        Bucket: bucket,
-                        Key: 'tracks_index.json',
-                        Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
-                        ContentType: 'application/json',
-                      })
-                    );
-                    optimisticTrackViewCounts.set(cleanId, Math.max(optimisticTrackViewCounts.get(cleanId) || 0, nextViews));
-                    committed = true;
-                  }
-                }
-              }
-            } catch {}
-          })
-          .catch(() => {}));
-      }
-
-      if (!committed) {
-        // Restore un-flushed delta if storage temporarily failed, and exit loop to avoid spin
-        pendingTrackViewDeltas.set(cleanId, (pendingTrackViewDeltas.get(cleanId) || 0) + delta);
         break;
       }
     }
-  } finally {
-    inFlightTrackViewFlushes.delete(cleanId);
+
+    if (committed && lastCommittedCount !== null) {
+      const committedCount = lastCommittedCount;
+      void (tracksIndexWriteChain = tracksIndexWriteChain
+        .then(async () => {
+          try {
+            const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+            if (idxObj.Body) {
+              const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+              if (Array.isArray(idxData)) {
+                let changed = false;
+                const nextArr = idxData.map((t: any) => {
+                  if (t?.id === cleanId && Number(t.viewsCount) !== committedCount) {
+                    changed = true;
+                    return { ...t, viewsCount: committedCount };
+                  }
+                  return t;
+                });
+                if (changed) {
+                  await client.send(
+                    new PutObjectCommand({
+                      Bucket: bucket,
+                      Key: 'tracks_index.json',
+                      Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                      ContentType: 'application/json',
+                    })
+                  );
+                }
+              }
+            }
+          } catch {}
+        })
+        .catch(() => {}));
+    }
+
+    if (!committed) {
+      await (tracksIndexWriteChain = tracksIndexWriteChain
+        .then(async () => {
+          try {
+            const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
+            if (idxObj.Body) {
+              const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
+              if (Array.isArray(idxData)) {
+                let found = false;
+                let nextViews = delta;
+                const nextArr = idxData.map((t: any) => {
+                  if (t?.id === cleanId) {
+                    found = true;
+                    nextViews = (Number(t.viewsCount) || 0) + delta;
+                    return { ...t, viewsCount: nextViews };
+                  }
+                  return t;
+                });
+                if (found) {
+                  await client.send(
+                    new PutObjectCommand({
+                      Bucket: bucket,
+                      Key: 'tracks_index.json',
+                      Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
+                      ContentType: 'application/json',
+                    })
+                  );
+                  lastCommittedCount = nextViews;
+                  committed = true;
+                }
+              }
+            }
+          } catch {}
+        })
+        .catch(() => {}));
+    }
+
+    if (!committed) {
+      break;
+    }
   }
+
+  return lastCommittedCount;
 }
 
 app.post('/api/storage/track-view', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
-    if (!cleanId) return res.status(400).json({ success: false });
+    if (!cleanId) return res.status(400).json({ success: false, viewsCount: null });
 
     pendingTrackViewDeltas.set(cleanId, (pendingTrackViewDeltas.get(cleanId) || 0) + 1);
-    const nextOptimistic = (optimisticTrackViewCounts.get(cleanId) || 0) + 1;
-    optimisticTrackViewCounts.set(cleanId, nextOptimistic);
-
     const r2Ctx = await getR2Context(req);
-    await flushTrackViewsToR2(cleanId, r2Ctx).catch(() => {});
+    let committedCount: number | null = null;
 
-    const authoritativeCount = Math.max(optimisticTrackViewCounts.get(cleanId) || 0, nextOptimistic);
-    return res.json({ success: true, viewsCount: authoritativeCount });
+    while ((pendingTrackViewDeltas.get(cleanId) || 0) > 0 || activeTrackViewFlushes.has(cleanId)) {
+      let flushPromise = activeTrackViewFlushes.get(cleanId);
+      if (!flushPromise) {
+        flushPromise = flushTrackViewsToR2(cleanId, r2Ctx).finally(() => {
+          if (activeTrackViewFlushes.get(cleanId) === flushPromise) {
+            activeTrackViewFlushes.delete(cleanId);
+          }
+        });
+        activeTrackViewFlushes.set(cleanId, flushPromise);
+      }
+      const resCount = await flushPromise.catch(() => null);
+      if (typeof resCount === 'number' && Number.isFinite(resCount)) {
+        committedCount = resCount;
+      } else {
+        break;
+      }
+    }
+
+    if (committedCount === null) {
+      return res.status(503).json({ success: false, viewsCount: null });
+    }
+    return res.json({ success: true, viewsCount: committedCount, authoritative: true });
   } catch {
-    return res.json({ success: false, viewsCount: 1 });
+    return res.status(503).json({ success: false, viewsCount: null });
   }
 });
 
@@ -3274,7 +3340,7 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
       subtitlesDisabled: false,
       subtitlesIncomplete: nextIncomplete,
       ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
-      viewsCount: Math.max(Number(existing.viewsCount) || 0, optimisticTrackViewCounts.get(cleanId) || 0),
+      viewsCount: Number(existing.viewsCount) || 0,
     };
 
     await client.send(
@@ -3649,7 +3715,9 @@ app.get('/api/admin/legal-doc', async (req, res) => {
 
 // 4j. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
 app.get('/api/bootstrap', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     const { client, bucket } = await getR2Context(req);
     const readJsonKey = async (key: string) => {
@@ -3674,11 +3742,7 @@ app.get('/api/bootstrap', async (req, res) => {
       indexData.forEach((t: any) => {
         if (t?.id && t?.name && t?.audioUrl) {
           const { uploadedByEmail: _omit, ...cleanTrack } = t;
-          const opt = optimisticTrackViewCounts.get(cleanTrack.id) || 0;
-          trackMap.set(
-            cleanTrack.id,
-            opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack
-          );
+          trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
         }
       });
     }
@@ -3697,12 +3761,11 @@ app.get('/api/bootstrap', async (req, res) => {
       if (t?.id && t?.name && t?.audioUrl) {
         const { uploadedByEmail: _omit, ...cleanTrack } = t;
         const prev = trackMap.get(cleanTrack.id);
-        const mergedViews = Math.max(
-          Number(prev?.viewsCount) || 0,
-          Number(cleanTrack.viewsCount) || 0,
-          optimisticTrackViewCounts.get(cleanTrack.id) || 0
-        );
-        trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
+        const authoritativeViews =
+          cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
+            ? Number(cleanTrack.viewsCount) || 0
+            : Number(prev?.viewsCount) || 0;
+        trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
       }
     });
 

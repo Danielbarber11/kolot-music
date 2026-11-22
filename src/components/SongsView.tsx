@@ -518,7 +518,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     let lastRefreshAt = Date.now();
     const refreshFromCloud = (force = false) => {
       const now = Date.now();
-      if (!force && now - lastRefreshAt < 10000) return;
+      if (!force && now - lastRefreshAt < 2500) return;
       lastRefreshAt = now;
       fetchAllRealSongs()
         .then((freshSongs) => {
@@ -544,16 +544,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
     };
 
     const handleViewsUpdated = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number }>)?.detail;
+      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number; authoritative?: boolean }>)?.detail;
       const trackId = detail?.trackId;
       const serverViews = Number(detail?.viewsCount);
-      if (!trackId || !Number.isFinite(serverViews) || serverViews <= 0 || !active) return;
+      if (!trackId || !Number.isFinite(serverViews) || serverViews < 0 || !active) return;
+      const isAuthoritative = detail?.authoritative !== false;
 
       setAllTracks((prev) => {
         if (!prev.some((t) => t.id === trackId)) return prev;
         const next = prev.map((t) =>
           t.id === trackId
-            ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViews) }
+            ? {
+                ...t,
+                viewsCount: isAuthoritative
+                  ? serverViews
+                  : Math.max(Number(t.viewsCount) || 0, serverViews),
+              }
             : t
         );
         saveCachedCloudTracks(next);
@@ -562,7 +568,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
       });
       setPlayerTrack((cur) =>
         cur && cur.id === trackId
-          ? { ...cur, viewsCount: Math.max(Number(cur.viewsCount) || 0, serverViews) }
+          ? {
+              ...cur,
+              viewsCount: isAuthoritative
+                ? serverViews
+                : Math.max(Number(cur.viewsCount) || 0, serverViews),
+            }
           : cur
       );
     };

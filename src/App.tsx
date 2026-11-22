@@ -11,11 +11,17 @@ import {
   getCachedArtistProfiles,
   getCachedAlbums,
   incrementTrackViewInMemory,
+  syncTrackViewFromServer,
   TRACK_SUBTITLES_UPDATED_EVENT,
   TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
 } from './services/multiMusicService';
-import { getStreamingMediaUrl, incrementTrackViewsInCloud, fetchSingleTrackFromCloud } from './services/cloudStorageService';
+import {
+  getStreamingMediaUrl,
+  incrementTrackViewsInCloud,
+  fetchSingleTrackFromCloud,
+  isTrackViewIncrementPending,
+} from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
 import { AccessibilityPage } from './components/AccessibilityPage';
 import {
@@ -168,18 +174,31 @@ export default function App() {
         ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
         : prev
     );
-    incrementTrackViewsInCloud(track);
-    trackSongPlay({ ...track, viewsCount: nextViews });
-    trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
     syncSongQueryParam(track.id);
     setActivePlayerTrack(updatedTrack);
+    trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
+
+    void incrementTrackViewsInCloud(track).then((serverViews) => {
+      if (typeof serverViews === 'number' && Number.isFinite(serverViews)) {
+        trackSongPlay({ ...track, viewsCount: serverViews });
+      } else {
+        trackSongPlay({ ...track, viewsCount: nextViews });
+        fetchSingleTrackFromCloud(track.id)
+          .then((fresh) => {
+            if (fresh && typeof fresh.viewsCount === 'number' && !isTrackViewIncrementPending(track.id)) {
+              syncTrackViewFromServer(track.id, Number(fresh.viewsCount), true);
+            }
+          })
+          .catch(() => {});
+      }
+    });
   };
 
   const lastCloudSyncRef = React.useRef<number>(Date.now());
 
   const refreshCloudTracksInBackground = React.useCallback((force = false) => {
     const now = Date.now();
-    if (!force && now - lastCloudSyncRef.current < 10000) return;
+    if (!force && now - lastCloudSyncRef.current < 2500) return;
     lastCloudSyncRef.current = now;
     fetchAllRealSongs()
       .then((fresh) => {
@@ -188,14 +207,16 @@ export default function App() {
         setActivePlayerTrack((cur) => {
           if (!cur) return cur;
           const match = fresh.find((t) => t.id === cur.id);
-          return match
-            ? {
-                ...cur,
-                ...match,
-                viewsCount: Math.max(Number(cur.viewsCount) || 0, Number(match.viewsCount) || 0),
-                playsCount: Math.max(Number(cur.playsCount) || 0, Number(match.playsCount) || 0),
-              }
-            : cur;
+          if (!match) return cur;
+          const authoritativeViews = isTrackViewIncrementPending(cur.id)
+            ? Math.max(Number(cur.viewsCount) || 0, Number(match.viewsCount) || 0)
+            : Number(match.viewsCount) || 0;
+          return {
+            ...cur,
+            ...match,
+            viewsCount: authoritativeViews,
+            playsCount: Math.max(Number(cur.playsCount) || 0, Number(match.playsCount) || 0),
+          };
         });
       })
       .catch(() => {});
@@ -231,10 +252,11 @@ export default function App() {
             ? prev.map((t) => (t.id === targetTrack!.id ? hydrated : t))
             : [hydrated, ...prev]
         );
-        incrementTrackViewsInCloud(targetTrack);
-        trackSongPlay({ ...targetTrack, viewsCount: nextViews });
         trackPageView(`/?song=${encodeURIComponent(targetTrack.id)}`, targetTrack.name);
         setActivePlayerTrack(hydrated);
+        void incrementTrackViewsInCloud(targetTrack).then((serverViews) => {
+          trackSongPlay({ ...targetTrack!, viewsCount: serverViews ?? nextViews });
+        });
       }
     };
 
@@ -319,23 +341,34 @@ export default function App() {
     };
 
     const handleViewsUpdated = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number }>)?.detail;
+      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number; authoritative?: boolean }>)?.detail;
       const trackId = detail?.trackId;
       const serverViews = Number(detail?.viewsCount);
-      if (!trackId || !Number.isFinite(serverViews) || serverViews <= 0 || !active) return;
+      if (!trackId || !Number.isFinite(serverViews) || serverViews < 0 || !active) return;
+      const isAuthoritative = detail?.authoritative !== false;
 
       setAllTracks((prev) =>
         prev.some((t) => t.id === trackId)
           ? prev.map((t) =>
               t.id === trackId
-                ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, serverViews) }
+                ? {
+                    ...t,
+                    viewsCount: isAuthoritative
+                      ? serverViews
+                      : Math.max(Number(t.viewsCount) || 0, serverViews),
+                  }
                 : t
             )
           : prev
       );
       setActivePlayerTrack((cur) =>
         cur && cur.id === trackId
-          ? { ...cur, viewsCount: Math.max(Number(cur.viewsCount) || 0, serverViews) }
+          ? {
+              ...cur,
+              viewsCount: isAuthoritative
+                ? serverViews
+                : Math.max(Number(cur.viewsCount) || 0, serverViews),
+            }
           : cur
       );
     };

@@ -220,24 +220,25 @@ export async function uploadBinaryFastToR2(
 
 async function syncTracksIndexInBackground(trackToSave: JamendoTrack): Promise<void> {
   try {
-    const listRes = await fetch('/api/storage/list?prefix=tracks_index.json', { cache: 'no-store' });
     let existingIndex: JamendoTrack[] = [];
-    if (listRes.ok) {
-      const listData = await safeJson(listRes, 'טעינת אינדקס');
-      const idxFile = listData.files?.[0];
-      if (idxFile?.url) {
-        const idxRes = await fetch(idxFile.url, { cache: 'no-store' });
-        if (idxRes.ok) {
-          const parsed = await safeJson(idxRes, 'קריאת אינדקס');
-          if (Array.isArray(parsed)) existingIndex = parsed;
-        }
-      }
+    const idxRes = await fetch(`/api/storage/raw/tracks_index.json?_t=${Date.now()}`, {
+      headers: getR2AuthHeaders(),
+      cache: 'no-store',
+    });
+    if (idxRes.ok) {
+      const parsed = await safeJson(idxRes, 'קריאת אינדקס');
+      if (Array.isArray(parsed)) existingIndex = parsed;
     }
     const map = new Map<string, JamendoTrack>();
     existingIndex.forEach((t) => {
       if (t?.id) map.set(t.id, t);
     });
-    map.set(trackToSave.id, trackToSave);
+    const prev = map.get(trackToSave.id);
+    map.set(trackToSave.id, {
+      ...trackToSave,
+      viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(trackToSave.viewsCount) || 0),
+      playsCount: Math.max(Number(prev?.playsCount) || 0, Number(trackToSave.playsCount) || 0),
+    });
     await fetch('/api/storage/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
@@ -395,10 +396,11 @@ function isCloudPlayableTrack(t: any): t is JamendoTrack {
 }
 
 export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
-  // 1. Fast single-roundtrip feed from server/Worker (reads tracks_index.json + tracks/*.json server-side)
+  const bust = Date.now();
+  // 1. Fast single-roundtrip feed from server/Worker (reads tracks/*.json directly server-side)
   try {
-    const feedRes = await fetch('/api/storage/tracks-feed', {
-      headers: getR2AuthHeaders(),
+    const feedRes = await fetch(`/api/storage/tracks-feed?_t=${bust}`, {
+      headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
     if (feedRes.ok) {
@@ -415,8 +417,8 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
 
   // 2. Fallback: Fetch tracks directory strictly from cloud storage (no cache)
   try {
-    const res = await fetch('/api/storage/list?prefix=tracks/', {
-      headers: getR2AuthHeaders(),
+    const res = await fetch(`/api/storage/list?prefix=tracks/&_t=${bust}`, {
+      headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
     if (res.ok) {
@@ -426,7 +428,8 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
         const loaded = await Promise.all(
           jsonFiles.map(async (f: any) => {
             try {
-              const itemRes = await fetch(f.url, { cache: 'no-store' });
+              const rawUrl = f.key ? `/api/storage/raw/${f.key}?_t=${bust}` : `${f.url}?_t=${bust}`;
+              const itemRes = await fetch(rawUrl, { cache: 'no-store' });
               if (itemRes.ok) {
                 return await safeJson(itemRes, 'קריאת שיר מהענן');
               }
@@ -445,25 +448,18 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
 
   // 3. Fetch tracks_index.json from cloud storage as supplementary catalog
   try {
-    const res = await fetch('/api/storage/list?prefix=tracks_index.json', {
-      headers: getR2AuthHeaders(),
+    const indexRes = await fetch(`/api/storage/raw/tracks_index.json?_t=${bust}`, {
+      headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
-    if (res.ok) {
-      const data = await safeJson(res, 'טעינת אינדקס שירים מהענן');
-      if (data.success && data.files?.length > 0) {
-        const indexUrl = data.files[0].url;
-        const indexRes = await fetch(indexUrl, { cache: 'no-store' });
-        if (indexRes.ok) {
-          const indexTracks = await safeJson(indexRes, 'קריאת אינדקס שירים מהענן');
-          if (Array.isArray(indexTracks)) {
-            indexTracks.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
-              if (!trackMap.has(t.id)) {
-                trackMap.set(t.id, t);
-              }
-            });
+    if (indexRes.ok) {
+      const indexTracks = await safeJson(indexRes, 'קריאת אינדקס שירים מהענן');
+      if (Array.isArray(indexTracks)) {
+        indexTracks.filter(isCloudPlayableTrack).forEach((t: JamendoTrack) => {
+          if (!trackMap.has(t.id)) {
+            trackMap.set(t.id, t);
           }
-        }
+        });
       }
     }
   } catch (err) {
@@ -477,8 +473,8 @@ export async function fetchSingleTrackFromCloud(trackId: string): Promise<Jamend
   const cleanId = String(trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
   if (!cleanId) return null;
   try {
-    const res = await fetch(`/api/storage/track/${encodeURIComponent(cleanId)}`, {
-      headers: getR2AuthHeaders(),
+    const res = await fetch(`/api/storage/track/${encodeURIComponent(cleanId)}?_t=${Date.now()}`, {
+      headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -956,8 +952,8 @@ export async function fetchBootstrapFromCloud(): Promise<{
   albums: Album[];
 } | null> {
   try {
-    const res = await fetch('/api/bootstrap', {
-      headers: getR2AuthHeaders(),
+    const res = await fetch(`/api/bootstrap?_t=${Date.now()}`, {
+      headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -991,26 +987,48 @@ export async function incrementTrackPlaysInCloud(track: JamendoTrack): Promise<n
   return optimistic;
 }
 
-export function incrementTrackViewsInCloud(track: JamendoTrack): void {
-  if (!track?.id) return;
-  try {
-    fetch('/api/storage/track-view', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      cache: 'no-store',
-      body: JSON.stringify({ trackId: track.id }),
-      keepalive: true,
-    })
-      .then((res) => (res.ok ? res.json().catch(() => null) : null))
-      .then((data) => {
-        if (data?.viewsCount && Number(data.viewsCount) > 0) {
-          import('./multiMusicService')
-            .then((m) => m.syncTrackViewFromServer(track.id, Number(data.viewsCount)))
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
-  } catch {}
+const pendingTrackViewIncrements = new Map<string, Promise<number | null>>();
+
+export function isTrackViewIncrementPending(trackId: string): boolean {
+  return Boolean(trackId && pendingTrackViewIncrements.has(trackId));
+}
+
+export async function waitForPendingTrackViewIncrement(trackId: string): Promise<void> {
+  const pending = pendingTrackViewIncrements.get(trackId);
+  if (pending) {
+    await pending.catch(() => {});
+  }
+}
+
+export function incrementTrackViewsInCloud(track: JamendoTrack): Promise<number | null> {
+  if (!track?.id) return Promise.resolve(null);
+  const cleanId = track.id;
+  const promise = (async (): Promise<number | null> => {
+    try {
+      const res = await fetch(`/api/storage/track-view?_t=${Date.now()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+        body: JSON.stringify({ trackId: cleanId }),
+        keepalive: true,
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      if (data?.success && typeof data.viewsCount === 'number' && Number.isFinite(data.viewsCount)) {
+        const committedViews = Number(data.viewsCount);
+        const m = await import('./multiMusicService').catch(() => null);
+        m?.syncTrackViewFromServer(cleanId, committedViews, true);
+        return committedViews;
+      }
+    } catch {}
+    return null;
+  })().finally(() => {
+    if (pendingTrackViewIncrements.get(cleanId) === promise) {
+      pendingTrackViewIncrements.delete(cleanId);
+    }
+  });
+  pendingTrackViewIncrements.set(cleanId, promise);
+  return promise;
 }
 
 // Exports for use in components

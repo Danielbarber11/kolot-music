@@ -45,8 +45,7 @@ export interface Env {
 }
 
 const workerPendingViewDeltas = new Map<string, number>();
-const workerInFlightViewFlushes = new Set<string>();
-const workerOptimisticViewCounts = new Map<string, number>();
+const workerActiveViewFlushes = new Map<string, Promise<number | null>>();
 
 function sanitizeEndpoint(raw?: string): string {
   if (!raw) return '';
@@ -75,7 +74,9 @@ function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, 
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
       'Access-Control-Allow-Origin': '*',
       ...extraHeaders,
     },
@@ -158,7 +159,7 @@ async function signedR2Fetch(
 
   for (const [k, v] of Object.entries(extraHeaders)) {
     const lk = k.toLowerCase();
-    if (lk === 'content-type' || lk === 'range') {
+    if (lk === 'content-type' || lk === 'range' || lk === 'if-match') {
       headersToSign[lk] = v;
     }
   }
@@ -637,11 +638,9 @@ export default {
               return jsonResponse({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' }, 403);
             }
             if (incoming && typeof incoming === 'object') {
-              const trackId = rawPath.replace(/^tracks\//, '').replace(/\.json$/, '');
               incoming.viewsCount = Math.max(
                 Number(existing.viewsCount) || 0,
-                Number(incoming.viewsCount) || 0,
-                workerOptimisticViewCounts.get(trackId) || 0
+                Number(incoming.viewsCount) || 0
               );
               if (!incoming.uploadedByEmail) {
                 if (existing.uploadedByEmail) {
@@ -674,6 +673,30 @@ export default {
               bodyBytes = encoder.encode(JSON.stringify(incoming, null, 2));
             }
           }
+        } else if (rawPath === 'tracks_index.json') {
+          try {
+            const incomingArr = JSON.parse(new TextDecoder().decode(bodyBytes));
+            if (Array.isArray(incomingArr)) {
+              const existingIdx = await readR2JsonTop('tracks_index.json');
+              if (Array.isArray(existingIdx)) {
+                const existingMap = new Map<string, any>();
+                existingIdx.forEach((item: any) => {
+                  if (item?.id) existingMap.set(item.id, item);
+                });
+                const mergedArr = incomingArr.map((item: any) => {
+                  if (!item?.id) return item;
+                  const prev = existingMap.get(item.id);
+                  if (!prev) return item;
+                  return {
+                    ...item,
+                    viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(item.viewsCount) || 0),
+                    playsCount: Math.max(Number(prev.playsCount) || 0, Number(item.playsCount) || 0),
+                  };
+                });
+                bodyBytes = encoder.encode(JSON.stringify(mergedArr, null, 2));
+              }
+            }
+          } catch {}
         } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
           const existing = await readR2JsonTop(rawPath);
           const sess = await extractSessionTop();
@@ -774,20 +797,16 @@ export default {
           return jsonResponse({ success: false, error: 'Track not found' }, 404);
         }
         const { uploadedByEmail: _omitEmail, ...cleanTrack } = parsed;
-        const mergedViews = Math.max(
-          Number(cleanTrack.viewsCount) || 0,
-          workerOptimisticViewCounts.get(cleanId) || 0
-        );
         return jsonResponse({
           success: true,
-          track: { ...cleanTrack, viewsCount: mergedViews },
+          track: { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 },
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Track lookup failed' }, 500);
       }
     }
 
-    // 3b. Fast Single-Roundtrip Tracks Feed (reads tracks_index.json + tracks/*.json directly inside Worker)
+    // 3b. Fast Single-Roundtrip Tracks Feed (tracks/*.json is authoritative source of truth)
     if (pathname === '/api/storage/tracks-feed' && request.method === 'GET') {
       try {
         const trackMap = new Map<string, any>();
@@ -809,8 +828,7 @@ export default {
           indexData.forEach((t: any) => {
             if (t?.id && t?.name && t?.audioUrl) {
               const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              const opt = workerOptimisticViewCounts.get(cleanTrack.id) || 0;
-              trackMap.set(cleanTrack.id, opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack);
+              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
             }
           });
         }
@@ -838,12 +856,11 @@ export default {
             if (t?.id && t?.name && t?.audioUrl) {
               const { uploadedByEmail: _omit, ...cleanTrack } = t;
               const prev = trackMap.get(cleanTrack.id);
-              const mergedViews = Math.max(
-                Number(prev?.viewsCount) || 0,
-                Number(cleanTrack.viewsCount) || 0,
-                workerOptimisticViewCounts.get(cleanTrack.id) || 0
-              );
-              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
+              const authoritativeViews =
+                cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
+                  ? Number(cleanTrack.viewsCount) || 0
+                  : Number(prev?.viewsCount) || 0;
+              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
             }
           });
         }
@@ -1823,170 +1840,206 @@ export default {
       }
     }
 
-    // 13b. High-Load Coalesced & ETag-CAS Persistent Track Views Counter (starts at 0, increments per entry)
+    // 13b. Authoritative Single-Flight + ETag-CAS Persistent Track Views Counter (R2 Single Source of Truth)
     if (pathname === '/api/storage/track-view' && request.method === 'POST') {
       try {
         const body: any = await request.json();
         const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
-        if (!cleanId) return jsonResponse({ success: false }, 400);
+        if (!cleanId) return jsonResponse({ success: false, viewsCount: null }, 400);
 
         workerPendingViewDeltas.set(cleanId, (workerPendingViewDeltas.get(cleanId) || 0) + 1);
-        const nextOptimistic = (workerOptimisticViewCounts.get(cleanId) || 0) + 1;
-        workerOptimisticViewCounts.set(cleanId, nextOptimistic);
 
-        let committedViews: number | null = null;
-        const flushWorkerTrackViews = async () => {
-          if (workerInFlightViewFlushes.has(cleanId)) return;
-          workerInFlightViewFlushes.add(cleanId);
-          try {
-            while ((workerPendingViewDeltas.get(cleanId) || 0) > 0) {
-              const delta = workerPendingViewDeltas.get(cleanId) || 0;
-              workerPendingViewDeltas.delete(cleanId);
-              if (delta <= 0) break;
+        const runWorkerTrackViewFlush = async (): Promise<number | null> => {
+          let lastCommittedViews: number | null = null;
 
-              let committed = false;
-              const key = `tracks/${cleanId}.json`;
+          while ((workerPendingViewDeltas.get(cleanId) || 0) > 0) {
+            const delta = workerPendingViewDeltas.get(cleanId) || 0;
+            workerPendingViewDeltas.delete(cleanId);
+            if (delta <= 0) break;
 
+            let committed = false;
+            const key = `tracks/${cleanId}.json`;
+
+            if (env.R2_BUCKET) {
+              for (let attempt = 0; attempt < 6; attempt++) {
+                const obj = await env.R2_BUCKET.get(key);
+                if (!obj) break;
+                const trackData = JSON.parse(await obj.text());
+                const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
+                const bytes = encoder.encode(JSON.stringify({ ...trackData, viewsCount }, null, 2));
+                const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+                if (obj.httpEtag) putOpts.onlyIf = { etagMatches: obj.httpEtag };
+                const putRes = await env.R2_BUCKET.put(key, bytes, putOpts);
+                if (putRes !== null) {
+                  lastCommittedViews = viewsCount;
+                  committed = true;
+                  break;
+                }
+                await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+              }
+            } else {
+              const s3Path = `/${creds.bucket}/${encodeS3Path(key)}`;
+              for (let attempt = 0; attempt < 6; attempt++) {
+                const getRes = await signedR2Fetch(creds, 'GET', s3Path);
+                if (!getRes.ok) break;
+                const etag = getRes.headers.get('etag') || '';
+                const trackData = await getRes.json().catch(() => null);
+                if (!trackData) break;
+                const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
+                const bytes = encoder.encode(JSON.stringify({ ...trackData, viewsCount }, null, 2));
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (etag) headers['If-Match'] = etag;
+                let putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bytes, headers);
+                if (putRes.status === 412) {
+                  await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+                  continue;
+                }
+                if (etag && (putRes.status === 400 || putRes.status === 501)) {
+                  putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bytes, {
+                    'Content-Type': 'application/json',
+                  });
+                }
+                if (putRes.ok) {
+                  lastCommittedViews = viewsCount;
+                  committed = true;
+                }
+                break;
+              }
+            }
+
+            if (!committed) {
               if (env.R2_BUCKET) {
                 for (let attempt = 0; attempt < 6; attempt++) {
-                  const obj = await env.R2_BUCKET.get(key);
-                  if (!obj) break;
-                  const trackData = JSON.parse(await obj.text());
-                  const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
-                  const bytes = encoder.encode(JSON.stringify({ ...trackData, viewsCount }, null, 2));
+                  const idxObj = await env.R2_BUCKET.get('tracks_index.json');
+                  if (!idxObj) break;
+                  const idxData = JSON.parse(await idxObj.text());
+                  if (!Array.isArray(idxData)) break;
+                  let found = false;
+                  let nextViews = delta;
+                  const nextArr = idxData.map((t: any) => {
+                    if (t?.id === cleanId) {
+                      found = true;
+                      nextViews = (Number(t.viewsCount) || 0) + delta;
+                      return { ...t, viewsCount: nextViews };
+                    }
+                    return t;
+                  });
+                  if (!found) break;
+                  const bytes = encoder.encode(JSON.stringify(nextArr, null, 2));
                   const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
-                  if (obj.httpEtag) putOpts.onlyIf = { etagMatches: obj.httpEtag };
-                  const putRes = await env.R2_BUCKET.put(key, bytes, putOpts);
+                  if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+                  const putRes = await env.R2_BUCKET.put('tracks_index.json', bytes, putOpts);
                   if (putRes !== null) {
-                    workerOptimisticViewCounts.set(
-                      cleanId,
-                      Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
-                    );
-                    committedViews = viewsCount;
+                    lastCommittedViews = nextViews;
                     committed = true;
                     break;
                   }
                   await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
                 }
               } else {
-                const trackData = await r2ReadJson(key);
-                if (trackData) {
-                  const viewsCount = (Number(trackData.viewsCount) || 0) + delta;
-                  await r2WriteJson(key, { ...trackData, viewsCount });
-                  workerOptimisticViewCounts.set(
-                    cleanId,
-                    Math.max(workerOptimisticViewCounts.get(cleanId) || 0, viewsCount)
-                  );
-                  committedViews = viewsCount;
-                  committed = true;
-                }
-              }
-
-              if (!committed) {
-                if (env.R2_BUCKET) {
-                  for (let attempt = 0; attempt < 6; attempt++) {
-                    const idxObj = await env.R2_BUCKET.get('tracks_index.json');
-                    if (!idxObj) break;
-                    const idxData = JSON.parse(await idxObj.text());
-                    if (!Array.isArray(idxData)) break;
-                    let found = false;
-                    let nextViews = delta;
-                    const nextArr = idxData.map((t: any) => {
-                      if (t?.id === cleanId) {
-                        found = true;
-                        nextViews = (Number(t.viewsCount) || 0) + delta;
-                        return { ...t, viewsCount: nextViews };
-                      }
-                      return t;
-                    });
-                    if (!found) break;
-                    const bytes = encoder.encode(JSON.stringify(nextArr, null, 2));
-                    const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
-                    if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
-                    const putRes = await env.R2_BUCKET.put('tracks_index.json', bytes, putOpts);
-                    if (putRes !== null) {
-                      workerOptimisticViewCounts.set(
-                        cleanId,
-                        Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
-                      );
-                      committedViews = nextViews;
-                      committed = true;
-                      break;
+                const idxData = await r2ReadJson('tracks_index.json');
+                if (Array.isArray(idxData)) {
+                  let nextViews = delta;
+                  let found = false;
+                  const nextArr = idxData.map((t: any) => {
+                    if (t?.id === cleanId) {
+                      found = true;
+                      nextViews = (Number(t.viewsCount) || 0) + delta;
+                      return { ...t, viewsCount: nextViews };
                     }
-                    await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
-                  }
-                } else {
-                  const idxData = await r2ReadJson('tracks_index.json');
-                  if (Array.isArray(idxData)) {
-                    let nextViews = delta;
-                    let found = false;
-                    const nextArr = idxData.map((t: any) => {
-                      if (t?.id === cleanId) {
-                        found = true;
-                        nextViews = (Number(t.viewsCount) || 0) + delta;
-                        return { ...t, viewsCount: nextViews };
-                      }
-                      return t;
-                    });
-                    if (found) {
-                      await r2WriteJson('tracks_index.json', nextArr);
-                      workerOptimisticViewCounts.set(
-                        cleanId,
-                        Math.max(workerOptimisticViewCounts.get(cleanId) || 0, nextViews)
-                      );
-                      committedViews = nextViews;
-                      committed = true;
-                    }
+                    return t;
+                  });
+                  if (found) {
+                    await r2WriteJson('tracks_index.json', nextArr);
+                    lastCommittedViews = nextViews;
+                    committed = true;
                   }
                 }
-              }
-
-              if (!committed) {
-                workerPendingViewDeltas.set(cleanId, (workerPendingViewDeltas.get(cleanId) || 0) + delta);
-                break;
               }
             }
-          } finally {
-            workerInFlightViewFlushes.delete(cleanId);
+
+            if (!committed) {
+              break;
+            }
           }
+
+          return lastCommittedViews;
         };
 
-        await flushWorkerTrackViews();
+        let committedViews: number | null = null;
+        while ((workerPendingViewDeltas.get(cleanId) || 0) > 0 || workerActiveViewFlushes.has(cleanId)) {
+          let flushPromise = workerActiveViewFlushes.get(cleanId);
+          if (!flushPromise) {
+            flushPromise = runWorkerTrackViewFlush().finally(() => {
+              if (workerActiveViewFlushes.get(cleanId) === flushPromise) {
+                workerActiveViewFlushes.delete(cleanId);
+              }
+            });
+            workerActiveViewFlushes.set(cleanId, flushPromise);
+          }
+          const resCount = await flushPromise.catch(() => null);
+          if (typeof resCount === 'number' && Number.isFinite(resCount)) {
+            committedViews = resCount;
+          } else {
+            break;
+          }
+        }
 
-        if (committedViews !== null && env.R2_BUCKET) {
-          const finalViewVal = committedViews;
-          const syncIndexTask = (async () => {
-            try {
-              const idxObj = await env.R2_BUCKET!.get('tracks_index.json');
+        if (committedViews === null) {
+          return jsonResponse({ success: false, viewsCount: null }, 503);
+        }
+
+        const finalViewVal = committedViews;
+        const syncIndexTask = (async () => {
+          try {
+            if (env.R2_BUCKET) {
+              const idxObj = await env.R2_BUCKET.get('tracks_index.json');
               if (!idxObj) return;
               const idxData = JSON.parse(await idxObj.text());
               if (!Array.isArray(idxData)) return;
               let changed = false;
               const nextArr = idxData.map((t: any) => {
-                if (t?.id === cleanId && finalViewVal > (Number(t.viewsCount) || 0)) {
+                if (t?.id === cleanId && Number(t.viewsCount) !== finalViewVal) {
                   changed = true;
                   return { ...t, viewsCount: finalViewVal };
                 }
                 return t;
               });
               if (changed) {
-                await env.R2_BUCKET!.put('tracks_index.json', encoder.encode(JSON.stringify(nextArr, null, 2)), {
-                  httpMetadata: { contentType: 'application/json' },
-                });
+                const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+                if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+                await env.R2_BUCKET.put('tracks_index.json', encoder.encode(JSON.stringify(nextArr, null, 2)), putOpts);
               }
-            } catch {}
-          })();
-          if (ctx?.waitUntil) {
-            ctx.waitUntil(syncIndexTask);
-          }
+            } else {
+              const idxData = await r2ReadJson('tracks_index.json');
+              if (!Array.isArray(idxData)) return;
+              let changed = false;
+              const nextArr = idxData.map((t: any) => {
+                if (t?.id === cleanId && Number(t.viewsCount) !== finalViewVal) {
+                  changed = true;
+                  return { ...t, viewsCount: finalViewVal };
+                }
+                return t;
+              });
+              if (changed) {
+                await r2WriteJson('tracks_index.json', nextArr);
+              }
+            }
+          } catch {}
+        })();
+        if (ctx?.waitUntil) {
+          ctx.waitUntil(syncIndexTask);
+        } else {
+          await syncIndexTask;
         }
 
         return jsonResponse({
           success: true,
-          viewsCount: Math.max(workerOptimisticViewCounts.get(cleanId) || 0, committedViews || 0, nextOptimistic),
+          viewsCount: committedViews,
+          authoritative: true,
         });
       } catch {
-        return jsonResponse({ success: false, viewsCount: 1 });
+        return jsonResponse({ success: false, viewsCount: null }, 503);
       }
     }
 
@@ -2100,7 +2153,7 @@ export default {
           subtitlesDisabled: false,
           subtitlesIncomplete: nextIncomplete,
           ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
-          viewsCount: Math.max(Number(existing.viewsCount) || 0, workerOptimisticViewCounts.get(cleanId) || 0),
+          viewsCount: Number(existing.viewsCount) || 0,
         };
 
         await r2WriteJson(key, updated);
@@ -2477,11 +2530,7 @@ export default {
           indexData.forEach((t: any) => {
             if (t?.id && t?.name && t?.audioUrl) {
               const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              const opt = workerOptimisticViewCounts.get(cleanTrack.id) || 0;
-              trackMap.set(
-                cleanTrack.id,
-                opt > (Number(cleanTrack.viewsCount) || 0) ? { ...cleanTrack, viewsCount: opt } : cleanTrack
-              );
+              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
             }
           });
         }
@@ -2500,12 +2549,11 @@ export default {
           if (t?.id && t?.name && t?.audioUrl) {
             const { uploadedByEmail: _omit, ...cleanTrack } = t;
             const prev = trackMap.get(cleanTrack.id);
-            const mergedViews = Math.max(
-              Number(prev?.viewsCount) || 0,
-              Number(cleanTrack.viewsCount) || 0,
-              workerOptimisticViewCounts.get(cleanTrack.id) || 0
-            );
-            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: mergedViews });
+            const authoritativeViews =
+              cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
+                ? Number(cleanTrack.viewsCount) || 0
+                : Number(prev?.viewsCount) || 0;
+            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
           }
         });
 

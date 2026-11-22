@@ -8,6 +8,7 @@ import {
   fetchArtistProfileByUidFromCloud,
   uploadArtistProfileToCloud,
   fetchAlbumsFromCloud,
+  isTrackViewIncrementPending,
 } from './cloudStorageService';
 import { getDeletedSongIds } from './deletedTracksService';
 
@@ -314,12 +315,18 @@ export function incrementTrackViewInMemory(trackId: string): number {
   return nextViews;
 }
 
-export function syncTrackViewFromServer(trackId: string, serverViewsCount: number): void {
-  if (!trackId || !Number.isFinite(serverViewsCount) || serverViewsCount <= 0) return;
+export function syncTrackViewFromServer(
+  trackId: string,
+  serverViewsCount: number,
+  authoritative = true
+): void {
+  if (!trackId || !Number.isFinite(serverViewsCount) || serverViewsCount < 0) return;
   let finalViews = serverViewsCount;
   memorySessionTracks = memorySessionTracks.map((t) => {
     if (t.id === trackId) {
-      finalViews = Math.max(Number(t.viewsCount) || 0, serverViewsCount);
+      finalViews = authoritative
+        ? serverViewsCount
+        : Math.max(Number(t.viewsCount) || 0, serverViewsCount);
       return { ...t, viewsCount: finalViews };
     }
     return t;
@@ -329,7 +336,12 @@ export function syncTrackViewFromServer(trackId: string, serverViewsCount: numbe
     if (cached.some((t) => t.id === trackId)) {
       const updated = cached.map((t) =>
         t.id === trackId
-          ? { ...t, viewsCount: Math.max(Number(t.viewsCount) || 0, finalViews) }
+          ? {
+              ...t,
+              viewsCount: authoritative
+                ? finalViews
+                : Math.max(Number(t.viewsCount) || 0, finalViews),
+            }
           : t
       );
       saveCachedCloudTracks(updated);
@@ -339,7 +351,7 @@ export function syncTrackViewFromServer(trackId: string, serverViewsCount: numbe
     try {
       window.dispatchEvent(
         new CustomEvent(TRACK_VIEWS_UPDATED_EVENT, {
-          detail: { trackId, viewsCount: finalViews },
+          detail: { trackId, viewsCount: finalViews, authoritative },
         })
       );
     } catch {}
@@ -527,9 +539,19 @@ export async function fetchAllRealSongs(
   const mergeAndEmit = (incoming: JamendoTrack[]) => {
     if (!incoming || incoming.length === 0) return;
     const deletedIds = getDeletedSongIds();
-    latestMerged = deduplicateTracks([...incoming, ...latestMerged]).filter(
-      (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
-    );
+    const incomingById = new Map<string, JamendoTrack>();
+    incoming.forEach((t) => {
+      if (t?.id) incomingById.set(t.id, t);
+    });
+    latestMerged = deduplicateTracks([...incoming, ...latestMerged])
+      .filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id))
+      .map((t) => {
+        const freshCloud = incomingById.get(t.id);
+        if (freshCloud && !isTrackViewIncrementPending(t.id)) {
+          return { ...t, viewsCount: Number(freshCloud.viewsCount) || 0 };
+        }
+        return t;
+      });
     saveCachedCloudTracks(latestMerged);
     if (onProgress) onProgress(latestMerged.length);
     batchListeners.forEach((cb) => {

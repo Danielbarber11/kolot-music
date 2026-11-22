@@ -31,9 +31,24 @@ import {
   getGoogleAccountPhotoUrl,
 } from '../services/authService';
 import { useExtractedColor } from '../services/colorService';
-import { getStreamingMediaUrl, updateTrackColorInCloud, incrementTrackPlaysInCloud, fetchSingleTrackFromCloud } from '../services/cloudStorageService';
+import {
+  getStreamingMediaUrl,
+  updateTrackColorInCloud,
+  incrementTrackPlaysInCloud,
+  fetchSingleTrackFromCloud,
+  isTrackViewIncrementPending,
+  waitForPendingTrackViewIncrement,
+} from '../services/cloudStorageService';
 import { trackEvent } from '../services/analyticsService';
-import { getCachedArtistProfiles, fetchAllArtistProfiles, upsertMemoryArtistProfile, removeMemoryArtistProfile, updateMemoryTracksArtistAvatar, syncTrackSubtitlesInMemory } from '../services/multiMusicService';
+import {
+  getCachedArtistProfiles,
+  fetchAllArtistProfiles,
+  upsertMemoryArtistProfile,
+  removeMemoryArtistProfile,
+  updateMemoryTracksArtistAvatar,
+  syncTrackSubtitlesInMemory,
+  syncTrackViewFromServer,
+} from '../services/multiMusicService';
 import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 
@@ -307,10 +322,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     });
 
     fetchSingleTrackFromCloud(track.id)
-      .then((freshTrack) => {
+      .then(async (freshTrack) => {
         if (cancelled || !freshTrack || freshTrack.id !== track.id) return;
         syncTrackSubtitlesInMemory(freshTrack);
         applyFreshTrackSubs(freshTrack);
+        if (isTrackViewIncrementPending(track.id)) {
+          await waitForPendingTrackViewIncrement(track.id);
+        } else if (typeof freshTrack.viewsCount === 'number') {
+          syncTrackViewFromServer(track.id, Number(freshTrack.viewsCount), true);
+        }
         // Collaborative auto-resume if another user left incomplete subtitles OR track still lacks subtitles
         if (!freshTrack.subtitlesDisabled) {
           void ensureTrackSubtitlesInBackground(freshTrack, isHe ? 'he' : 'en');
@@ -318,8 +338,30 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       })
       .catch(() => {});
 
+    const liveViewsInterval = window.setInterval(() => {
+      if (cancelled || document.visibilityState !== 'visible' || isTrackViewIncrementPending(track.id)) {
+        return;
+      }
+      fetchSingleTrackFromCloud(track.id)
+        .then((freshTrack) => {
+          if (
+            cancelled ||
+            !freshTrack ||
+            freshTrack.id !== track.id ||
+            isTrackViewIncrementPending(track.id)
+          ) {
+            return;
+          }
+          if (typeof freshTrack.viewsCount === 'number' && Number.isFinite(freshTrack.viewsCount)) {
+            syncTrackViewFromServer(track.id, Number(freshTrack.viewsCount), true);
+          }
+        })
+        .catch(() => {});
+    }, 4000);
+
     return () => {
       cancelled = true;
+      window.clearInterval(liveViewsInterval);
       unsubLive();
     };
   }, [track.id]);
