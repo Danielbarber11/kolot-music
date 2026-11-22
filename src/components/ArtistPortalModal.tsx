@@ -35,12 +35,9 @@ import {
   Loader2,
   Wand2,
   Mail,
-  ShieldAlert,
-  Paperclip,
-  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, TrackReport, CURRENT_TERMS_VERSION } from '../types';
+import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, CURRENT_TERMS_VERSION } from '../types';
 import {
   AuthUser,
   getCurrentAuthUser,
@@ -54,12 +51,6 @@ import {
   getEffectiveUserAvatar,
   getGoogleAccountPhotoUrl,
   upgradeGooglePhotoQuality,
-  ContactMessageRecord,
-  getContactMessagesInAdmin,
-  dismissContactMessageInAdmin,
-  getTrackReportsFromR2,
-  dismissTrackReportInR2,
-  getAuthHeaders,
 } from '../services/authService';
 import {
   uploadTrackToCloud,
@@ -114,7 +105,6 @@ interface ArtistPortalModalProps {
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
   onAccountDeleted?: (deletedUid: string) => void;
-  onOpenAdminPanel?: (tab?: 'accounts' | 'reports' | 'messages') => void;
 }
 
 export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
@@ -133,7 +123,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   onRemoveTrack,
   onArtistUpdated,
   onAccountDeleted,
-  onOpenAdminPanel,
 }) => {
   const isHe = lang === 'he';
 
@@ -317,9 +306,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
-  const [adminMessages, setAdminMessages] = useState<ContactMessageRecord[]>([]);
-  const [adminReports, setAdminReports] = useState<TrackReport[]>([]);
-
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
@@ -338,20 +324,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   useEffect(() => {
     includeSubtitlesRef.current = includeSubtitles;
   }, [includeSubtitles]);
-
-  useEffect(() => {
-    if (isOpen && currentUser?.isAdmin) {
-      Promise.all([
-        getContactMessagesInAdmin().catch(() => []),
-        getTrackReportsFromR2().catch(() => []),
-      ])
-        .then(([msgs, reps]) => {
-          setAdminMessages(msgs);
-          setAdminReports(reps);
-        })
-        .catch(() => {});
-    }
-  }, [isOpen, activeTab, currentUser?.isAdmin]);
 
   const stopSilentAutoSubtitles = () => {
     autoSubJobIdRef.current += 1;
@@ -2076,25 +2048,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
 
           <div className="pointer-events-auto flex items-center gap-2 sm:gap-3">
-            {currentUser?.isAdmin && onOpenAdminPanel && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenAdminPanel(adminReports.length > 0 && adminMessages.length === 0 ? 'reports' : 'messages');
-                }}
-                className="h-10 sm:h-11 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold text-white border border-white/25 bg-white/15 hover:bg-white/25 backdrop-blur-xl shadow-lg cursor-pointer transition-all"
-                title={isHe ? 'דיווחים והודעות (מנהל בלבד)' : 'Reports & Messages (Admin Only)'}
-              >
-                <ShieldAlert className="w-4 h-4 text-white" />
-                <span>{isHe ? 'דיווחים והודעות' : 'Reports'}</span>
-                {adminMessages.length + adminReports.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full bg-white text-black text-[10px] font-mono leading-none">
-                    {adminMessages.length + adminReports.length}
-                  </span>
-                )}
-              </button>
-            )}
             {activeTab !== 'account_settings' && (
               <button
                 onClick={() => setActiveTab('account_settings')}
@@ -3910,193 +3863,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </button>
               </div>
             </form>
-
-            {/* Admin Reports & Messages Inbox Preview in Settings (STRICTLY ADMIN ONLY) */}
-            {currentUser?.isAdmin && (
-              <div className="rounded-2xl bg-[#09090b] border border-white/15 p-5 sm:p-7 space-y-4 shadow-xl">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <ShieldAlert className="w-4 h-4 text-white shrink-0" />
-                    <div>
-                      <h3 className="text-sm font-bold text-white">
-                        {isHe ? 'תיבת דיווחים והודעות (למנהל בלבד)' : 'Reports & Messages Inbox (Admin Only)'}
-                      </h3>
-                      <p className="text-[11px] text-neutral-400">
-                        {isHe
-                          ? 'כל ההודעות והדיווחים מהמשתמשים בתוך האפליקציה — חשופים אך ורק לחשבון המנהל שלך.'
-                          : 'All user reports and messages inside the app — strictly visible to your admin account only.'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono text-white/70">
-                      {adminMessages.length + adminReports.length}
-                    </span>
-                    {onOpenAdminPanel && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onOpenAdminPanel('messages');
-                        }}
-                        className="px-3 py-1.5 rounded-full bg-white text-black text-[11px] font-bold hover:bg-neutral-200 transition-colors cursor-pointer"
-                      >
-                        {isHe ? 'פתח לוח ניהול מלא' : 'Open Admin Panel'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {adminMessages.length === 0 && adminReports.length === 0 ? (
-                  <p className="text-xs text-neutral-500">
-                    {isHe ? 'אין כרגע דיווחים או הודעות פתוחות.' : 'No open reports or messages.'}
-                  </p>
-                ) : (
-                  <div className="space-y-2.5 max-h-72 overflow-y-auto custom-scrollbar">
-                    {adminReports.map((rep) => (
-                      <div key={rep.id} className="p-3.5 rounded-xl bg-black border border-rose-500/30 space-y-1.5 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-white truncate">
-                            {isHe ? `דיווח על שיר: ${rep.trackName}` : `Report: ${rep.trackName}`}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAdminReports((prev) => prev.filter((r) => r.id !== rep.id));
-                              void dismissTrackReportInR2(rep.id);
-                            }}
-                            className="text-[11px] text-neutral-400 hover:text-white cursor-pointer shrink-0"
-                          >
-                            {isHe ? 'טופל / מחק' : 'Dismiss'}
-                          </button>
-                        </div>
-                        <div className="text-[11px] text-neutral-400">
-                          {rep.artistName} · {rep.reason}
-                        </div>
-                        {(rep.uploaderEmail || rep.reporterEmail) && (
-                          <div className="space-y-0.5 text-[11px] text-neutral-300">
-                            {rep.uploaderEmail && (
-                              <div>
-                                <span className="text-neutral-500">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
-                                <span className="font-mono text-white" dir="ltr">{rep.uploaderEmail}</span>
-                              </div>
-                            )}
-                            {rep.reporterEmail && (
-                              <div>
-                                <span className="text-neutral-500">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
-                                <span className="font-mono text-white" dir="ltr">{rep.reporterEmail}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {rep.details && <p className="text-xs text-neutral-200 whitespace-pre-wrap">{rep.details}</p>}
-                        {rep.legalDocumentKey && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const res = await fetch(
-                                  `/api/admin/legal-doc?key=${encodeURIComponent(rep.legalDocumentKey!)}`,
-                                  { headers: getAuthHeaders(), credentials: 'include' }
-                                );
-                                if (!res.ok) return;
-                                const blob = await res.blob();
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = rep.legalDocumentName || 'legal-document';
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                setTimeout(() => URL.revokeObjectURL(url), 2500);
-                              } catch {}
-                            }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer"
-                          >
-                            <Paperclip className="w-3 h-3" />
-                            <span>
-                              {isHe
-                                ? `הורד מסמך משפטי (${rep.legalDocumentName || 'קובץ'})`
-                                : `Download Legal Doc (${rep.legalDocumentName || 'File'})`}
-                            </span>
-                            <Download className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    {adminMessages.map((msg) => (
-                      <div key={msg.id} className="p-3.5 rounded-xl bg-black border border-white/12 space-y-1.5 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-white truncate">{msg.subject}</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAdminMessages((prev) => prev.filter((m) => m.id !== msg.id));
-                              void dismissContactMessageInAdmin(msg.id);
-                            }}
-                            className="text-[11px] text-neutral-400 hover:text-white cursor-pointer shrink-0"
-                          >
-                            {isHe ? 'טופל / מחק' : 'Dismiss'}
-                          </button>
-                        </div>
-                        <div className="text-[11px] text-neutral-400">
-                          {msg.reporterEmail || msg.senderEmail} · {msg.categoryLabel || msg.category}
-                        </div>
-                        {(msg.uploaderEmail || msg.reporterEmail) && (
-                          <div className="space-y-0.5 text-[11px] text-neutral-300">
-                            {msg.uploaderEmail && (
-                              <div>
-                                <span className="text-neutral-500">{isHe ? 'מייל בעל הפרופיל שהעלה את השיר: ' : 'Uploader Email: '}</span>
-                                <span className="font-mono text-white" dir="ltr">{msg.uploaderEmail}</span>
-                              </div>
-                            )}
-                            {msg.reporterEmail && (
-                              <div>
-                                <span className="text-neutral-500">{isHe ? 'מייל מפרסם הדיווח: ' : 'Reporter Email: '}</span>
-                                <span className="font-mono text-white" dir="ltr">{msg.reporterEmail}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <p className="text-xs text-neutral-200 whitespace-pre-wrap leading-relaxed">{msg.message}</p>
-                        {msg.legalDocumentKey && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const res = await fetch(
-                                  `/api/admin/legal-doc?key=${encodeURIComponent(msg.legalDocumentKey!)}`,
-                                  { headers: getAuthHeaders(), credentials: 'include' }
-                                );
-                                if (!res.ok) return;
-                                const blob = await res.blob();
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = msg.legalDocumentName || 'legal-document';
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                setTimeout(() => URL.revokeObjectURL(url), 2500);
-                              } catch {}
-                            }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white text-black hover:bg-neutral-200 font-bold text-[11px] transition-colors cursor-pointer"
-                          >
-                            <Paperclip className="w-3 h-3" />
-                            <span>
-                              {isHe
-                                ? `הורד מסמך משפטי (${msg.legalDocumentName || 'קובץ'})`
-                                : `Download Legal Doc (${msg.legalDocumentName || 'File'})`}
-                            </span>
-                            <Download className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Danger Zone: Self-Service Account Deletion */}
             {currentUser && (

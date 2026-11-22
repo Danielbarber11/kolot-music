@@ -55,7 +55,6 @@ import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistPortalModal } from './ArtistPortalModal';
 import { ArtistProfileModal } from './ArtistProfileModal';
-import { AdminPanelModal } from './AdminPanelModal';
 import { AlbumModal } from './AlbumModal';
 import { Logo } from './Logo';
 import { TermsModal } from './TermsModal';
@@ -184,8 +183,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [bulkClassifyNotice, setBulkClassifyNotice] = useState<string | null>(null);
 
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
-  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
-  const [adminPanelInitialTab, setAdminPanelInitialTab] = useState<'accounts' | 'reports' | 'messages'>('messages');
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showLegalTermsModal, setShowLegalTermsModal] = useState(false);
   const [showPromoBanner, setShowPromoBanner] = useState(true);
@@ -225,31 +222,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
     } catch (err) {}
   };
 
-  // 10-Click Secret Admin Easter Egg counter
-  const clickCountRef = useRef(0);
-  const clickTimerRef = useRef<NodeJS.Timeout | null>(null);
-
   const handleProfileClick = () => {
     stopAllGlobalAudio();
-    clickCountRef.current += 1;
-    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-
-    if (clickCountRef.current >= 10) {
-      clickCountRef.current = 0;
-      if (authUser?.isAdmin) {
-        setIsAdminPanelOpen(true);
-      } else {
-        setIsArtistPortalOpen(true);
-      }
-      return;
-    }
-
-    clickTimerRef.current = setTimeout(() => {
-      if (clickCountRef.current < 10) {
-        setIsArtistPortalOpen(true);
-      }
-      clickCountRef.current = 0;
-    }, 350);
+    setIsArtistPortalOpen(true);
   };
 
   const handleGoogleSignInClick = async () => {
@@ -2500,10 +2475,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setIsArtistPortalOpen(false);
         }}
         lang={lang}
-        onOpenAdminPanel={(tab) => {
-          setAdminPanelInitialTab(tab || 'messages');
-          setIsAdminPanelOpen(true);
-        }}
         onTrackPublished={async (newTrack) => {
           setAllTracks((prev) => {
             const replaced = prev.some((t) => t.id === newTrack.id)
@@ -2601,34 +2572,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
         onToggleLike={toggleFavorite}
         likedSongIds={likedSongIds}
         onOpenArtistProfile={(artistName) => openArtistProfile(artistName)}
-      />
-
-      {/* ADMIN-ONLY PANEL MODAL */}
-      <AdminPanelModal
-        isOpen={isAdminPanelOpen && !!authUser?.isAdmin}
-        onClose={() => setIsAdminPanelOpen(false)}
-        lang={lang}
-        allTracks={allTracks}
-        artistProfiles={allArtists}
-        initialTab={adminPanelInitialTab}
-        onAccountDeleted={(deletedUid) => {
-          const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
-          removeMemoryArtistProfile(deletedUid);
-          setAllArtists((prev) => {
-            const next = prev.filter((a) => {
-              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
-              return aUid !== cleanDeleted;
-            });
-            onArtistsSync?.(next);
-            return next;
-          });
-          if (activeArtistProfile) {
-            const activeUid = (activeArtistProfile.googleUid || activeArtistProfile.id || '').replace(/^artist_/, '').toLowerCase().trim();
-            if (activeUid === cleanDeleted) {
-              setActiveArtistProfile(null);
-            }
-          }
-        }}
       />
 
       {/* GOOGLE OAUTH AUTH MODAL */}

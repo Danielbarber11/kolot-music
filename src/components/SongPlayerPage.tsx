@@ -1201,12 +1201,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         style={{ overflowAnchor: 'none' }}
         className="relative z-10 flex-1 min-h-0 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
       >
-        {/* SCREEN 1: MOBILE-ANCHORED BOTTOM CONTROLS + CENTERED ARTWORK (FITS CLEANLY BEFORE SCROLLING) */}
-        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-between sm:justify-center px-4 pt-16 pb-5 sm:pt-14 sm:pb-12 gap-2.5 sm:gap-5 max-w-md mx-auto shrink-0">
+        {/* SCREEN 1: CENTERED ARTWORK & RAISED CONTROLS CLUSTER ON MOBILE (FITS CLEANLY BEFORE SCROLLING) */}
+        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center px-4 pt-14 pb-16 sm:pt-14 sm:pb-12 gap-4 sm:gap-5 max-w-md mx-auto shrink-0">
 
-        {/* 1. COVER ARTWORK IMAGE (Slightly lowered toward vertical middle on mobile) */}
+        {/* 1. COVER ARTWORK IMAGE */}
         <div
-          className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[33dvh] max-w-[33dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0 mt-auto mb-3 sm:my-0"
+          className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[32dvh] max-w-[32dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
           style={
             extractedColor
               ? {
@@ -1228,7 +1228,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </div>
 
         {/* BOTTOM PLAYER CONTROLS CLUSTER (Mobile: Song Title & Artist sit ABOVE Progress Bar; Desktop keeps original order) */}
-        <div className="w-full mt-auto sm:mt-0 flex flex-col items-center gap-2.5 sm:gap-4 shrink-0">
+        <div className="w-full flex flex-col items-center gap-2.5 sm:gap-4 shrink-0">
 
         {/* 1 on Mobile / 3 on Desktop: SONG NAME */}
         <div className="order-1 sm:order-3 text-center space-y-1 px-2 w-full pb-0.5 sm:pb-1 overflow-hidden flex flex-col items-center">
