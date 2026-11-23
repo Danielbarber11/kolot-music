@@ -15,10 +15,16 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
   const isHe = lang === 'he';
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const pausedResumeTimeRef = useRef<number | null>(null);
+  const pendingRestoreTimeRef = useRef<number | null>(null);
+  const isSwitchingTrackRef = useRef<boolean>(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
+  const [isAppHidden, setIsAppHidden] = useState<boolean>(() =>
+    typeof document !== 'undefined' ? document.visibilityState === 'hidden' : false
+  );
 
   const title = 'name' in currentTrack ? currentTrack.name : currentTrack.title;
   const subtitle = 'artistName' in currentTrack ? currentTrack.artistName : currentTrack.creator || 'Internet Archive';
@@ -34,17 +40,133 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
       : currentTrack.directMediaUrl || `https://archive.org/download/${currentTrack.identifier}/${currentTrack.identifier}.mp3`;
   const audioSrc = getStreamingMediaUrl(rawAudioSrc);
 
+  const clearMediaSessionUiOnly = () => {
+    try {
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none';
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.setActionHandler('play', null);
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('stop', null);
+        if (typeof navigator.mediaSession.setPositionState === 'function') {
+          try {
+            navigator.mediaSession.setPositionState();
+          } catch {}
+        }
+      }
+    } catch {}
+  };
+
+  const clearMediaSessionCompletely = (audioEl?: HTMLAudioElement | null, unloadAudio = false) => {
+    try {
+      if (audioEl) {
+        audioEl.pause();
+        if (unloadAudio) {
+          audioEl.currentTime = 0;
+          audioEl.removeAttribute('src');
+          audioEl.load();
+        }
+      }
+      clearMediaSessionUiOnly();
+    } catch {}
+  };
+
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.play().catch(() => setIsPlaying(false));
-      setIsPlaying(true);
+    if (typeof document === 'undefined') return;
+    const syncVisibility = () => {
+      const hidden = document.visibilityState === 'hidden';
+      const audio = audioRef.current;
+
+      if (!hidden) {
+        clearMediaSessionUiOnly();
+        setIsAppHidden(false);
+        if (audio && audioSrc && !audio.getAttribute('src')) {
+          const resumeAt = pausedResumeTimeRef.current ?? 0;
+          pausedResumeTimeRef.current = null;
+          pendingRestoreTimeRef.current = resumeAt;
+          audio.src = audioSrc;
+          audio.load();
+          setCurrentTime(resumeAt);
+        }
+        return;
+      }
+
+      const actuallyPlaying = Boolean(
+        audio &&
+          !audio.paused &&
+          !audio.ended &&
+          !audio.muted &&
+          audio.volume > 0 &&
+          Boolean(audio.getAttribute('src'))
+      );
+      if (!actuallyPlaying) {
+        if (audio) {
+          pausedResumeTimeRef.current = audio.ended ? 0 : audio.currentTime || 0;
+          clearMediaSessionCompletely(audio, true);
+        } else {
+          clearMediaSessionUiOnly();
+        }
+        setIsPlaying(false);
+      }
+      setIsAppHidden(true);
+    };
+
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') {
+        clearMediaSessionUiOnly();
+        setIsAppHidden(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', syncVisibility);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', syncVisibility);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [audioSrc]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !audioSrc) return;
+    isSwitchingTrackRef.current = true;
+    pausedResumeTimeRef.current = null;
+    pendingRestoreTimeRef.current = null;
+    if (audio.getAttribute('src') !== audioSrc) {
+      audio.src = audioSrc;
     }
-  }, [currentTrack]);
+    audio.load();
+    const timer = window.setTimeout(() => {
+      isSwitchingTrackRef.current = false;
+    }, 350);
+    audio
+      .play()
+      .then(() => {
+        isSwitchingTrackRef.current = false;
+        setIsPlaying(true);
+      })
+      .catch(() => {
+        isSwitchingTrackRef.current = false;
+        setIsPlaying(false);
+      });
+    return () => window.clearTimeout(timer);
+  }, [audioSrc]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') {
       return;
     }
+    const audio = audioRef.current;
+    const shouldExposeNotification =
+      isAppHidden &&
+      isPlaying &&
+      Boolean(audio && !audio.paused && !audio.ended && !audio.muted && audio.volume > 0 && audio.getAttribute('src'));
+
+    if (!shouldExposeNotification) {
+      clearMediaSessionUiOnly();
+      return;
+    }
+
     try {
       const artwork: MediaImage[] = [];
       if (coverUrl) {
@@ -62,55 +184,61 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
         album: 'Kolot Music',
         artwork,
       });
-      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      navigator.mediaSession.playbackState = 'playing';
       navigator.mediaSession.setActionHandler('play', () => {
+        if (!audioRef.current?.getAttribute('src') && audioSrc) {
+          pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
+          pausedResumeTimeRef.current = null;
+          audioRef.current!.src = audioSrc;
+          audioRef.current!.load();
+        }
         audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => {});
       });
       navigator.mediaSession.setActionHandler('pause', () => {
-        audioRef.current?.pause();
+        if (audioRef.current) {
+          pausedResumeTimeRef.current = audioRef.current.currentTime || 0;
+          clearMediaSessionCompletely(audioRef.current, true);
+        } else {
+          clearMediaSessionUiOnly();
+        }
         setIsPlaying(false);
       });
       navigator.mediaSession.setActionHandler('stop', () => {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.currentTime = 0;
-        }
+        pausedResumeTimeRef.current = 0;
+        clearMediaSessionCompletely(audioRef.current, true);
         setIsPlaying(false);
-        try {
-          navigator.mediaSession.playbackState = 'none';
-          navigator.mediaSession.metadata = null;
-        } catch {}
       });
     } catch {}
-  }, [title, subtitle, coverUrl, isPlaying]);
+  }, [title, subtitle, coverUrl, audioSrc, isPlaying, isAppHidden]);
 
   useEffect(() => {
+    const handlePageHide = () => {
+      clearMediaSessionCompletely(audioRef.current, true);
+    };
+    window.addEventListener('pagehide', handlePageHide);
     return () => {
-      try {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.removeAttribute('src');
-          audioRef.current.load();
-        }
-        if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-          navigator.mediaSession.playbackState = 'none';
-          navigator.mediaSession.metadata = null;
-          navigator.mediaSession.setActionHandler('play', null);
-          navigator.mediaSession.setActionHandler('pause', null);
-          navigator.mediaSession.setActionHandler('stop', null);
-        }
-      } catch {}
+      window.removeEventListener('pagehide', handlePageHide);
+      clearMediaSessionCompletely(audioRef.current, true);
     };
   }, []);
 
   const togglePlay = () => {
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying && !audio.paused) {
+      audio.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
-      setIsPlaying(true);
+      if (!audio.getAttribute('src') && audioSrc) {
+        pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
+        pausedResumeTimeRef.current = null;
+        audio.src = audioSrc;
+        audio.load();
+      }
+      audio
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => setIsPlaying(false));
     }
   };
 
@@ -134,8 +262,45 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
           ref={audioRef}
           src={audioSrc}
           onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
-          onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
-          onEnded={() => setIsPlaying(false)}
+          onLoadedMetadata={() => {
+            const audio = audioRef.current;
+            if (!audio) return;
+            const dur = audio.duration || 0;
+            setDuration(dur);
+            if (pendingRestoreTimeRef.current !== null) {
+              const restoreAt = Math.max(0, Math.min(dur || pendingRestoreTimeRef.current, pendingRestoreTimeRef.current));
+              pendingRestoreTimeRef.current = null;
+              try {
+                audio.currentTime = restoreAt;
+              } catch {}
+              setCurrentTime(restoreAt);
+            }
+          }}
+          onPlaying={() => {
+            isSwitchingTrackRef.current = false;
+            pausedResumeTimeRef.current = null;
+            setIsPlaying(true);
+          }}
+          onPause={() => {
+            if (isSwitchingTrackRef.current) return;
+            setIsPlaying(false);
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+              const audio = audioRef.current;
+              pausedResumeTimeRef.current = audio ? (audio.ended ? 0 : audio.currentTime || 0) : 0;
+              clearMediaSessionCompletely(audio, true);
+            } else {
+              clearMediaSessionUiOnly();
+            }
+          }}
+          onEnded={() => {
+            setIsPlaying(false);
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+              pausedResumeTimeRef.current = 0;
+              clearMediaSessionCompletely(audioRef.current, true);
+            } else {
+              clearMediaSessionUiOnly();
+            }
+          }}
         />
 
         {/* Track Info & Main Actions */}

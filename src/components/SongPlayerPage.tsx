@@ -219,6 +219,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const wakeLockRef = useRef<any>(null);
   const lyricsScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeLyricsLineRef = useRef<HTMLDivElement | null>(null);
+  const pausedResumeTimeRef = useRef<number | null>(null);
+  const pendingRestoreTimeRef = useRef<number | null>(null);
+  const isSwitchingTrackRef = useRef<boolean>(false);
   const [isAppHidden, setIsAppHidden] = useState<boolean>(() =>
     typeof document !== 'undefined' ? document.visibilityState === 'hidden' : false
   );
@@ -338,30 +341,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       })
       .catch(() => {});
 
-    const liveViewsInterval = window.setInterval(() => {
-      if (cancelled || document.visibilityState !== 'visible' || isTrackViewIncrementPending(track.id)) {
-        return;
-      }
-      fetchSingleTrackFromCloud(track.id)
-        .then((freshTrack) => {
-          if (
-            cancelled ||
-            !freshTrack ||
-            freshTrack.id !== track.id ||
-            isTrackViewIncrementPending(track.id)
-          ) {
-            return;
-          }
-          if (typeof freshTrack.viewsCount === 'number' && Number.isFinite(freshTrack.viewsCount)) {
-            syncTrackViewFromServer(track.id, Number(freshTrack.viewsCount), true);
-          }
-        })
-        .catch(() => {});
-    }, 4000);
-
     return () => {
       cancelled = true;
-      window.clearInterval(liveViewsInterval);
       unsubLive();
     };
   }, [track.id]);
@@ -529,15 +510,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
   }, []);
 
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const handleAppVisibilityChange = () => {
-      setIsAppHidden(document.visibilityState === 'hidden');
-    };
-    document.addEventListener('visibilitychange', handleAppVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleAppVisibilityChange);
-  }, []);
-
   const effectiveAudioUrl = getStreamingMediaUrl(track.audioUrl);
   const effectiveCoverUrl = getStreamingMediaUrl(track.coverUrl);
   const shouldUseAnonymousCors =
@@ -547,28 +519,106 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const extractedColor = useExtractedColor(effectiveCoverUrl, track.genre || 'Pop', track.bgColor);
 
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const syncVisibilityAndMediaSession = () => {
+      const hidden = document.visibilityState === 'hidden';
+      const audio = audioRef.current;
+
+      if (!hidden) {
+        clearMediaSessionUiOnly();
+        setIsAppHidden(false);
+        // If src was detached while paused in the background, restore it silently at the saved timestamp
+        if (audio && effectiveAudioUrl && !audio.getAttribute('src')) {
+          const resumeAt = pausedResumeTimeRef.current ?? 0;
+          pausedResumeTimeRef.current = null;
+          pendingRestoreTimeRef.current = resumeAt;
+          audio.src = effectiveAudioUrl;
+          audio.load();
+          syncProgressDomImmediate(resumeAt, duration, true);
+          setCurrentTime(resumeAt);
+        }
+        return;
+      }
+
+      const actuallyPlaying = Boolean(
+        audio &&
+          !audio.paused &&
+          !audio.ended &&
+          !audio.muted &&
+          audio.volume > 0 &&
+          Boolean(audio.getAttribute('src'))
+      );
+
+      if (!actuallyPlaying) {
+        if (audio) {
+          pausedResumeTimeRef.current = audio.ended ? 0 : audio.currentTime || 0;
+          clearMediaSessionCompletely(audio, true);
+        } else {
+          clearMediaSessionUiOnly();
+        }
+        setIsPlaying(false);
+      }
+      setIsAppHidden(true);
+    };
+
+    const handleWindowFocus = () => {
+      if (document.visibilityState === 'visible') {
+        clearMediaSessionUiOnly();
+        setIsAppHidden(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', syncVisibilityAndMediaSession);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', syncVisibilityAndMediaSession);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [effectiveAudioUrl, duration]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !effectiveAudioUrl) return;
     const shouldAutoPlay = true;
 
+    isSwitchingTrackRef.current = true;
+    pausedResumeTimeRef.current = null;
+    pendingRestoreTimeRef.current = null;
+
+    if (audio.getAttribute('src') !== effectiveAudioUrl) {
+      audio.src = effectiveAudioUrl;
+    }
     audio.load();
     audio.playbackRate = 1;
     audio.volume = 1;
     audio.muted = false;
 
+    const clearSwitchTimer = window.setTimeout(() => {
+      isSwitchingTrackRef.current = false;
+    }, 350);
+
     if (shouldAutoPlay) {
       const playPromise = audio.play();
       if (playPromise !== undefined) {
         playPromise
-          .then(() => setIsPlaying(true))
+          .then(() => {
+            isSwitchingTrackRef.current = false;
+            setIsPlaying(true);
+          })
           .catch((err) => {
+            isSwitchingTrackRef.current = false;
             console.warn('Playback notice:', err);
             setIsPlaying(false);
           });
       }
     } else {
+      isSwitchingTrackRef.current = false;
       setIsPlaying(false);
     }
+
+    return () => {
+      window.clearTimeout(clearSwitchTimer);
+    };
   }, [effectiveAudioUrl]);
 
   // Collaborative global background subtitle runner: starts when track plays if missing or incomplete in R2,
@@ -598,13 +648,24 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   ]);
 
   const togglePlayPause = () => {
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying && !audio.paused) {
+      audio.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
-      setIsPlaying(true);
+      if (!audio.getAttribute('src') && effectiveAudioUrl) {
+        pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
+        pausedResumeTimeRef.current = null;
+        audio.src = effectiveAudioUrl;
+        audio.load();
+      }
+      audio.muted = false;
+      if (audio.volume <= 0) audio.volume = 1;
+      audio
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => setIsPlaying(false));
     }
   };
 
@@ -707,7 +768,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   const syncMediaSessionPosition = (timeSec: number, durSec: number) => {
     try {
+      const audio = audioRef.current;
       if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') return;
+      if (!audio || audio.paused || audio.ended || !audio.getAttribute('src')) return;
       if (
         typeof navigator !== 'undefined' &&
         'mediaSession' in navigator &&
@@ -766,12 +829,18 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
   }, [extractedColor.r, extractedColor.g, extractedColor.b]);
 
-  // Native Mobile / Samsung OS Media Notification Controls — active ONLY when outside the app / screen locked
+  // Native Mobile / Samsung OS Media Notification Controls — active ONLY when outside the app AND audio is actively playing
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') {
       return;
     }
-    if (!isAppHidden) {
+    const audio = audioRef.current;
+    const shouldExposeNotification =
+      isAppHidden &&
+      isPlaying &&
+      Boolean(audio && !audio.paused && !audio.ended && !audio.muted && audio.volume > 0 && audio.getAttribute('src'));
+
+    if (!shouldExposeNotification) {
       clearMediaSessionUiOnly();
       return;
     }
@@ -850,7 +919,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       }
 
       const rasterPng = await createTintedArtworkPng();
-      if (cancelled) return;
+      if (cancelled || document.visibilityState !== 'hidden') return;
       if (rasterPng) {
         // Put verified raster PNG first so Android/Samsung Bitmap decoder always extracts cover + palette colors
         artwork.unshift(
@@ -878,14 +947,26 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
     try {
       navigator.mediaSession.setActionHandler('play', () => {
+        if (!audioRef.current?.getAttribute('src') && effectiveAudioUrl) {
+          pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
+          pausedResumeTimeRef.current = null;
+          audioRef.current!.src = effectiveAudioUrl;
+          audioRef.current!.load();
+        }
         audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => {});
       });
       navigator.mediaSession.setActionHandler('pause', () => {
-        audioRef.current?.pause();
+        if (audioRef.current) {
+          pausedResumeTimeRef.current = audioRef.current.currentTime || 0;
+          clearMediaSessionCompletely(audioRef.current, true);
+        } else {
+          clearMediaSessionUiOnly();
+        }
         setIsPlaying(false);
       });
       navigator.mediaSession.setActionHandler('stop', () => {
-        clearMediaSessionCompletely(audioRef.current, false);
+        pausedResumeTimeRef.current = 0;
+        clearMediaSessionCompletely(audioRef.current, true);
         setIsPlaying(false);
       });
       navigator.mediaSession.setActionHandler('seekbackward', (details) => {
@@ -926,11 +1007,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     };
   }, [
     isAppHidden,
+    isPlaying,
     track.id,
     track.name,
     track.artistName,
     track.albumName,
     effectiveCoverUrl,
+    effectiveAudioUrl,
     allTracks.length,
     extractedColor.r,
     extractedColor.g,
@@ -940,16 +1023,26 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   useEffect(() => {
     try {
       if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
-        if (!isAppHidden || !audioRef.current?.getAttribute('src')) {
-          navigator.mediaSession.playbackState = 'none';
+        const audio = audioRef.current;
+        if (
+          !isAppHidden ||
+          !isPlaying ||
+          !audio ||
+          audio.paused ||
+          audio.ended ||
+          audio.muted ||
+          audio.volume <= 0 ||
+          !audio.getAttribute('src')
+        ) {
+          clearMediaSessionUiOnly();
           return;
         }
-        navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+        navigator.mediaSession.playbackState = 'playing';
         const d =
-          audioRef.current?.duration && Number.isFinite(audioRef.current.duration)
-            ? audioRef.current.duration
+          audio.duration && Number.isFinite(audio.duration)
+            ? audio.duration
             : duration;
-        syncMediaSessionPosition(audioRef.current?.currentTime || currentTime || 0, d);
+        syncMediaSessionPosition(audio.currentTime || currentTime || 0, d);
       }
     } catch {}
   }, [isPlaying, isAppHidden]);
@@ -1154,6 +1247,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           if (audio.duration && Number.isFinite(audio.duration)) {
             setDuration(audio.duration);
           }
+          if (pendingRestoreTimeRef.current !== null) {
+            const restoreAt = Math.max(0, Math.min(dur, pendingRestoreTimeRef.current));
+            pendingRestoreTimeRef.current = null;
+            try {
+              audio.currentTime = restoreAt;
+            } catch {}
+            syncProgressDomImmediate(restoreAt, dur, true);
+            setCurrentTime(restoreAt);
+            return;
+          }
           syncProgressDomImmediate(audio.currentTime || 0, dur, true);
           syncMediaSessionPosition(audio.currentTime || 0, dur);
         }}
@@ -1172,10 +1275,15 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
         }}
         onPlaying={() => {
+          isSwitchingTrackRef.current = false;
+          pausedResumeTimeRef.current = null;
           smoothClockRef.current.isBuffering = false;
           smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
+          setIsPlaying(true);
         }}
         onPlay={() => {
+          isSwitchingTrackRef.current = false;
+          pausedResumeTimeRef.current = null;
           setIsPlaying(true);
           smoothClockRef.current.isBuffering = false;
           smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -1185,10 +1293,14 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           }
         }}
         onPause={() => {
+          if (isSwitchingTrackRef.current) return;
           setIsPlaying(false);
-          if (audioRef.current) {
-            const d = audioRef.current.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
-            syncMediaSessionPosition(audioRef.current.currentTime || 0, d);
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            const audio = audioRef.current;
+            pausedResumeTimeRef.current = audio ? (audio.ended ? 0 : audio.currentTime || 0) : 0;
+            clearMediaSessionCompletely(audio, true);
+          } else {
+            clearMediaSessionUiOnly();
           }
         }}
         onTimeUpdate={() => {
@@ -1222,6 +1334,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           setCurrentTime(d);
           setIsPlaying(false);
           if (requestRef.current) cancelAnimationFrame(requestRef.current);
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            pausedResumeTimeRef.current = 0;
+            clearMediaSessionCompletely(audioRef.current, true);
+          } else {
+            clearMediaSessionUiOnly();
+          }
         }}
       />
 
@@ -1558,12 +1676,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 <span className="font-bold text-white/90 text-xs truncate block">{track.writers}</span>
               </div>
             )}
-            <div>
-              <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'צפיות:' : 'Views:'}</span>
-              <span className="font-bold text-white font-mono tabular-nums truncate block">
-                {Math.max(1, Number(track.viewsCount) || 0).toLocaleString()}
-              </span>
-            </div>
           </div>
         </div>
 
