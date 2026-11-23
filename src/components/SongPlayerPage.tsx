@@ -140,7 +140,7 @@ export const ScrollingSongTitle: React.FC<{ title: string }> = ({ title }) => {
 
   if (!isLong) {
     return (
-      <h1 className="text-lg sm:text-2xl font-black text-white tracking-tight drop-shadow truncate text-center">
+      <h1 className="text-[22px] sm:text-2xl font-black text-white tracking-tight drop-shadow truncate text-center">
         {title}
       </h1>
     );
@@ -152,11 +152,11 @@ export const ScrollingSongTitle: React.FC<{ title: string }> = ({ title }) => {
         dir={isHe ? 'rtl' : 'ltr'}
         className={`inline-flex items-center ${isHe ? 'animate-marquee-rtl' : 'animate-marquee-ltr'}`}
       >
-        <span className="text-lg sm:text-2xl font-black text-white tracking-tight drop-shadow px-3">
+        <span className="text-[22px] sm:text-2xl font-black text-white tracking-tight drop-shadow px-3">
           {title}
         </span>
         <span className="text-white/60 opacity-70 px-2 font-bold">•</span>
-        <span className="text-lg sm:text-2xl font-black text-white tracking-tight drop-shadow px-3">
+        <span className="text-[22px] sm:text-2xl font-black text-white tracking-tight drop-shadow px-3">
           {title}
         </span>
         <span className="text-white/60 opacity-70 px-2 font-bold">•</span>
@@ -219,6 +219,8 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const wakeLockRef = useRef<any>(null);
   const lyricsScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeLyricsLineRef = useRef<HTMLDivElement | null>(null);
+  const albumQueueScrollRef = useRef<HTMLDivElement | null>(null);
+  const currentAlbumRowRef = useRef<HTMLButtonElement | null>(null);
   const pausedResumeTimeRef = useRef<number | null>(null);
   const pendingRestoreTimeRef = useRef<number | null>(null);
   const isSwitchingTrackRef = useRef<boolean>(false);
@@ -231,6 +233,106 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
+
+  const albumQueueData = React.useMemo(() => {
+    const invalidAlbumNames = new Set([
+      '',
+      'single',
+      'single release',
+      'unknown album',
+      'סינגל',
+      'סינגל עצמאי',
+      'ללא אלבום',
+      'independent single',
+      'none',
+    ]);
+    const cleanAlbumName = (track.albumName || '').trim();
+    const lowerAlbum = cleanAlbumName.toLowerCase();
+    const hasRealAlbumName =
+      Boolean(cleanAlbumName) &&
+      !invalidAlbumNames.has(lowerAlbum) &&
+      !lowerAlbum.startsWith('סינגל') &&
+      !lowerAlbum.startsWith('single');
+
+    const matchedAlbum = (allAlbums || []).find((alb) => {
+      if (Array.isArray(alb.trackIds) && alb.trackIds.includes(track.id)) return true;
+      if (!hasRealAlbumName) return false;
+      const albTitleLower = (alb.title || '').trim().toLowerCase();
+      if (albTitleLower !== lowerAlbum) return false;
+      const albArtistLower = (alb.artistName || '').trim().toLowerCase();
+      const trkArtistLower = (track.artistName || '').trim().toLowerCase();
+      return (
+        !albArtistLower ||
+        !trkArtistLower ||
+        albArtistLower === trkArtistLower ||
+        (alb.uploadedByUid && alb.uploadedByUid === track.uploadedByUid)
+      );
+    });
+
+    const queueMap = new Map<string, JamendoTrack>();
+    const tracksById = new Map<string, JamendoTrack>();
+    (allTracks || []).forEach((t) => {
+      if (t?.id) tracksById.set(t.id, t);
+    });
+    tracksById.set(track.id, track);
+
+    if (matchedAlbum && Array.isArray(matchedAlbum.trackIds)) {
+      matchedAlbum.trackIds.forEach((id) => {
+        const found = tracksById.get(id);
+        if (found && !queueMap.has(found.id)) {
+          queueMap.set(found.id, found);
+        }
+      });
+    }
+
+    if (hasRealAlbumName) {
+      const trkOwner = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+      const trkArtist = (track.artistName || '').trim().toLowerCase();
+      (allTracks || []).forEach((candidate) => {
+        if (!candidate?.id || queueMap.has(candidate.id)) return;
+        const candAlb = (candidate.albumName || '').trim().toLowerCase();
+        if (candAlb !== lowerAlbum) return;
+        const candOwner = (candidate.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const candArtist = (candidate.artistName || '').trim().toLowerCase();
+        if (
+          (trkOwner && candOwner && trkOwner === candOwner) ||
+          (trkArtist && candArtist && trkArtist === candArtist)
+        ) {
+          queueMap.set(candidate.id, candidate);
+        }
+      });
+      if (!queueMap.has(track.id)) {
+        queueMap.set(track.id, track);
+      }
+    }
+
+    const orderedTracks = Array.from(queueMap.values());
+    const currentIndex = orderedTracks.findIndex((t) => t.id === track.id);
+    const displayAlbumTitle = matchedAlbum?.title || (hasRealAlbumName ? cleanAlbumName : '');
+
+    return {
+      orderedTracks,
+      currentIndex,
+      displayAlbumTitle,
+      hasAlbumQueue: orderedTracks.length > 1 && Boolean(displayAlbumTitle),
+    };
+  }, [track, allTracks, allAlbums]);
+
+  useEffect(() => {
+    if (!albumQueueData.hasAlbumQueue || albumQueueData.currentIndex < 0) return;
+    const rafId = requestAnimationFrame(() => {
+      const container = albumQueueScrollRef.current;
+      const rowEl = currentAlbumRowRef.current;
+      if (!container || !rowEl) return;
+      try {
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        const targetTop = Math.max(0, rowRect.top - containerRect.top + container.scrollTop);
+        container.scrollTop = targetTop;
+      } catch {}
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [track.id, albumQueueData.hasAlbumQueue, albumQueueData.currentIndex]);
 
   useEffect(() => {
     if (allArtists.length === 0 && loadedArtists.length === 0) {
@@ -818,16 +920,26 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }
   };
 
-  // Sync dynamic <meta name="theme-color"> so Chrome / Samsung One UI notification & status bar absorb track colors
+  // Allow transparent / edge-to-edge top status bar inside player (restore #000000 on exit)
   useEffect(() => {
-    const metaTheme = document.querySelector('meta[name="theme-color"]');
-    if (!metaTheme) return;
-    const rgbColor = `rgb(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b})`;
-    metaTheme.setAttribute('content', rgbColor);
+    const existingThemeMeta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement | null;
+    const previousContent = existingThemeMeta?.getAttribute('content') || '#000000';
+    if (existingThemeMeta && existingThemeMeta.parentNode) {
+      existingThemeMeta.parentNode.removeChild(existingThemeMeta);
+    }
+
     return () => {
-      metaTheme.setAttribute('content', '#000000');
+      const currentMeta = document.querySelector('meta[name="theme-color"]') as HTMLMetaElement | null;
+      if (currentMeta) {
+        currentMeta.setAttribute('content', previousContent);
+      } else {
+        const restored = document.createElement('meta');
+        restored.name = 'theme-color';
+        restored.content = previousContent;
+        document.head.appendChild(restored);
+      }
     };
-  }, [extractedColor.r, extractedColor.g, extractedColor.b]);
+  }, []);
 
   // Native Mobile / Samsung OS Media Notification Controls — active ONLY when outside the app AND audio is actively playing
   useEffect(() => {
@@ -1206,7 +1318,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#09090b] overflow-hidden text-white flex flex-col m-0 p-0 border-0"
+      className="fixed inset-0 z-[100] w-full min-h-[100dvh] bg-[#09090b] overflow-hidden text-white flex flex-col m-0 p-0 border-0"
       style={dynamicBgStyle}
     >
       {/* Immersive Dynamic Artwork Background — decoupled from scroll container to prevent backdrop-blur scroll banding */}
@@ -1344,7 +1456,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       />
 
       {/* FLOATING TOP BAR - FROSTED GLASS BACK BUTTON */}
-      <div className="absolute top-3.5 sm:top-5 left-0 right-0 z-50 px-4 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
+      <div className="absolute top-[max(0.875rem,calc(env(safe-area-inset-top)+0.4rem))] sm:top-5 left-0 right-0 z-50 px-5 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>
         <button
           type="button"
           onClick={handleExitPlayer}
@@ -1361,34 +1473,36 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         style={{ overflowAnchor: 'none' }}
         className="relative z-10 flex-1 min-h-0 w-full overflow-y-auto custom-scrollbar overscroll-contain flex flex-col"
       >
-        {/* SCREEN 1: CENTERED ARTWORK & RAISED CONTROLS CLUSTER ON MOBILE (FITS CLEANLY BEFORE SCROLLING) */}
-        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center px-4 pt-14 pb-16 sm:pt-14 sm:pb-12 gap-4 sm:gap-5 max-w-md mx-auto shrink-0">
+        {/* SCREEN 1: SPOTIFY / YOUTUBE MUSIC PROPORTIONS ON MOBILE (FITS CLEANLY BEFORE SCROLLING) */}
+        <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-between px-6 pt-[max(4.5rem,calc(env(safe-area-inset-top)+3.5rem))] pb-[max(2.25rem,calc(env(safe-area-inset-bottom)+1.5rem))] sm:justify-center sm:pt-14 sm:pb-12 gap-4 sm:gap-6 max-w-md mx-auto shrink-0">
 
         {/* 1. COVER ARTWORK IMAGE */}
-        <div
-          className="w-40 h-40 sm:w-52 sm:h-52 md:w-56 md:h-56 max-h-[32dvh] max-w-[32dvh] aspect-square rounded-2xl sm:rounded-3xl p-2 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
-          style={
-            extractedColor
-              ? {
-                  boxShadow: `0 20px 50px -10px rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.55)`,
-                }
-              : undefined
-          }
-        >
-          <div className="w-full h-full rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl">
-            <TrackCoverArt
-              coverUrl={track.coverUrl}
-              artistName={track.artistName}
-              trackName={track.name}
-              genre={track.genre}
-              showHoverPlay={false}
-              priority={true}
-            />
+        <div className="flex-1 w-full flex items-center justify-center py-1 sm:flex-none">
+          <div
+            className="w-[min(82vw,340px)] max-h-[42dvh] max-w-[42dvh] sm:w-64 sm:h-64 md:w-72 md:h-72 aspect-square rounded-2xl sm:rounded-3xl p-1.5 bg-white/10 backdrop-blur-2xl border border-white/25 shadow-2xl flex items-center justify-center relative overflow-hidden group flex-shrink-0"
+            style={
+              extractedColor
+                ? {
+                    boxShadow: `0 20px 50px -10px rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.55)`,
+                  }
+                : undefined
+            }
+          >
+            <div className="w-full h-full rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl">
+              <TrackCoverArt
+                coverUrl={track.coverUrl}
+                artistName={track.artistName}
+                trackName={track.name}
+                genre={track.genre}
+                showHoverPlay={false}
+                priority={true}
+              />
+            </div>
           </div>
         </div>
 
-        {/* BOTTOM PLAYER CONTROLS CLUSTER (Mobile: Song Title & Artist sit ABOVE Progress Bar; Desktop keeps original order) */}
-        <div className="w-full flex flex-col items-center gap-2.5 sm:gap-4 shrink-0">
+        {/* BOTTOM PLAYER CONTROLS CLUSTER (Mobile: Song Title above Progress Bar & full-width controls) */}
+        <div className="w-full flex flex-col items-center gap-3.5 sm:gap-4 shrink-0">
 
         {/* 1 on Mobile / 3 on Desktop: SONG NAME */}
         <div className="order-1 sm:order-3 text-center space-y-1 px-2 w-full pb-0.5 sm:pb-1 overflow-hidden flex flex-col items-center">
@@ -1422,7 +1536,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </div>
 
         {/* 2 on Mobile / 1 on Desktop: PROGRESS BAR */}
-        <div className="order-2 sm:order-1 w-[88%] sm:w-full mx-auto space-y-1.5 px-1 sm:px-2">
+        <div className="order-2 sm:order-1 w-full mx-auto space-y-1.5 px-0 sm:px-2">
           <div
             ref={progressBarRef}
             dir="ltr"
@@ -1456,7 +1570,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             </div>
           </div>
 
-          <div dir="ltr" className="flex justify-between text-xs font-mono font-bold text-white/90 px-1 select-none">
+          <div dir="ltr" className="flex justify-between text-xs font-mono font-bold text-white/90 px-0.5 select-none">
             <span ref={elapsedTimeRef}>
               {formatClockTime(currentTime)}
             </span>
@@ -1467,11 +1581,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </div>
 
         {/* 3 on Mobile / 2 on Desktop: PLAY BUTTON & CONTROLS ROW */}
-        <div dir="ltr" className="order-3 sm:order-2 flex items-center justify-center gap-3 sm:gap-4 pt-0.5">
+        <div dir="ltr" className="order-3 sm:order-2 w-full max-w-[360px] flex items-center justify-between pt-1 pb-1">
           <button
             type="button"
             onClick={handleOpenArtistProfile}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center p-1 transition-all shadow-lg cursor-pointer"
+            className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center p-1 transition-all shadow-lg cursor-pointer"
             title={isHe ? `עמוד אמן - ${track.artistName}` : `Artist - ${track.artistName}`}
           >
             {(() => {
@@ -1496,7 +1610,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               }
               return (
                 <div className="w-full h-full rounded-full bg-neutral-900 border border-white/15 text-white font-black text-xs flex items-center justify-center shadow-inner">
-                  <User className="w-4 h-4 text-white" />
+                  <User className="w-5 h-5 text-white" />
                 </div>
               );
             })()}
@@ -1505,35 +1619,35 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           <button
             type="button"
             onClick={() => seekRelative(-10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
+            className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
             aria-label={isHe ? '10 שניות אחורה' : 'Back 10 seconds'}
           >
-            <SkipBack10Icon className="w-5.5 h-5.5 sm:w-6 sm:h-6" />
+            <SkipBack10Icon className="w-6 h-6" />
           </button>
 
           <motion.button
             type="button"
             whileTap={{ scale: 0.92 }}
             onClick={togglePlayPause}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white hover:bg-slate-100 text-slate-950 flex items-center justify-center shadow-2xl transition-all cursor-pointer ring-4 ring-white/25 active:scale-95"
+            className="w-[68px] h-[68px] sm:w-16 sm:h-16 rounded-full bg-white hover:bg-slate-100 text-slate-950 flex items-center justify-center shadow-2xl transition-all cursor-pointer ring-4 ring-white/25 active:scale-95"
             title={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (
-              <Pause className="w-6 h-6 sm:w-7 sm:h-7 fill-current" />
+              <Pause className="w-7 h-7 fill-current" />
             ) : (
-              <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current translate-x-0.5" />
+              <Play className="w-7 h-7 fill-current translate-x-0.5" />
             )}
           </motion.button>
 
           <button
             type="button"
             onClick={() => seekRelative(10)}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
+            className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-xl active:scale-95 text-white border border-white/25 flex items-center justify-center transition-all shadow-lg cursor-pointer"
             title={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
             aria-label={isHe ? '10 שניות קדימה' : 'Forward 10 seconds'}
           >
-            <SkipForward10Icon className="w-5.5 h-5.5 sm:w-6 sm:h-6" />
+            <SkipForward10Icon className="w-6 h-6" />
           </button>
 
           <button
@@ -1547,11 +1661,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               }
               onToggleLike(track.id);
             }}
-            className="w-11 h-11 sm:w-12 sm:h-12 rounded-full border border-white/25 flex items-center justify-center bg-white/10 hover:bg-white/20 backdrop-blur-xl text-white transition-all shadow-lg cursor-pointer active:scale-95"
+            className="w-12 h-12 rounded-full border border-white/25 flex items-center justify-center bg-white/10 hover:bg-white/20 backdrop-blur-xl text-white transition-all shadow-lg cursor-pointer active:scale-95"
             title={isLiked ? (isHe ? 'הסר ממועדפים' : 'Unlike') : (isHe ? 'הוסף למועדפים' : 'Like')}
           >
             <Heart
-              className={`w-5 h-5 sm:w-5.5 sm:h-5.5 transition-colors ${
+              className={`w-6 h-6 transition-colors ${
                 isLiked ? 'fill-white text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)]' : 'text-white/80 fill-transparent'
               }`}
             />
@@ -1561,8 +1675,92 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         </div>
       </div>
 
-      {/* SCREEN 2: TRACK DETAILS FIRST + SUBTITLES CARD BELOW (STRICTLY BELOW THE FOLD UNTIL SCROLLED) */}
+      {/* SCREEN 2: ALBUM QUEUE ("הבא בתור") FIRST WHEN IN AN ALBUM -> TRACK DETAILS -> SUBTITLES CARD */}
       <div className="relative max-w-xl mx-auto w-full px-4 pt-6 pb-24 space-y-5 shrink-0">
+        {albumQueueData.hasAlbumQueue && (
+          <div className="p-4 sm:p-5 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-3 shadow-2xl transform-gpu isolate">
+            <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/15">
+              <div className="flex items-center gap-2 min-w-0">
+                <Disc className="w-4 h-4 text-white shrink-0" />
+                <h3 className="text-sm font-bold text-white truncate">
+                  {isHe ? `הבא בתור • ${albumQueueData.displayAlbumTitle}` : `Up Next • ${albumQueueData.displayAlbumTitle}`}
+                </h3>
+              </div>
+              <span className="text-[11px] font-mono text-white/75 shrink-0 tabular-nums bg-white/10 px-2.5 py-0.5 rounded-full border border-white/15">
+                {albumQueueData.currentIndex + 1} / {albumQueueData.orderedTracks.length}
+              </span>
+            </div>
+
+            <div
+              ref={albumQueueScrollRef}
+              className="max-h-[280px] overflow-y-auto overscroll-contain custom-scrollbar space-y-2 pe-0.5"
+            >
+              {albumQueueData.orderedTracks.map((item, idx) => {
+                const isCurrent = item.id === track.id;
+                const isPrevious = albumQueueData.currentIndex >= 0 && idx < albumQueueData.currentIndex;
+                return (
+                  <button
+                    key={item.id}
+                    ref={isCurrent ? currentAlbumRowRef : undefined}
+                    type="button"
+                    onClick={() => {
+                      if (!isCurrent && onPlayTrack) {
+                        onPlayTrack(item);
+                        playerScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                      }
+                    }}
+                    className={`w-full h-[64px] px-3 rounded-2xl border transition-all flex items-center gap-3 text-start shrink-0 ${
+                      isCurrent
+                        ? 'bg-white/20 border-white/50 shadow-lg cursor-default'
+                        : isPrevious
+                          ? 'bg-white/[0.04] hover:bg-white/[0.11] border-white/10 opacity-75 hover:opacity-100 cursor-pointer group'
+                          : 'bg-white/[0.07] hover:bg-white/[0.15] border-white/15 hover:border-white/30 cursor-pointer group'
+                    }`}
+                  >
+                    <span className="text-[11px] font-mono text-white/60 w-5 text-center shrink-0 tabular-nums">
+                      {idx + 1}
+                    </span>
+
+                    <div className="w-11 h-11 rounded-xl overflow-hidden shrink-0 border border-white/15 bg-black">
+                      <TrackCoverArt
+                        coverUrl={item.coverUrl}
+                        artistName={item.artistName}
+                        trackName={item.name}
+                        genre={item.genre}
+                        showHoverPlay={false}
+                      />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate flex items-center gap-1.5">
+                        <span className="truncate">{item.name}</span>
+                      </div>
+                      <div className="text-[11px] text-white/65 truncate flex items-center gap-1.5 mt-0.5">
+                        <span className="truncate">{item.artistName}</span>
+                        {item.duration > 0 && (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono tabular-nums">{formatClockTime(item.duration)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {isCurrent ? (
+                      <span className="px-2.5 py-1 rounded-full bg-white text-black font-bold text-[10px] shrink-0">
+                        {isHe ? 'עכשיו' : 'Now'}
+                      </span>
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-white/10 group-hover:bg-white text-white group-hover:text-black flex items-center justify-center shrink-0 transition-colors">
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div className="p-5 sm:p-6 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-4 shadow-2xl transform-gpu isolate">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/15 pb-3">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -1847,125 +2045,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           </div>
         )}
 
-        {/* MORE SONGS FROM THIS ALBUM (Always displayed at bottom if track belongs to an album) */}
-        {(() => {
-          const invalidAlbumNames = new Set([
-            '',
-            'single',
-            'single release',
-            'unknown album',
-            'סינגל',
-            'סינגל עצמאי',
-            'ללא אלבום',
-            'independent single',
-            'none',
-          ]);
-          const cleanAlbumName = (track.albumName || '').trim();
-          const lowerAlbum = cleanAlbumName.toLowerCase();
-          const hasRealAlbumName =
-            Boolean(cleanAlbumName) &&
-            !invalidAlbumNames.has(lowerAlbum) &&
-            !lowerAlbum.startsWith('סינגל') &&
-            !lowerAlbum.startsWith('single');
-
-          const matchedAlbum = (allAlbums || []).find((alb) => {
-            if (Array.isArray(alb.trackIds) && alb.trackIds.includes(track.id)) return true;
-            if (!hasRealAlbumName) return false;
-            const albTitleLower = (alb.title || '').trim().toLowerCase();
-            if (albTitleLower !== lowerAlbum) return false;
-            const albArtistLower = (alb.artistName || '').trim().toLowerCase();
-            const trkArtistLower = (track.artistName || '').trim().toLowerCase();
-            return !albArtistLower || !trkArtistLower || albArtistLower === trkArtistLower || (alb.uploadedByUid && alb.uploadedByUid === track.uploadedByUid);
-          });
-
-          const siblingMap = new Map<string, JamendoTrack>();
-          if (matchedAlbum && Array.isArray(matchedAlbum.trackIds)) {
-            const idSet = new Set(matchedAlbum.trackIds);
-            (allTracks || []).forEach((candidate) => {
-              if (candidate.id !== track.id && idSet.has(candidate.id)) {
-                siblingMap.set(candidate.id, candidate);
-              }
-            });
-          }
-
-          if (hasRealAlbumName) {
-            const trkOwner = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-            const trkArtist = (track.artistName || '').trim().toLowerCase();
-            (allTracks || []).forEach((candidate) => {
-              if (candidate.id === track.id || siblingMap.has(candidate.id)) return;
-              const candAlb = (candidate.albumName || '').trim().toLowerCase();
-              if (candAlb !== lowerAlbum) return;
-              const candOwner = (candidate.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-              const candArtist = (candidate.artistName || '').trim().toLowerCase();
-              if ((trkOwner && candOwner && trkOwner === candOwner) || (trkArtist && candArtist && trkArtist === candArtist)) {
-                siblingMap.set(candidate.id, candidate);
-              }
-            });
-          }
-
-          const albumSiblingTracks = Array.from(siblingMap.values());
-          const displayAlbumTitle = matchedAlbum?.title || (hasRealAlbumName ? cleanAlbumName : '');
-          if (albumSiblingTracks.length === 0 || !displayAlbumTitle) return null;
-
-          return (
-            <div className="bg-black/45 backdrop-blur-md border border-white/15 rounded-2xl p-4 sm:p-5 space-y-3 text-start mt-4">
-              <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Disc className="w-4 h-4 text-white shrink-0" />
-                  <h4 className="font-bold text-white text-xs sm:text-sm truncate">
-                    {isHe ? `שירים נוספים מהאלבום: ${displayAlbumTitle}` : `More from Album: ${displayAlbumTitle}`}
-                  </h4>
-                </div>
-                <span className="text-[11px] font-mono text-white/60 shrink-0 tabular-nums">
-                  {albumSiblingTracks.length}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {albumSiblingTracks.map((sib) => (
-                  <button
-                    key={sib.id}
-                    type="button"
-                    onClick={() => {
-                      if (onPlayTrack) {
-                        onPlayTrack(sib);
-                        playerScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-                      }
-                    }}
-                    className="w-full p-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.12] border border-white/10 hover:border-white/25 transition-all flex items-center gap-3 text-start cursor-pointer group"
-                  >
-                    <div className="w-11 h-11 rounded-lg overflow-hidden shrink-0 border border-white/15 bg-black">
-                      <TrackCoverArt
-                        coverUrl={sib.coverUrl}
-                        artistName={sib.artistName}
-                        trackName={sib.name}
-                        genre={sib.genre}
-                        showHoverPlay={false}
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-white truncate group-hover:text-white/90">
-                        {sib.name}
-                      </div>
-                      <div className="text-[11px] text-white/60 truncate flex items-center gap-1.5">
-                        <span className="truncate">{sib.artistName}</span>
-                        {sib.duration > 0 && (
-                          <>
-                            <span>·</span>
-                            <span className="font-mono tabular-nums">{formatClockTime(sib.duration)}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-white/10 group-hover:bg-white text-white group-hover:text-black flex items-center justify-center shrink-0 transition-colors">
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
       </div>
       </div>
 
