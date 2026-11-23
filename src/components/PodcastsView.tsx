@@ -22,6 +22,7 @@ import {
   fetchPodcastsFromArchive,
 } from '../services/podcastService';
 import { Language } from '../types';
+import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 
 interface PodcastsViewProps {
   lang: Language;
@@ -63,22 +64,24 @@ export const PodcastsView: React.FC<PodcastsViewProps> = ({ lang }) => {
   };
 
   const playEpisode = (ep: PodcastEpisode) => {
+    activateIosPlaybackSession();
     setActiveEpisode(ep);
     setIsPlaying(true);
     if (audioRef.current) {
       audioRef.current.src = ep.audioUrl;
+      audioRef.current.load();
       audioRef.current.play().catch(() => setIsPlaying(false));
     }
   };
 
   const togglePlayPause = () => {
     if (!audioRef.current) return;
-    if (isPlaying) {
+    activateIosPlaybackSession();
+    if (isPlaying && !audioRef.current.paused) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
-      setIsPlaying(true);
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     }
   };
 
@@ -95,6 +98,8 @@ export const PodcastsView: React.FC<PodcastsViewProps> = ({ lang }) => {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 pb-32">
       <audio
         ref={audioRef}
+        playsInline
+        preload="auto"
         onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onEnded={() => setIsPlaying(false)}

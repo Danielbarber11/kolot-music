@@ -1317,6 +1317,30 @@ app.delete('/api/storage/delete', async (req, res) => {
   }
 });
 
+const resolveServerRawMimeType = (pathKey: string, stored?: string): string => {
+  const s = (stored || '').trim().toLowerCase();
+  if (s && s !== 'application/octet-stream' && s !== 'binary/octet-stream') {
+    if (s === 'audio/mp3') return 'audio/mpeg';
+    return s;
+  }
+  const clean = pathKey.split('?')[0].toLowerCase();
+  if (clean.endsWith('.mp3')) return 'audio/mpeg';
+  if (clean.endsWith('.m4a') || clean.endsWith('.mp4')) return 'audio/mp4';
+  if (clean.endsWith('.aac')) return 'audio/aac';
+  if (clean.endsWith('.wav')) return 'audio/wav';
+  if (clean.endsWith('.ogg') || clean.endsWith('.oga')) return 'audio/ogg';
+  if (clean.endsWith('.opus')) return 'audio/opus';
+  if (clean.endsWith('.webm')) return 'audio/webm';
+  if (clean.endsWith('.flac')) return 'audio/flac';
+  if (clean.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (clean.endsWith('.png')) return 'image/png';
+  if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) return 'image/jpeg';
+  if (clean.endsWith('.webp')) return 'image/webp';
+  if (clean.endsWith('.gif')) return 'image/gif';
+  if (clean.endsWith('.svg')) return 'image/svg+xml';
+  return 'application/octet-stream';
+};
+
 // 4. Raw Streamer Proxy - 100% Pure Cloudflare R2 with HTTP Range Support
 app.get('/api/storage/raw/*', async (req, res) => {
   const rawParam = (req.params as any)[0] || '';
@@ -1360,11 +1384,9 @@ app.get('/api/storage/raw/*', async (req, res) => {
 
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    if (s3Item.ContentType) {
-      res.setHeader('Content-Type', s3Item.ContentType);
-    } else if (isJson) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    }
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+    res.setHeader('Content-Type', resolveServerRawMimeType(filePath, s3Item.ContentType));
 
     if (s3Item.ContentLength !== undefined) {
       res.setHeader('Content-Length', String(s3Item.ContentLength));
@@ -1383,9 +1405,28 @@ app.get('/api/storage/raw/*', async (req, res) => {
       res.status(206);
     }
 
+    if (req.method === 'HEAD') {
+      try {
+        // @ts-ignore
+        s3Item.Body?.destroy?.();
+      } catch {}
+      return res.end();
+    }
+
     if (s3Item.Body) {
-      // @ts-ignore
-      return s3Item.Body.pipe(res);
+      const stream = s3Item.Body as any;
+      res.on('close', () => {
+        try {
+          if (!res.writableEnded) stream.destroy?.();
+        } catch {}
+      });
+      stream.on?.('error', () => {
+        try {
+          if (!res.headersSent) res.status(500).end();
+          else res.end();
+        } catch {}
+      });
+      return stream.pipe(res);
     }
   } catch (r2Err: any) {
     console.warn('[R2 Proxy] R2 getObject error:', filePath, r2Err?.message);

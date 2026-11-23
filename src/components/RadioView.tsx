@@ -3,6 +3,7 @@ import { Radio, Search, Play, Pause, Volume2, VolumeX, Globe, RadioTower, Sparkl
 import { motion } from 'motion/react';
 import { RadioStation, searchRadioStations } from '../services/radioBrowserService';
 import { Language } from '../types';
+import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 
 interface RadioViewProps {
   lang: Language;
@@ -37,28 +38,30 @@ export const RadioView: React.FC<RadioViewProps> = ({ lang }) => {
   }, []);
 
   const playStation = (st: RadioStation) => {
+    activateIosPlaybackSession();
     setActiveStation(st);
     setIsPlaying(true);
     if (audioRef.current) {
       audioRef.current.src = st.url_resolved;
+      audioRef.current.load();
       audioRef.current.play().catch(() => setIsPlaying(false));
     }
   };
 
   const togglePlay = () => {
     if (!audioRef.current) return;
-    if (isPlaying) {
+    activateIosPlaybackSession();
+    if (isPlaying && !audioRef.current.paused) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current.play();
-      setIsPlaying(true);
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     }
   };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-      <audio ref={audioRef} />
+      <audio ref={audioRef} playsInline preload="auto" />
 
       {/* Header Banner */}
       <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-sm flex flex-col md:flex-row items-center justify-between gap-6">

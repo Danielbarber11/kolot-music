@@ -7,6 +7,7 @@ export interface WorkerR2Object {
   httpEtag?: string;
   uploaded?: Date;
   httpMetadata?: { contentType?: string };
+  range?: { offset?: number; length?: number; suffix?: number };
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
   body: ReadableStream | null;
@@ -15,6 +16,7 @@ export interface WorkerR2Object {
 export interface WorkerR2Bucket {
   put(key: string, value: ArrayBuffer | Uint8Array | string | ReadableStream, options?: any): Promise<any>;
   get(key: string, options?: any): Promise<WorkerR2Object | null>;
+  head?(key: string): Promise<WorkerR2Object | null>;
   delete(key: string): Promise<void>;
   list(options?: { prefix?: string; cursor?: string }): Promise<{
     objects: Array<{ key: string; size: number; uploaded?: Date }>;
@@ -1088,8 +1090,20 @@ export default {
       }
     }
 
-    // 5. Raw file streamer with Range support
-    if (pathname.startsWith('/api/storage/raw/') && request.method === 'GET') {
+    // 5. Raw file streamer with full iOS Safari HTTP 206 Range, HEAD & MIME support
+    if (pathname.startsWith('/api/storage/raw/') && (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS')) {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+            'Access-Control-Allow-Headers': 'Range, Content-Type',
+            'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, Content-Type',
+          },
+        });
+      }
+
       const filePath = decodeURIComponent(pathname.replace(/^\/api\/storage\/raw\//, '')).replace(/^\/+/, '');
       if (!filePath) return new Response('Missing path', { status: 400 });
 
@@ -1105,21 +1119,121 @@ export default {
         }
       }
 
+      const resolveRawMimeType = (pathKey: string, stored?: string | null): string => {
+        const s = (stored || '').trim().toLowerCase();
+        if (s && s !== 'application/octet-stream' && s !== 'binary/octet-stream') {
+          if (s === 'audio/mp3') return 'audio/mpeg';
+          return s;
+        }
+        const clean = pathKey.split('?')[0].toLowerCase();
+        if (clean.endsWith('.mp3')) return 'audio/mpeg';
+        if (clean.endsWith('.m4a') || clean.endsWith('.mp4')) return 'audio/mp4';
+        if (clean.endsWith('.aac')) return 'audio/aac';
+        if (clean.endsWith('.wav')) return 'audio/wav';
+        if (clean.endsWith('.ogg') || clean.endsWith('.oga')) return 'audio/ogg';
+        if (clean.endsWith('.opus')) return 'audio/opus';
+        if (clean.endsWith('.webm')) return 'audio/webm';
+        if (clean.endsWith('.flac')) return 'audio/flac';
+        if (clean.endsWith('.json')) return 'application/json; charset=utf-8';
+        if (clean.endsWith('.png')) return 'image/png';
+        if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) return 'image/jpeg';
+        if (clean.endsWith('.webp')) return 'image/webp';
+        if (clean.endsWith('.gif')) return 'image/gif';
+        if (clean.endsWith('.svg')) return 'image/svg+xml';
+        return 'application/octet-stream';
+      };
+
       const rangeHeader = request.headers.get('range');
       if (env.R2_BUCKET) {
-        const obj = await env.R2_BUCKET.get(filePath, rangeHeader ? { range: request.headers } : undefined);
+        let parsedRangeOpt: { offset?: number; length?: number; suffix?: number } | undefined;
+        if (rangeHeader) {
+          const match = rangeHeader.trim().match(/^bytes=(\d*)-(\d*)$/i);
+          if (match) {
+            const startStr = match[1];
+            const endStr = match[2];
+            if (startStr !== '' && endStr !== '') {
+              const offset = Number(startStr);
+              const end = Number(endStr);
+              if (Number.isFinite(offset) && Number.isFinite(end) && end >= offset) {
+                parsedRangeOpt = { offset, length: end - offset + 1 };
+              }
+            } else if (startStr !== '') {
+              const offset = Number(startStr);
+              if (Number.isFinite(offset)) {
+                parsedRangeOpt = { offset };
+              }
+            } else if (endStr !== '') {
+              const suffix = Number(endStr);
+              if (Number.isFinite(suffix) && suffix > 0) {
+                parsedRangeOpt = { suffix };
+              }
+            }
+          }
+        }
+
+        const isHead = request.method === 'HEAD';
+        const obj = isHead && env.R2_BUCKET.head && !rangeHeader
+          ? await env.R2_BUCKET.head(filePath)
+          : await env.R2_BUCKET.get(
+              filePath,
+              rangeHeader
+                ? { range: parsedRangeOpt || request.headers }
+                : undefined
+            );
+
         if (!obj) return new Response('File not found', { status: 404 });
+
+        const totalSize = Number(obj.size) || 0;
         const headers = new Headers();
         headers.set('Accept-Ranges', 'bytes');
         headers.set('Access-Control-Allow-Origin', '*');
-        headers.set('Content-Type', obj.httpMetadata?.contentType || (filePath.endsWith('.json') ? 'application/json; charset=utf-8' : 'application/octet-stream'));
-        headers.set('Cache-Control', filePath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
-        return new Response(obj.body, { headers });
+        headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+        headers.set('Content-Type', resolveRawMimeType(filePath, obj.httpMetadata?.contentType));
+        headers.set('Cache-Control', lowerPath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
+        if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
+
+        if (rangeHeader && totalSize > 0) {
+          let start = obj.range?.offset ?? parsedRangeOpt?.offset ?? 0;
+          let len = obj.range?.length ?? parsedRangeOpt?.length;
+          if (parsedRangeOpt?.suffix !== undefined && obj.range?.offset === undefined) {
+            len = Math.min(parsedRangeOpt.suffix, totalSize);
+            start = Math.max(0, totalSize - len);
+          }
+          if (len === undefined) {
+            len = Math.max(0, totalSize - start);
+          } else {
+            len = Math.min(len, Math.max(0, totalSize - start));
+          }
+
+          if (start >= totalSize || len <= 0) {
+            if (isHead && obj.body) {
+              try { await obj.body.cancel(); } catch {}
+            }
+            headers.set('Content-Range', `bytes */${totalSize}`);
+            return new Response(null, { status: 416, headers });
+          }
+
+          const end = start + len - 1;
+          headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+          headers.set('Content-Length', String(len));
+          if (isHead && obj.body) {
+            try { await obj.body.cancel(); } catch {}
+          }
+          return new Response(isHead ? null : obj.body, { status: 206, headers });
+        }
+
+        if (totalSize > 0) {
+          headers.set('Content-Length', String(totalSize));
+        }
+        if (isHead && obj.body) {
+          try { await obj.body.cancel(); } catch {}
+        }
+        return new Response(isHead ? null : obj.body, { status: 200, headers });
       }
 
       const s3Res = await signedR2Fetch(
         creds,
-        'GET',
+        request.method === 'HEAD' ? 'HEAD' : 'GET',
         `/${creds.bucket}/${encodeS3Path(filePath)}`,
         {},
         null,
@@ -1131,8 +1245,10 @@ export default {
       const headers = new Headers(s3Res.headers);
       headers.set('Accept-Ranges', 'bytes');
       headers.set('Access-Control-Allow-Origin', '*');
-      headers.set('Cache-Control', filePath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
-      return new Response(s3Res.body, { status: s3Res.status, headers });
+      headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+      headers.set('Content-Type', resolveRawMimeType(filePath, s3Res.headers.get('content-type')));
+      headers.set('Cache-Control', lowerPath.endsWith('.json') ? 'no-store' : 'public, max-age=31536000, immutable');
+      return new Response(request.method === 'HEAD' ? null : s3Res.body, { status: s3Res.status, headers });
     }
 
     // 6. CORS-safe image proxy

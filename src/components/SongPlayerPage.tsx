@@ -53,6 +53,7 @@ import {
 } from '../services/multiMusicService';
 import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
+import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -228,6 +229,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const pausedResumeTimeRef = useRef<number | null>(null);
   const pendingRestoreTimeRef = useRef<number | null>(null);
   const isSwitchingTrackRef = useRef<boolean>(false);
+  const mediaSessionConfiguredRef = useRef<boolean>(false);
   const [isAppHidden, setIsAppHidden] = useState<boolean>(() =>
     typeof document !== 'undefined' ? document.visibilityState === 'hidden' : false
   );
@@ -235,6 +237,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [trackRemovedError, setTrackRemovedError] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
@@ -620,8 +623,6 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
   const effectiveAudioUrl = getStreamingMediaUrl(track.audioUrl);
   const effectiveCoverUrl = getStreamingMediaUrl(track.coverUrl);
-  const shouldUseAnonymousCors =
-    effectiveAudioUrl.startsWith('/') || effectiveAudioUrl.includes('/api/storage/');
 
   // Dynamic matching color extracted from track cover, saved bgColor hint, or genre (zero snap on mount)
   const extractedColor = useExtractedColor(effectiveCoverUrl, track.genre || 'Pop', track.bgColor);
@@ -712,13 +713,17 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     isSwitchingTrackRef.current = true;
     pausedResumeTimeRef.current = null;
     pendingRestoreTimeRef.current = null;
+    setPlaybackError(null);
 
-    if (audio.getAttribute('src') !== effectiveAudioUrl) {
+    const currentSrcAttr = audio.getAttribute('src') || '';
+    if (currentSrcAttr !== effectiveAudioUrl || audio.error) {
       audio.src = effectiveAudioUrl;
+      audio.load();
     }
-    audio.load();
     audio.playbackRate = 1;
-    audio.volume = 1;
+    try {
+      audio.volume = 1;
+    } catch {}
     audio.muted = false;
 
     const clearSwitchTimer = window.setTimeout(() => {
@@ -726,11 +731,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     }, 350);
 
     if (shouldAutoPlay) {
+      activateIosPlaybackSession();
       const playPromise = audio.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
             isSwitchingTrackRef.current = false;
+            setPlaybackError(null);
             setIsPlaying(true);
           })
           .catch((err) => {
@@ -778,27 +785,65 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const togglePlayPause = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (isPlaying && !audio.paused) {
+    activateIosPlaybackSession();
+
+    if (isPlaying && !audio.paused && !audio.ended) {
       audio.pause();
       setIsPlaying(false);
-    } else {
-      if (!audio.getAttribute('src') && effectiveAudioUrl) {
+      return;
+    }
+
+    setPlaybackError(null);
+    const needsReload =
+      !audio.getAttribute('src') ||
+      Boolean(audio.error) ||
+      audio.networkState === 3;
+
+    if (needsReload && effectiveAudioUrl) {
+      if (pausedResumeTimeRef.current !== null) {
         pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
         pausedResumeTimeRef.current = null;
-        audio.src = effectiveAudioUrl;
-        audio.load();
       }
-      audio.muted = false;
+      audio.src = effectiveAudioUrl;
+      audio.load();
+    } else if (audio.ended) {
+      try {
+        audio.currentTime = 0;
+      } catch {}
+    }
+
+    audio.muted = false;
+    try {
       if (audio.volume <= 0) audio.volume = 1;
-      audio
-        .play()
-        .then(() => setIsPlaying(true))
-        .catch(() => setIsPlaying(false));
+    } catch {}
+
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setPlaybackError(null);
+          setIsPlaying(true);
+        })
+        .catch((err: any) => {
+          setIsPlaying(false);
+          if (err?.name === 'AbortError' || err?.name === 'NotAllowedError') {
+            return;
+          }
+          setPlaybackError(
+            isHe
+              ? 'לא ניתן להפעיל את השמע כרגע — לחץ שוב לניסיון חוזר'
+              : 'Unable to play audio right now — tap Play to retry'
+          );
+        });
+    } else {
+      setIsPlaying(true);
     }
   };
 
   const clearMediaSessionUiOnly = () => {
     try {
+      if (!mediaSessionConfiguredRef.current) return;
+      mediaSessionConfiguredRef.current = false;
       if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'none';
         navigator.mediaSession.metadata = null;
@@ -1072,6 +1117,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       }
 
       try {
+        mediaSessionConfiguredRef.current = true;
         navigator.mediaSession.metadata = new MediaMetadata({
           title: track.name || 'Kolot Music',
           artist: track.artistName || 'Kolot Music',
@@ -1084,6 +1130,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     void applyMediaMetadata();
 
     try {
+      mediaSessionConfiguredRef.current = true;
       navigator.mediaSession.setActionHandler('play', () => {
         if (!audioRef.current?.getAttribute('src') && effectiveAudioUrl) {
           pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
@@ -1383,11 +1430,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       <audio
         ref={audioRef}
         src={effectiveAudioUrl}
-        crossOrigin={shouldUseAnonymousCors ? 'anonymous' : undefined}
+        playsInline
         preload="auto"
         onLoadedMetadata={() => {
           const audio = audioRef.current;
           if (!audio) return;
+          setPlaybackError(null);
           const dur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : duration;
           if (audio.duration && Number.isFinite(audio.duration)) {
             setDuration(audio.duration);
@@ -1416,10 +1464,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           smoothClockRef.current.isBuffering = true;
         }}
         onCanPlay={() => {
+          setPlaybackError(null);
           smoothClockRef.current.isBuffering = false;
           smoothClockRef.current.lastPerfMs = typeof performance !== 'undefined' ? performance.now() : 0;
         }}
         onPlaying={() => {
+          setPlaybackError(null);
           isSwitchingTrackRef.current = false;
           pausedResumeTimeRef.current = null;
           smoothClockRef.current.isBuffering = false;
@@ -1427,6 +1477,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           setIsPlaying(true);
         }}
         onPlay={() => {
+          setPlaybackError(null);
           isSwitchingTrackRef.current = false;
           pausedResumeTimeRef.current = null;
           setIsPlaying(true);
@@ -1476,6 +1527,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         onError={() => {
           const audio = audioRef.current;
           if (!audio?.getAttribute('src')) return;
+          setIsPlaying(false);
           void fetchSingleTrackStatusFromCloud(track.id)
             .then((res) => {
               if (res.status === 'deleted') {
@@ -1483,6 +1535,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                 setIsPlaying(false);
                 setTrackRemovedError(true);
                 removeTrackFromMemory(track.id);
+              } else {
+                setPlaybackError(
+                  isHe
+                    ? 'תקלה בטעינת קובץ השמע — לחץ על הפעל לניסיון חוזר'
+                    : 'Audio load error — tap Play to retry'
+                );
               }
             })
             .catch(() => {});
@@ -1607,6 +1665,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             <ScrollingSongTitle title={track.name} />
           </div>
 
+          {playbackError && !trackRemovedError && (
+            <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/65 border border-white/25 backdrop-blur-xl text-center space-y-1.5 shadow-xl">
+              <p className="text-[11px] font-bold text-white/90">{playbackError}</p>
+            </div>
+          )}
+
           {favoriteAuthNotice && (
             <div className="w-full max-w-sm px-3.5 py-2 rounded-2xl bg-black/65 border border-white/25 backdrop-blur-xl text-center space-y-1.5 shadow-xl">
               <p className="text-[11px] font-bold text-white">
@@ -1727,7 +1791,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             type="button"
             whileTap={{ scale: 0.92 }}
             onClick={togglePlayPause}
-            className="w-[68px] h-[68px] sm:w-16 sm:h-16 rounded-full bg-white hover:bg-slate-100 text-slate-950 flex items-center justify-center shadow-2xl transition-all cursor-pointer ring-4 ring-white/25 active:scale-95"
+            className="w-[68px] h-[68px] sm:w-16 sm:h-16 rounded-full bg-white hover:bg-slate-100 text-slate-950 flex items-center justify-center shadow-2xl transition-all cursor-pointer ring-4 ring-white/25 active:scale-95 touch-manipulation"
             title={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (

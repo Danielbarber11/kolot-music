@@ -54,6 +54,7 @@ import {
   ALBUMS_UPDATED_EVENT,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
+import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistPortalModal } from './ArtistPortalModal';
 import { ArtistProfileModal } from './ArtistProfileModal';
@@ -637,6 +638,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   }, []);
 
   const openSongPlayer = (track: JamendoTrack, albumContext?: Album | null) => {
+    activateIosPlaybackSession();
     prewarmTrackColor(track);
     if (onPlayTrack) {
       onPlayTrack(track, albumContext ?? null);

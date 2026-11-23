@@ -3,6 +3,7 @@ import { Play, Pause, Volume2, VolumeX, SkipForward, SkipBack, X, Music, Externa
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, ArchiveItem, Language } from '../types';
 import { getStreamingMediaUrl } from '../services/cloudStorageService';
+import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 
 interface AudioPlayerBarProps {
   currentTrack: JamendoTrack | ArchiveItem | null;
@@ -225,16 +226,18 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
   const togglePlay = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (isPlaying && !audio.paused) {
+    activateIosPlaybackSession();
+    if (isPlaying && !audio.paused && !audio.ended) {
       audio.pause();
       setIsPlaying(false);
     } else {
-      if (!audio.getAttribute('src') && audioSrc) {
+      if ((!audio.getAttribute('src') || audio.error || audio.networkState === 3) && audioSrc) {
         pendingRestoreTimeRef.current = pausedResumeTimeRef.current;
         pausedResumeTimeRef.current = null;
         audio.src = audioSrc;
         audio.load();
       }
+      audio.muted = false;
       audio
         .play()
         .then(() => setIsPlaying(true))
@@ -261,6 +264,8 @@ export const AudioPlayerBar: React.FC<AudioPlayerBarProps> = ({ currentTrack, on
         <audio
           ref={audioRef}
           src={audioSrc}
+          playsInline
+          preload="auto"
           onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
           onLoadedMetadata={() => {
             const audio = audioRef.current;

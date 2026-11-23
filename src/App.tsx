@@ -28,6 +28,7 @@ import {
   isTrackViewIncrementPending,
 } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
+import { activateIosPlaybackSession } from './services/iosAudioHelper';
 import { AccessibilityPage } from './components/AccessibilityPage';
 import {
   AccessibilitySettings,
@@ -169,6 +170,7 @@ export default function App() {
   }, [authUser?.uid]);
 
   const handleEnterTrack = (track: JamendoTrack, albumContext?: Album | null) => {
+    activateIosPlaybackSession();
     const existingTrack = allTracks.find((t) => t.id === track.id);
     const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
     const nextViews = currentViews + 1;
