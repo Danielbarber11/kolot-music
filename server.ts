@@ -894,7 +894,12 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
                 if (!cleanTid) continue;
                 const trk = await readJsonR2(`tracks/${cleanTid}.json`);
                 const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
-                if (!trk || !trkOwner || trkOwner !== cleanSessUid) {
+                const trkEmail = String(trk?.uploadedByEmail || '').toLowerCase().trim();
+                const sessEmail = String(sess?.email || '').toLowerCase().trim();
+                const ownerMatches =
+                  (trkOwner && trkOwner === cleanSessUid) ||
+                  (!trkOwner && trkEmail && sessEmail && trkEmail === sessEmail);
+                if (!trk || !ownerMatches) {
                   return res.status(403).json({
                     success: false,
                     error: 'ניתן להוסיף לאלבום שירים שהועלו מהפרופיל שלך בלבד.',
@@ -1224,6 +1229,37 @@ app.get('/api/storage/profiles-feed', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: err?.message || 'Failed to load profiles feed',
+    });
+  }
+});
+
+// 2c. Direct Server-Side Albums Feed (zero CORS, clean parallel R2 read)
+app.get('/api/storage/albums-feed', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const listData = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'albums/' }));
+    const keys = (listData.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+    const albums = (
+      await Promise.all(
+        keys.map(async (k) => {
+          try {
+            const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+            if (!obj.Body) return null;
+            return JSON.parse(await obj.Body.transformToString('utf-8'));
+          } catch {
+            return null;
+          }
+        })
+      )
+    ).filter(Boolean);
+    return res.json({ success: true, albums });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to load albums feed',
     });
   }
 });
@@ -1619,58 +1655,134 @@ function classifyGenreHeuristic(songTitle: string, artistName: string, lyrics: s
   const combined = `${songTitle} ${artistName} ${lyrics}`.toLowerCase();
   const has = (words: string[]) => words.some((w) => combined.includes(w));
 
-  let genre: (typeof CANONICAL_AUDIO_GENRES)[number] = 'Pop';
+  let genre = 'Pop';
+  let hebrewGenre = 'פופ';
   let mood = 'Upbeat';
   let reasonHe = 'סיווג משוער לפי מאפייני השיר';
 
-  if (has(['מזרח', 'דרבוקה', 'חפלה', 'סלסול', 'בוזוקי', 'קפה', 'ים תיכונ', 'יאללה', 'נשמה', 'עיניים', 'כפרה', 'mizrahi', 'oriental'])) {
+  if (has(['מזרח', 'דרבוקה', 'חפלה', 'סלסול', 'בוזוקי', 'ים תיכונ', 'יאללה', 'נשמה', 'עיניים', 'כפרה', 'mizrahi', 'oriental'])) {
     genre = 'Mizrahi';
+    hebrewGenre = 'מזרחית';
     mood = 'רגשי / ים-תיכוני';
     reasonHe = 'זוהו מוטיבים ים-תיכוניים ומזרחיים בשיר';
-  } else if (has(['ראפ', 'היפ', 'ביט', 'פריסטייל', 'חרוז', 'טראפ', 'hip', 'rap', 'trap', 'flow', 'drill', 'mc'])) {
+  } else if (has(['חסיד', 'ניגון', 'פיוט', 'קודש', 'השם', 'תורה', 'ירושלים', 'hasidic', 'jewish', 'piyut'])) {
+    genre = 'Hasidic';
+    hebrewGenre = 'חסידי / יהודי';
+    mood = 'מרומם / יהודי';
+    reasonHe = 'זוהה אופי יהודי / חסידי במאפייני השיר';
+  } else if (has(['רגאיי', 'reggae', 'rasta'])) {
+    genre = 'Reggae';
+    hebrewGenre = 'רגאיי';
+    mood = 'גרובי / רגוע';
+    reasonHe = 'זוהה מקצב ואופי של רגאיי';
+  } else if (has(['רגאטון', 'reggaeton', 'dembow'])) {
+    genre = 'Reggaeton';
+    hebrewGenre = 'רגאטון';
+    mood = 'קצבי / לטיני';
+    reasonHe = 'זוהה מקצב רגאטון לטיני';
+  } else if (has(['לטיני', 'סלסה', 'סמבה', 'latin', 'salsa', 'bachata'])) {
+    genre = 'Latin';
+    hebrewGenre = 'לטיני';
+    mood = 'תוסס / לטיני';
+    reasonHe = 'זוהו מאפיינים לטיניים';
+  } else if (has(['קאנטרי', 'country', 'cowboy', 'nashville'])) {
+    genre = 'Country';
+    hebrewGenre = 'קאנטרי';
+    mood = 'שורשי / קאנטרי';
+    reasonHe = 'זוהו מאפייני מוזיקת קאנטרי';
+  } else if (has(['מטאל', 'heavy metal', 'death metal', 'metalcore'])) {
+    genre = 'Metal';
+    hebrewGenre = 'מטאל';
+    mood = 'עוצמתי / כבד';
+    reasonHe = 'זוהה סאונד מטאל כבד';
+  } else if (has(['טראפ', 'trap', 'drill'])) {
+    genre = 'Trap';
+    hebrewGenre = 'טראפ';
+    mood = 'אורבני / בס עמוק';
+    reasonHe = 'זוהו מאפייני טראפ וביטים עמוקים';
+  } else if (has(['ראפ', 'היפ', 'פריסטייל', 'חרוז', 'hip hop', 'hip-hop', 'rap', 'flow', 'mc'])) {
     genre = 'Hip Hop';
+    hebrewGenre = 'היפ הופ / ראפ';
     mood = 'קצבי / אורבני';
     reasonHe = 'זוהה אופי של ראפ / היפ הופ וביט קצבי';
-  } else if (has(['רוק', 'גיטרה חשמלית', 'מטאל', 'פאנק', 'rock', 'guitar', 'metal', 'punk', 'grunge', 'indie rock'])) {
-    genre = 'Rock';
-    mood = 'אנרגטי / עוצמתי';
-    reasonHe = 'זוהו מאפייני רוק וגיטרות';
-  } else if (has(['אלקטרו', 'טראנס', 'האוס', 'טכנו', 'רמיקס', 'דאנס', 'edm', 'house', 'techno', 'trance', 'synth', 'dubstep', 'electronic', 'club'])) {
+  } else if (has(['טראנס', 'trance', 'psytrance'])) {
+    genre = 'Trance';
+    hebrewGenre = 'טראנס';
+    mood = 'סוחף / אלקטרוני';
+    reasonHe = 'זוהו מאפייני טראנס ואנרגיה גבוהה';
+  } else if (has(['האוס', 'house', 'deep house'])) {
+    genre = 'House';
+    hebrewGenre = 'האוס';
+    mood = 'רקיד / מועדוני';
+    reasonHe = 'זוהה מקצב האוס מועדוני';
+  } else if (has(['טכנו', 'techno'])) {
+    genre = 'Techno';
+    hebrewGenre = 'טכנו';
+    mood = 'אנרגטי / טכנו';
+    reasonHe = 'זוהה סאונד טכנו אלקטרוני';
+  } else if (has(['אלקטרו', 'רמיקס', 'דאנס', 'edm', 'synth', 'dubstep', 'electronic', 'club'])) {
     genre = 'Electronic';
+    hebrewGenre = 'אלקטרוני';
     mood = 'אנרגטי / מסיבתי';
     reasonHe = 'זוהו סינתיסייזרים ומקצב אלקטרוני';
-  } else if (has(['צ׳יל', "צ'יל", 'לואו פיי', 'רגיעה', 'לילה', 'chill', 'lofi', 'lo-fi', 'ambient', 'relax', 'sleep', 'calm'])) {
+  } else if (has(['רוק', 'גיטרה חשמלית', 'פאנק', 'rock', 'electric guitar', 'punk', 'grunge'])) {
+    genre = 'Rock';
+    hebrewGenre = 'רוק';
+    mood = 'אנרגטי / עוצמתי';
+    reasonHe = 'זוהו מאפייני רוק וגיטרות';
+  } else if (has(['אינדי', 'indie'])) {
+    genre = 'Indie';
+    hebrewGenre = 'אינדי';
+    mood = 'אלטרנטיבי / ייחודי';
+    reasonHe = 'זוהה סגנון אינדי אלטרנטיבי';
+  } else if (has(['לואו פיי', 'lofi', 'lo-fi'])) {
+    genre = 'Lo-Fi';
+    hebrewGenre = 'לו-פיי (Lo-Fi)';
+    mood = 'רגוע / אווירתי';
+    reasonHe = 'זוהה אופי לו-פיי רגוע';
+  } else if (has(['צ׳יל', "צ'יל", 'רגיעה', 'לילה', 'chill', 'ambient', 'relax', 'sleep', 'calm'])) {
     genre = 'Chill';
+    hebrewGenre = 'צ׳יל';
     mood = 'רגוע / אווירתי';
     reasonHe = 'זוהה אופי רגוע ואווירתי (צ׳יל)';
-  } else if (has(['אקוסט', 'גיטרה', 'מדורה', 'שקט', 'acoustic', 'unplugged', 'folk', 'ballad'])) {
+  } else if (has(['אקוסט', 'מדורה', 'acoustic', 'unplugged', 'folk'])) {
     genre = 'Acoustic';
+    hebrewGenre = 'אקוסטי';
     mood = 'חמים / אינטימי';
     reasonHe = 'זוהה אופי אקוסטי טבעי';
   } else if (has(['קלאס', 'פסנתר', 'כינור', 'סימפוני', 'תזמורת', 'piano', 'violin', 'orchestra', 'symphony', 'classical'])) {
     genre = 'Classical';
+    hebrewGenre = 'קלאסי';
     mood = 'מלכותי / קלאסי';
     reasonHe = 'זוהו כלי נגינה קלאסיים ותזמורתיים';
   } else if (has(['ג׳אז', "ג'אז", 'סקסופון', 'jazz', 'sax', 'swing', 'bebop'])) {
     genre = 'Jazz';
+    hebrewGenre = 'ג׳אז';
     mood = 'מתוחכם / גרובי';
     reasonHe = 'זוהו מאפייני ג׳אז ואלתור';
-  } else if (has(['בלוז', 'סול', 'blues', 'soul', 'r&b'])) {
+  } else if (has(['אר אנד בי', 'r&b', 'rnb', 'סול', 'soul'])) {
+    genre = 'R&B';
+    hebrewGenre = 'אר אנד בי (R&B)';
+    mood = 'חלק / נשמה';
+    reasonHe = 'זוהו מאפייני R&B ונשמה';
+  } else if (has(['בלוז', 'blues'])) {
     genre = 'Blues';
+    hebrewGenre = 'בלוז';
     mood = 'עמוק / נשמה';
     reasonHe = 'זוהו מאפייני בלוז ונשמה';
   } else if (has(['פסקול', 'קולנוע', 'אפי', 'דרמה', 'soundtrack', 'cinematic', 'epic', 'score', 'trailer'])) {
     genre = 'Cinematic';
+    hebrewGenre = 'קולנועי';
     mood = 'דרמטי / קולנועי';
     reasonHe = 'זוהה אופי קולנועי ואפי';
   }
 
   return {
     genre,
-    hebrewGenre: HEBREW_GENRE_LABELS[genre] || genre,
+    hebrewGenre: HEBREW_GENRE_LABELS[genre] || hebrewGenre,
     confidence: 0.68,
     mood,
-    bpmEstimate: genre === 'Electronic' ? 126 : genre === 'Hip Hop' ? 92 : genre === 'Chill' ? 78 : 110,
+    bpmEstimate: genre === 'Electronic' || genre === 'Trance' || genre === 'House' ? 126 : genre === 'Hip Hop' || genre === 'Trap' ? 92 : genre === 'Chill' || genre === 'Lo-Fi' ? 78 : 110,
     reasonHe,
   };
 }
@@ -2099,19 +2211,10 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
           `${artistName ? `Artist: "${artistName}". ` : ''}` +
           `${lyrics ? `Lyrics excerpt:\n"${lyrics.slice(0, 1200)}"\n` : ''}` +
           `${hfContext}\n` +
-          `Choose ONLY ONE best-fitting canonical genre from the schema enum (do NOT pick randomly; pick the single most accurate match):\n` +
-          `- Mizrahi: Israeli Mediterranean / Middle Eastern pop, darbukah, bouzouki, Oriental maqam/trills (סלסולים), Hebrew mizrahit vocals.\n` +
-          `- Pop: Contemporary mainstream pop, catchy chorus, upbeat polished production.\n` +
-          `- Hip Hop: Rap verses, trap/boom-bap beats, 808 bass, rhythmic spoken/melodic flow.\n` +
-          `- Rock: Electric/distorted guitars, live rock drums, alternative/indie/punk energy.\n` +
-          `- Electronic: EDM, house, techno, trance, synthwave, electronic dance production.\n` +
-          `- Acoustic: Unplugged acoustic guitar or piano vocals, singer-songwriter, folk.\n` +
-          `- Chill: Lo-fi, ambient, downtempo, relaxing atmospheric beats.\n` +
-          `- Classical: Orchestral strings, classical piano, symphony, chamber music.\n` +
-          `- Jazz: Swing, saxophone, brass, walking bass, jazz improvisation.\n` +
-          `- Blues: Blues guitar riffs, soul/R&B groove.\n` +
-          `- Cinematic: Film score, dramatic orchestral soundtrack, epic trailer music.\n` +
-          `Provide a concise reason in Hebrew explaining why this genre fits best.`;
+          `Choose ONLY ONE single most accurate musical genre for this track.\n` +
+          `Common core genres include: ${CANONICAL_AUDIO_GENRES.join(', ')}.\n` +
+          `IMPORTANT: You are NOT limited to that list! If another genre fits the music more accurately (such as R&B, Soul, Reggae, Reggaeton, Latin, Country, Metal, Indie, Folk, Trance, House, Techno, Trap, Lo-Fi, Ambient, Funk, Disco, Hasidic, Piyut, K-Pop, Afrobeat, Opera, Kids, Spoken Word, World, etc.), choose that exact genre name in English (concise 1-2 words) AND provide its natural Hebrew display name in hebrewGenre.\n` +
+          `Do not pick randomly — choose the true closest genre and explain briefly in Hebrew why it fits best.`;
 
         parts.push({ text: classificationPrompt });
 
@@ -2129,8 +2232,11 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
                   properties: {
                     genre: {
                       type: Type.STRING,
-                      enum: [...CANONICAL_AUDIO_GENRES],
-                      description: 'The canonical genre that best describes the song.',
+                      description: 'The single most accurate musical genre in English (concise 1-2 words; can be outside the core list when a more specific genre fits better).',
+                    },
+                    hebrewGenre: {
+                      type: Type.STRING,
+                      description: 'Natural Hebrew display label for the chosen genre (e.g. מזרחית, רגאיי, אר אנד בי, חסידי, טראנס).',
                     },
                     confidence: {
                       type: Type.NUMBER,
@@ -2149,12 +2255,12 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
                       description: 'Short explanation in Hebrew of musical/lyrical cues.',
                     },
                   },
-                  required: ['genre', 'confidence', 'mood', 'bpmEstimate', 'reasonHe'],
+                  required: ['genre', 'hebrewGenre', 'confidence', 'mood', 'bpmEstimate', 'reasonHe'],
                 },
               } as any,
             });
             const candidate = JSON.parse((response.text || '{}').trim());
-            if (candidate && CANONICAL_AUDIO_GENRES.includes(candidate.genre)) {
+            if (candidate && typeof candidate.genre === 'string' && candidate.genre.trim().length > 0) {
               parsedJson = candidate;
               break;
             }
@@ -2164,12 +2270,13 @@ app.post('/api/ai/classify-audio', upload.single('file'), async (req: any, res) 
         }
 
         if (parsedJson) {
-          const detectedGenre = parsedJson.genre;
+          const detectedGenre = String(parsedJson.genre).trim();
+          const detectedHe = String(parsedJson.hebrewGenre || '').trim();
           return res.json({
             success: true,
             provider: hfLabels.length > 0 ? 'hf-ast+gemini-audio' : 'gemini-audio-classifier',
             genre: detectedGenre,
-            hebrewGenre: HEBREW_GENRE_LABELS[detectedGenre] || detectedGenre,
+            hebrewGenre: HEBREW_GENRE_LABELS[detectedGenre] || detectedHe || detectedGenre,
             confidence: Math.min(0.99, Math.max(0.65, Number(parsedJson.confidence) || 0.9)),
             mood: parsedJson.mood || '',
             bpmEstimate: Number(parsedJson.bpmEstimate) || 110,

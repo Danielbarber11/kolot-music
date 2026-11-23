@@ -169,6 +169,7 @@ export const ScrollingSongTitle: React.FC<{ title: string }> = ({ title }) => {
 
 interface SongPlayerPageProps {
   track: JamendoTrack;
+  activeAlbumContext?: Album | null;
   onBack: () => void;
   onFilterByArtist: (artistName: string) => void;
   isLiked: boolean;
@@ -178,12 +179,13 @@ interface SongPlayerPageProps {
   allTracks?: JamendoTrack[];
   allArtists?: ArtistProfile[];
   allAlbums?: Album[];
-  onPlayTrack?: (track: JamendoTrack) => void;
+  onPlayTrack?: (track: JamendoTrack, albumContext?: Album | null) => void;
   onRemoveTrack?: (trackId: string) => void;
 }
 
 export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   track,
+  activeAlbumContext = null,
   onBack,
   onFilterByArtist,
   isLiked,
@@ -237,7 +239,20 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
 
+  // Show album "הבא בתור" queue ONLY when the user explicitly entered the song through an album
   const albumQueueData = React.useMemo(() => {
+    if (!activeAlbumContext) {
+      return {
+        orderedTracks: [] as JamendoTrack[],
+        currentIndex: -1,
+        displayAlbumTitle: '',
+        hasAlbumQueue: false,
+      };
+    }
+
+    const matchedAlbum = activeAlbumContext;
+    const cleanAlbumTitle = (matchedAlbum.title || '').trim();
+    const lowerAlbumTitle = cleanAlbumTitle.toLowerCase();
     const invalidAlbumNames = new Set([
       '',
       'single',
@@ -249,28 +264,11 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       'independent single',
       'none',
     ]);
-    const cleanAlbumName = (track.albumName || '').trim();
-    const lowerAlbum = cleanAlbumName.toLowerCase();
-    const hasRealAlbumName =
-      Boolean(cleanAlbumName) &&
-      !invalidAlbumNames.has(lowerAlbum) &&
-      !lowerAlbum.startsWith('סינגל') &&
-      !lowerAlbum.startsWith('single');
-
-    const matchedAlbum = (allAlbums || []).find((alb) => {
-      if (Array.isArray(alb.trackIds) && alb.trackIds.includes(track.id)) return true;
-      if (!hasRealAlbumName) return false;
-      const albTitleLower = (alb.title || '').trim().toLowerCase();
-      if (albTitleLower !== lowerAlbum) return false;
-      const albArtistLower = (alb.artistName || '').trim().toLowerCase();
-      const trkArtistLower = (track.artistName || '').trim().toLowerCase();
-      return (
-        !albArtistLower ||
-        !trkArtistLower ||
-        albArtistLower === trkArtistLower ||
-        (alb.uploadedByUid && alb.uploadedByUid === track.uploadedByUid)
-      );
-    });
+    const hasRealAlbumTitle =
+      Boolean(cleanAlbumTitle) &&
+      !invalidAlbumNames.has(lowerAlbumTitle) &&
+      !lowerAlbumTitle.startsWith('סינגל') &&
+      !lowerAlbumTitle.startsWith('single');
 
     const queueMap = new Map<string, JamendoTrack>();
     const tracksById = new Map<string, JamendoTrack>();
@@ -279,49 +277,52 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     });
     tracksById.set(track.id, track);
 
-    if (matchedAlbum && Array.isArray(matchedAlbum.trackIds)) {
-      const albOwner = (matchedAlbum.uploadedByUid || matchedAlbum.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+    const albOwner = (matchedAlbum.uploadedByUid || matchedAlbum.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+    const albArtistLower = (matchedAlbum.artistName || '').toLowerCase().trim();
+
+    if (Array.isArray(matchedAlbum.trackIds)) {
       matchedAlbum.trackIds.forEach((id) => {
         const found = tracksById.get(id);
         if (!found || queueMap.has(found.id)) return;
         const foundOwner = (found.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const foundArtist = (found.artistName || '').toLowerCase().trim();
         if (albOwner && foundOwner && albOwner !== foundOwner) return;
+        if (!foundOwner && albArtistLower && foundArtist && albArtistLower !== foundArtist) return;
         queueMap.set(found.id, found);
       });
     }
 
-    if (hasRealAlbumName) {
-      const trkOwner = (track.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-      const trkArtist = (track.artistName || '').trim().toLowerCase();
+    if (hasRealAlbumTitle) {
       (allTracks || []).forEach((candidate) => {
         if (!candidate?.id || queueMap.has(candidate.id)) return;
         const candAlb = (candidate.albumName || '').trim().toLowerCase();
-        if (candAlb !== lowerAlbum) return;
+        if (candAlb !== lowerAlbumTitle) return;
         const candOwner = (candidate.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
         const candArtist = (candidate.artistName || '').trim().toLowerCase();
         if (
-          (trkOwner && candOwner && trkOwner === candOwner) ||
-          (trkArtist && candArtist && trkArtist === candArtist)
+          (albOwner && candOwner && albOwner === candOwner) ||
+          (!candOwner && albArtistLower && candArtist === albArtistLower) ||
+          (!albOwner && albArtistLower && candArtist === albArtistLower)
         ) {
           queueMap.set(candidate.id, candidate);
         }
       });
-      if (!queueMap.has(track.id)) {
-        queueMap.set(track.id, track);
-      }
+    }
+
+    if (!queueMap.has(track.id)) {
+      queueMap.set(track.id, track);
     }
 
     const orderedTracks = Array.from(queueMap.values());
     const currentIndex = orderedTracks.findIndex((t) => t.id === track.id);
-    const displayAlbumTitle = matchedAlbum?.title || (hasRealAlbumName ? cleanAlbumName : '');
 
     return {
       orderedTracks,
       currentIndex,
-      displayAlbumTitle,
-      hasAlbumQueue: orderedTracks.length > 1 && Boolean(displayAlbumTitle),
+      displayAlbumTitle: cleanAlbumTitle || track.albumName || '',
+      hasAlbumQueue: orderedTracks.length > 0 && Boolean(cleanAlbumTitle || track.albumName),
     };
-  }, [track, allTracks, allAlbums]);
+  }, [track, allTracks, activeAlbumContext]);
 
   useEffect(() => {
     if (!albumQueueData.hasAlbumQueue || albumQueueData.currentIndex < 0) return;
@@ -1123,15 +1124,19 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
         }
       });
 
-      const idx = allTracks.findIndex((t) => t.id === track.id);
-      if (onPlayTrack && idx >= 0 && allTracks.length > 1) {
+      const navList = albumQueueData.hasAlbumQueue && albumQueueData.orderedTracks.length > 1
+        ? albumQueueData.orderedTracks
+        : allTracks;
+      const idx = navList.findIndex((t) => t.id === track.id);
+      const navContext = albumQueueData.hasAlbumQueue ? activeAlbumContext : null;
+      if (onPlayTrack && idx >= 0 && navList.length > 1) {
         navigator.mediaSession.setActionHandler('previoustrack', () => {
-          const prev = allTracks[(idx - 1 + allTracks.length) % allTracks.length];
-          if (prev) onPlayTrack(prev);
+          const prev = navList[(idx - 1 + navList.length) % navList.length];
+          if (prev) onPlayTrack(prev, navContext);
         });
         navigator.mediaSession.setActionHandler('nexttrack', () => {
-          const next = allTracks[(idx + 1) % allTracks.length];
-          if (next) onPlayTrack(next);
+          const next = navList[(idx + 1) % navList.length];
+          if (next) onPlayTrack(next, navContext);
         });
       } else {
         navigator.mediaSession.setActionHandler('previoustrack', null);
@@ -1152,6 +1157,9 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     effectiveCoverUrl,
     effectiveAudioUrl,
     allTracks.length,
+    albumQueueData.hasAlbumQueue,
+    albumQueueData.orderedTracks.length,
+    activeAlbumContext?.id,
     extractedColor.r,
     extractedColor.g,
     extractedColor.b,
@@ -1343,7 +1351,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-[100] w-full min-h-[100dvh] bg-[#09090b] overflow-hidden text-white flex flex-col m-0 p-0 border-0"
+      className="fixed inset-0 z-[200] w-full min-h-[100dvh] bg-[#09090b] overflow-hidden text-white flex flex-col m-0 p-0 border-0"
       style={dynamicBgStyle}
     >
       {/* Immersive Dynamic Artwork Background — decoupled from scroll container to prevent backdrop-blur scroll banding */}
@@ -1483,8 +1491,23 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           const d = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
           syncProgressDomImmediate(d, d, true);
           setCurrentTime(d);
-          setIsPlaying(false);
           if (requestRef.current) cancelAnimationFrame(requestRef.current);
+
+          if (
+            albumQueueData.hasAlbumQueue &&
+            albumQueueData.currentIndex >= 0 &&
+            albumQueueData.currentIndex + 1 < albumQueueData.orderedTracks.length &&
+            onPlayTrack
+          ) {
+            const nextTrack = albumQueueData.orderedTracks[albumQueueData.currentIndex + 1];
+            if (nextTrack) {
+              isSwitchingTrackRef.current = true;
+              onPlayTrack(nextTrack, activeAlbumContext);
+              return;
+            }
+          }
+
+          setIsPlaying(false);
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
             pausedResumeTimeRef.current = 0;
             clearMediaSessionCompletely(audioRef.current, true);
@@ -1498,7 +1521,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       {trackRemovedError && (
         <div
           dir={isHe ? 'rtl' : 'ltr'}
-          className="fixed inset-0 z-[130] bg-black/92 backdrop-blur-2xl flex items-center justify-center p-6 text-center"
+          className="fixed inset-0 z-[230] bg-black/92 backdrop-blur-2xl flex items-center justify-center p-6 text-center"
         >
           <div className="w-full max-w-sm rounded-3xl bg-[#0c0c0e] border border-white/25 p-6 sm:p-7 space-y-5 shadow-2xl">
             <div className="w-16 h-16 mx-auto rounded-full bg-white text-black flex items-center justify-center shadow-xl">
@@ -1779,7 +1802,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
                     type="button"
                     onClick={() => {
                       if (!isCurrent && onPlayTrack) {
-                        onPlayTrack(item);
+                        onPlayTrack(item, activeAlbumContext);
                         playerScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                       }
                     }}
@@ -2124,7 +2147,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
 
       {/* SHARE FEEDBACK TOAST */}
       {copiedLink && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] px-5 py-2.5 rounded-full bg-white text-black font-black text-xs shadow-2xl flex items-center gap-2 animate-bounce">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[250] px-5 py-2.5 rounded-full bg-white text-black font-black text-xs shadow-2xl flex items-center gap-2 animate-bounce">
           <Share2 className="w-4 h-4 text-black" />
           <span>{isHe ? 'הקישור לשיר הועתק בהצלחה! ✓' : 'Song link copied! ✓'}</span>
         </div>
@@ -2148,11 +2171,12 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             onClose={() => setIsArtistProfileOpen(false)}
             allTracks={Array.isArray(allTracks) ? allTracks : []}
             allArtists={effectiveArtists}
+            allAlbums={allAlbums}
             currentTrack={track}
-            onPlayTrack={(newTrack: JamendoTrack) => {
+            onPlayTrack={(newTrack: JamendoTrack, albumCtx?: Album | null) => {
               setIsArtistProfileOpen(false);
               if (onPlayTrack) {
-                onPlayTrack(newTrack);
+                onPlayTrack(newTrack, albumCtx ?? null);
               }
             }}
             lang={lang}
@@ -2170,9 +2194,16 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           setIsArtistPortalOpen(false);
         }}
         lang={lang}
+        allAlbums={allAlbums}
         onTrackPublished={(newTrack) => {
           if (onPlayTrack) {
-            onPlayTrack(newTrack);
+            onPlayTrack(newTrack, null);
+          }
+        }}
+        onPlayTrack={(newTrack, albumCtx) => {
+          setIsArtistPortalOpen(false);
+          if (onPlayTrack) {
+            onPlayTrack(newTrack, albumCtx ?? null);
           }
         }}
         onArtistUpdated={(updatedArtist) => {

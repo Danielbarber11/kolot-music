@@ -718,7 +718,12 @@ export default {
                   if (!cleanTid) continue;
                   const trk = await readR2JsonTop(`tracks/${cleanTid}.json`);
                   const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
-                  if (!trk || !trkOwner || trkOwner !== cleanSessUid) {
+                  const trkEmail = String(trk?.uploadedByEmail || '').toLowerCase().trim();
+                  const sessEmail = String(sess?.email || '').toLowerCase().trim();
+                  const ownerMatches =
+                    (trkOwner && trkOwner === cleanSessUid) ||
+                    (!trkOwner && trkEmail && sessEmail && trkEmail === sessEmail);
+                  if (!trk || !ownerMatches) {
                     return jsonResponse(
                       { success: false, error: 'ניתן להוסיף לאלבום שירים שהועלו מהפרופיל שלך בלבד.' },
                       403
@@ -998,6 +1003,49 @@ export default {
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Profiles feed failed' }, 500);
+      }
+    }
+
+    // 3b. Direct Server-Side Albums Feed
+    if (pathname === '/api/storage/albums-feed' && request.method === 'GET') {
+      try {
+        const keys: string[] = [];
+        if (env.R2_BUCKET) {
+          let cursor: string | undefined;
+          do {
+            const listed = await env.R2_BUCKET.list({ prefix: 'albums/', cursor });
+            listed.objects.forEach((o) => {
+              if (o.key.endsWith('.json')) keys.push(o.key);
+            });
+            cursor = listed.truncated ? listed.cursor : undefined;
+          } while (cursor);
+        } else {
+          let token = '';
+          do {
+            const q: Record<string, string> = { 'list-type': '2', prefix: 'albums/' };
+            if (token) q['continuation-token'] = token;
+            const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
+            if (!listRes.ok) break;
+            const xml = await listRes.text();
+            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
+              if (it.Key?.endsWith('.json')) keys.push(it.Key);
+            });
+            const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
+            const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
+            token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
+          } while (token);
+        }
+        const loaded: any[] = [];
+        for (let i = 0; i < keys.length; i += 25) {
+          const slice = keys.slice(i, i + 25);
+          const items = await Promise.all(slice.map((k) => readR2JsonTop(k)));
+          items.forEach((a) => {
+            if (a && typeof a === 'object') loaded.push(a);
+          });
+        }
+        return jsonResponse({ success: true, albums: loaded });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Albums feed failed' }, 500);
       }
     }
 
@@ -1512,11 +1560,12 @@ export default {
           parts.push({
             text:
               `${audioBytes && audioBytes.length > 0
-                ? 'Listen carefully to this song audio (instruments, beat, vocal phrasing, scales) and read any lyrics below to pick the single most fitting canonical genre.'
-                : 'Analyze these song lyrics and title to pick the single most fitting canonical genre.'} ` +
-              `Allowed genres: ${canonicalGenres.join(', ')}. ` +
+                ? 'Listen carefully to this song audio (instruments, beat, vocal phrasing, scales) and read any lyrics below to pick the single most fitting genre.'
+                : 'Analyze these song lyrics and title to pick the single most fitting genre.'} ` +
+              `Common core genres include: ${canonicalGenres.join(', ')}. ` +
+              `You are NOT restricted to this list — if another genre fits better (e.g., R&B, Soul, Reggae, Reggaeton, Latin, Country, Metal, Indie, Folk, Trance, House, Techno, Trap, Lo-Fi, Ambient, Funk, Disco, Hasidic, Piyut, K-Pop, Afrobeat, Opera, World), pick that exact genre name in English! ` +
               `Context: title="${songTitle}", artist="${artistName}"${lyrics ? `, lyrics="${lyrics.slice(0, 1200)}"` : ''}. ` +
-              `Do not pick randomly — choose the true closest genre. Return strict JSON with keys: genre, confidence (0..1), mood (Hebrew), bpmEstimate (number), reasonHe (Hebrew).`,
+              `Do not pick randomly — choose the true closest genre. Return strict JSON with keys: genre (concise English genre name), hebrewGenre (natural Hebrew genre label), confidence (0..1), mood (Hebrew), bpmEstimate (number), reasonHe (Hebrew).`,
           });
 
           for (const clsModel of ['gemini-3-flash-preview', 'gemini-2.5-flash']) {
@@ -1538,13 +1587,14 @@ export default {
                 const gJson: any = await geminiRes.json();
                 const txt = gJson?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
                 const parsed = JSON.parse(txt);
-                if ((canonicalGenres as readonly string[]).includes(parsed.genre)) {
-                  const detectedGenre = parsed.genre;
+                if (parsed && typeof parsed.genre === 'string' && parsed.genre.trim().length > 0) {
+                  const detectedGenre = String(parsed.genre).trim();
+                  const detectedHe = String(parsed.hebrewGenre || '').trim();
                   return jsonResponse({
                     success: true,
                     provider: 'gemini-audio-classifier',
                     genre: detectedGenre,
-                    hebrewGenre: hebrewLabels[detectedGenre] || detectedGenre,
+                    hebrewGenre: hebrewLabels[detectedGenre] || detectedHe || detectedGenre,
                     confidence: Math.min(0.99, Math.max(0.65, Number(parsed.confidence) || 0.9)),
                     mood: parsed.mood || '',
                     bpmEstimate: Number(parsed.bpmEstimate) || 110,
@@ -1558,22 +1608,31 @@ export default {
 
         const heuristicText = `${songTitle} ${artistName} ${lyrics}`.toLowerCase();
         let fallbackGenre = 'Pop';
-        if (/מזרח|חפלה|סלסול|דרבוקה|נשמה|לב|יאללה|עיניים|mizrahi|habibi/.test(heuristicText)) fallbackGenre = 'Mizrahi';
-        else if (/ראפ|ביט|היפ|טראפ|rap|hip|trap|drill|flow/.test(heuristicText)) fallbackGenre = 'Hip Hop';
-        else if (/רוק|גיטרה|מטאל|rock|metal|punk|indie/.test(heuristicText)) fallbackGenre = 'Rock';
-        else if (/אלקטרו|טראנס|האוס|רמיקס|edm|house|techno|trance|synth/.test(heuristicText)) fallbackGenre = 'Electronic';
-        else if (/אקוסט|שקט|מדורה|acoustic|folk|unplugged/.test(heuristicText)) fallbackGenre = 'Acoustic';
-        else if (/צ׳יל|צ'יל|רגיעה|רוגע|chill|lofi|ambient/.test(heuristicText)) fallbackGenre = 'Chill';
-        else if (/קלאס|תזמורת|כינור|classic|piano|symphony/.test(heuristicText)) fallbackGenre = 'Classical';
-        else if (/ג׳אז|ג'אז|סקסופון|jazz|sax/.test(heuristicText)) fallbackGenre = 'Jazz';
-        else if (/בלוז|כאב|blues|soul/.test(heuristicText)) fallbackGenre = 'Blues';
-        else if (/סרט|פסקול|דרמה|cinematic|soundtrack/.test(heuristicText)) fallbackGenre = 'Cinematic';
+        let fallbackHe = 'פופ';
+        if (/מזרח|חפלה|סלסול|דרבוקה|נשמה|לב|יאללה|עיניים|mizrahi|habibi/.test(heuristicText)) { fallbackGenre = 'Mizrahi'; fallbackHe = 'מזרחית'; }
+        else if (/חסיד|ניגון|פיוט|קודש|תורה|hasidic|jewish|piyut/.test(heuristicText)) { fallbackGenre = 'Hasidic'; fallbackHe = 'חסידי / יהודי'; }
+        else if (/רגאיי|reggae|rasta/.test(heuristicText)) { fallbackGenre = 'Reggae'; fallbackHe = 'רגאיי'; }
+        else if (/רגאטון|reggaeton/.test(heuristicText)) { fallbackGenre = 'Reggaeton'; fallbackHe = 'רגאטון'; }
+        else if (/קאנטרי|country/.test(heuristicText)) { fallbackGenre = 'Country'; fallbackHe = 'קאנטרי'; }
+        else if (/מטאל|heavy metal|metalcore/.test(heuristicText)) { fallbackGenre = 'Metal'; fallbackHe = 'מטאל'; }
+        else if (/טראנס|trance|psytrance/.test(heuristicText)) { fallbackGenre = 'Trance'; fallbackHe = 'טראנס'; }
+        else if (/האוס|house/.test(heuristicText)) { fallbackGenre = 'House'; fallbackHe = 'האוס'; }
+        else if (/ראפ|ביט|היפ|טראפ|rap|hip|trap|drill|flow/.test(heuristicText)) { fallbackGenre = 'Hip Hop'; fallbackHe = 'היפ הופ / ראפ'; }
+        else if (/רוק|גיטרה|punk/.test(heuristicText)) { fallbackGenre = 'Rock'; fallbackHe = 'רוק'; }
+        else if (/אלקטרו|רמיקס|edm|techno|synth/.test(heuristicText)) { fallbackGenre = 'Electronic'; fallbackHe = 'אלקטרוני'; }
+        else if (/אקוסט|שקט|מדורה|acoustic|folk|unplugged/.test(heuristicText)) { fallbackGenre = 'Acoustic'; fallbackHe = 'אקוסטי'; }
+        else if (/צ׳יל|צ'יל|רגיעה|רוגע|chill|lofi|ambient/.test(heuristicText)) { fallbackGenre = 'Chill'; fallbackHe = 'צ׳יל'; }
+        else if (/קלאס|תזמורת|כינור|classic|piano|symphony/.test(heuristicText)) { fallbackGenre = 'Classical'; fallbackHe = 'קלאסי'; }
+        else if (/ג׳אז|ג'אז|סקסופון|jazz|sax/.test(heuristicText)) { fallbackGenre = 'Jazz'; fallbackHe = 'ג׳אז'; }
+        else if (/r&b|rnb|soul|אר אנד בי/.test(heuristicText)) { fallbackGenre = 'R&B'; fallbackHe = 'אר אנד בי (R&B)'; }
+        else if (/בלוז|כאב|blues/.test(heuristicText)) { fallbackGenre = 'Blues'; fallbackHe = 'בלוז'; }
+        else if (/סרט|פסקול|דרמה|cinematic|soundtrack/.test(heuristicText)) { fallbackGenre = 'Cinematic'; fallbackHe = 'קולנועי'; }
 
         return jsonResponse({
           success: true,
           provider: 'heuristic-metadata',
           genre: fallbackGenre,
-          hebrewGenre: hebrewLabels[fallbackGenre] || fallbackGenre,
+          hebrewGenre: hebrewLabels[fallbackGenre] || fallbackHe || fallbackGenre,
           confidence: 0.72,
           mood: 'מוזיקלי',
           bpmEstimate: 112,

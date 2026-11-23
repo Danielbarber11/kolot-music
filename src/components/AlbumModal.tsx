@@ -1,22 +1,20 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Play, Heart, Disc, Music, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album } from '../types';
 import { TrackCoverArt } from './TrackCoverArt';
 import { getStreamingMediaUrl } from '../services/cloudStorageService';
 
-import { Logo } from './Logo';
-
 interface AlbumModalProps {
   isOpen: boolean;
   onClose: () => void;
   album: Album | null;
   allTracks: JamendoTrack[];
-  onPlayTrack: (track: JamendoTrack) => void;
+  onPlayTrack: (track: JamendoTrack, albumContext?: Album | null) => void;
   lang: Language;
   onToggleLike: (trackId: string) => void;
   likedSongIds: string[];
-  onOpenArtistProfile?: (artistName: string) => void;
+  onOpenArtistProfile?: (artistName: string, artistUid?: string) => void;
 }
 
 export const AlbumModal: React.FC<AlbumModalProps> = ({
@@ -30,6 +28,12 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
   likedSongIds,
   onOpenArtistProfile,
 }) => {
+  const [coverImgError, setCoverImgError] = useState(false);
+
+  useEffect(() => {
+    setCoverImgError(false);
+  }, [album?.id, album?.coverUrl]);
+
   if (!isOpen || !album) return null;
   const isHe = lang === 'he';
 
@@ -43,32 +47,60 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
     if (albumOwnerUid && trkUid) {
       return albumOwnerUid === trkUid;
     }
-    if (albumOwnerUid && !trkUid) {
-      return false;
-    }
     return Boolean(albumArtistLower && trkArtist && albumArtistLower === trkArtist);
   };
 
-  // Match strictly tracks owned by the same profile and linked to this album
-  const albumTracks = allTracks.filter((t) => {
-    if (!belongsToAlbumOwner(t)) return false;
-    if (Array.isArray(album.trackIds) && album.trackIds.includes(t.id)) {
-      return true;
-    }
-    if (albumTitleLower && t.albumName && t.albumName.toLowerCase().trim() === albumTitleLower) {
-      return true;
-    }
-    return false;
+  // Collect matching tracks in exact album.trackIds order first, then any additional tracks matching albumName
+  const trackById = new Map<string, JamendoTrack>();
+  allTracks.forEach((t) => {
+    if (t?.id) trackById.set(t.id, t);
   });
+
+  const orderedAlbumTracks: JamendoTrack[] = [];
+  const seenIds = new Set<string>();
+
+  if (Array.isArray(album.trackIds)) {
+    album.trackIds.forEach((tid) => {
+      const candidate = trackById.get(tid);
+      if (candidate && !seenIds.has(candidate.id) && belongsToAlbumOwner(candidate)) {
+        seenIds.add(candidate.id);
+        orderedAlbumTracks.push(candidate);
+      }
+    });
+  }
+
+  if (albumTitleLower) {
+    allTracks.forEach((t) => {
+      if (!t?.id || seenIds.has(t.id)) return;
+      if (!belongsToAlbumOwner(t)) return;
+      if (t.albumName && t.albumName.toLowerCase().trim() === albumTitleLower) {
+        seenIds.add(t.id);
+        orderedAlbumTracks.push(t);
+      }
+    });
+  }
+
+  const albumTracks = orderedAlbumTracks;
 
   const effectiveCover = getStreamingMediaUrl(
     album.coverUrl || albumTracks[0]?.coverUrl || undefined
   );
 
+  const handlePlayFromAlbum = (track: JamendoTrack) => {
+    const hydratedAlbum: Album = {
+      ...album,
+      coverUrl: effectiveCover || album.coverUrl,
+      trackIds: albumTracks.map((t) => t.id),
+    };
+    onPlayTrack(track, hydratedAlbum);
+    onClose();
+  };
+
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-[170] flex items-start sm:items-center justify-center p-3 sm:p-6 pt-4 bg-black/95 backdrop-blur-2xl overflow-y-auto custom-scrollbar"
+        onClick={onClose}
+        className="fixed inset-0 z-[185] flex items-start sm:items-center justify-center p-3 sm:p-6 pt-4 bg-black/95 backdrop-blur-2xl overflow-y-auto custom-scrollbar"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         <motion.div
@@ -76,6 +108,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
           transition={{ duration: 0.25, ease: 'easeOut' }}
+          onClick={(e) => e.stopPropagation()}
           className="relative w-full max-w-4xl max-h-[92dvh] bg-[#0c0c0e] border border-white/20 rounded-3xl shadow-[0_25px_60px_rgba(0,0,0,0.95)] overflow-hidden flex flex-col my-auto"
         >
           {/* TOP BAR / CLOSE BUTTON */}
@@ -85,6 +118,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
               <span>{isHe ? 'תצוגת אלבום' : 'Album View'}</span>
             </div>
             <button
+              type="button"
               onClick={onClose}
               className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer border border-white/15 shadow-md"
               title={isHe ? 'סגור' : 'Close'}
@@ -97,11 +131,12 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
           <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center sm:items-end gap-6 border-b border-white/10 bg-gradient-to-b from-white/5 to-transparent">
             {/* Album Cover Art (Square 1:1) */}
             <div className="w-44 h-44 sm:w-52 sm:h-52 shrink-0 rounded-2xl overflow-hidden bg-neutral-950 border border-white/15 shadow-[0_12px_35px_rgba(0,0,0,0.8)] relative flex items-center justify-center">
-              {effectiveCover ? (
+              {effectiveCover && !coverImgError ? (
                 <img
                   src={effectiveCover}
                   alt={album.title}
                   loading="eager"
+                  onError={() => setCoverImgError(true)}
                   className="w-full h-full object-cover"
                 />
               ) : (
@@ -125,11 +160,17 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                 {album.title}
               </h1>
 
+              {album.description && (
+                <p className="text-xs sm:text-sm text-white/65 line-clamp-2 max-w-xl">
+                  {album.description}
+                </p>
+              )}
+
               {album.artistName && (
                 <p
                   onClick={() => {
                     if (onOpenArtistProfile) {
-                      onOpenArtistProfile(album.artistName);
+                      onOpenArtistProfile(album.artistName, album.uploadedByUid || album.artistId);
                       onClose();
                     }
                   }}
@@ -150,9 +191,8 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
               {albumTracks.length > 0 && (
                 <div className="pt-2">
                   <button
-                    onClick={() => {
-                      onPlayTrack(albumTracks[0]);
-                    }}
+                    type="button"
+                    onClick={() => handlePlayFromAlbum(albumTracks[0])}
                     className="px-6 py-3 rounded-full bg-white hover:bg-white/90 text-black font-bold text-sm flex items-center justify-center gap-2.5 shadow-xl transition-transform active:scale-95 cursor-pointer"
                   >
                     <Play className="w-4 h-4 fill-black text-black" />
@@ -184,7 +224,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                   return (
                     <div
                       key={track.id}
-                      onClick={() => onPlayTrack(track)}
+                      onClick={() => handlePlayFromAlbum(track)}
                       className="group p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex items-center justify-between gap-3 border border-white/5 hover:border-white/15"
                     >
                       {/* Track index & Cover thumbnail */}
@@ -215,6 +255,7 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                       {/* Actions: Favorite + Play */}
                       <div className="flex items-center gap-2 shrink-0">
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             onToggleLike(track.id);
@@ -232,9 +273,10 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
                         </button>
 
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onPlayTrack(track);
+                            handlePlayFromAlbum(track);
                           }}
                           className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer border border-white/15"
                           title={isHe ? 'נגן' : 'Play'}

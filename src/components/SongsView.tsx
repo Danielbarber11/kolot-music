@@ -51,6 +51,7 @@ import {
   TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
   TRACK_DELETED_EVENT,
+  ALBUMS_UPDATED_EVENT,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
@@ -156,8 +157,9 @@ interface SongsViewProps {
   initialAlbums?: Album[];
   onTracksSync?: (tracks: JamendoTrack[]) => void;
   onArtistsSync?: (artists: ArtistProfile[]) => void;
+  onAlbumsSync?: (albums: Album[]) => void;
   onNavigateHome: () => void;
-  onPlayTrack?: (track: JamendoTrack) => void;
+  onPlayTrack?: (track: JamendoTrack, albumContext?: Album | null) => void;
   onOpenAccessibility?: () => void;
   activeAccessibilityCount?: number;
 }
@@ -169,6 +171,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   initialAlbums = [],
   onTracksSync,
   onArtistsSync,
+  onAlbumsSync,
   onPlayTrack,
   onOpenAccessibility,
   activeAccessibilityCount = 0,
@@ -457,6 +460,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
+  const [playerAlbumContext, setPlayerAlbumContext] = useState<Album | null>(null);
 
   // Sync preloaded App.tsx data cleanly without a 1-second empty flash
   useEffect(() => {
@@ -512,7 +516,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
     fetchRealAlbums()
       .then((albums) => {
         if (!active || !Array.isArray(albums)) return;
-        setRemoteAlbums(albums);
+        if (albums.length > 0) {
+          setRemoteAlbums(albums);
+          onAlbumsSync?.(albums);
+        }
       })
       .catch(() => {});
 
@@ -603,11 +610,20 @@ export const SongsView: React.FC<SongsViewProps> = ({
       });
     };
 
+    const handleAlbumsUpdated = (ev: Event) => {
+      if (!active) return;
+      const detail = (ev as CustomEvent<{ albums?: Album[] }>)?.detail;
+      const nextAlbums = Array.isArray(detail?.albums) ? detail.albums : getCachedAlbums();
+      setRemoteAlbums(nextAlbums);
+      onAlbumsSync?.(nextAlbums);
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     window.addEventListener('focus', handleVisibilityOrFocus);
     window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
     window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+    window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
 
     return () => {
       active = false;
@@ -616,20 +632,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
       window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
       window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+      window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
     };
   }, []);
 
-  const openSongPlayer = (track: JamendoTrack) => {
+  const openSongPlayer = (track: JamendoTrack, albumContext?: Album | null) => {
     prewarmTrackColor(track);
     if (onPlayTrack) {
-      onPlayTrack(track);
+      onPlayTrack(track, albumContext ?? null);
     } else {
+      setPlayerAlbumContext(albumContext ?? null);
       setPlayerTrack(track);
     }
   };
 
   const closeSongPlayer = () => {
     setPlayerTrack(null);
+    setPlayerAlbumContext(null);
   };
 
   const toggleFavorite = (id: string) => {
@@ -823,7 +842,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
     return [...allTracks].sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
   }, [allTracks, getTrackPopularity]);
 
-  // Row 2: Popular albums synthesized purely from R2 cloud albums and cloud tracks (strictly isolated per owner)
+  // Row 2: Recommended albums synthesized purely from R2 cloud albums and cloud tracks
   const popularAlbums = React.useMemo(() => {
     const albumMap = new Map<string, Album>();
     const trackOwnerById = new Map<string, string>();
@@ -875,6 +894,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             id: `album-${t.id}`,
             title: cleanAlbumName,
             artistName: t.artistName,
+            artistId: t.uploadedByUid,
             uploadedByUid: t.uploadedByUid,
             coverUrl: t.coverUrl,
             trackIds: [t.id],
@@ -883,7 +903,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
         } else {
           const alb = albumMap.get(key)!;
           if (!alb.trackIds.includes(t.id)) {
-            alb.trackIds.push(t.id);
+            alb.trackIds = [...alb.trackIds, t.id];
           }
           if (!alb.coverUrl && t.coverUrl) {
             alb.coverUrl = t.coverUrl;
@@ -894,9 +914,20 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     return Array.from(albumMap.values()).filter((a) => {
       const lower = (a.title || '').toLowerCase().trim();
-      return !invalidAlbumNames.has(lower) && !lower.startsWith('סינגל') && !lower.startsWith('single');
+      if (invalidAlbumNames.has(lower) || lower.startsWith('סינגל') || lower.startsWith('single')) return false;
+      return Array.isArray(a.trackIds) && a.trackIds.length > 0;
     });
   }, [allTracks, remoteAlbums]);
+
+  const searchAlbumResults = React.useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return [] as Album[];
+    return popularAlbums.filter(
+      (alb) =>
+        alb.title.toLowerCase().includes(q) ||
+        (alb.artistName && alb.artistName.toLowerCase().includes(q))
+    );
+  }, [popularAlbums, searchQuery]);
 
   // Organized, Audio-Classified Genre Collections (Pure canonical genre matching)
   const validHomeTracks = React.useMemo(() => allTracks.filter(isValidTrackWithOwner), [allTracks]);
@@ -1476,6 +1507,62 @@ export const SongsView: React.FC<SongsViewProps> = ({
             </section>
           )}
 
+          {/* If Search is Active and Found Albums, show Album Cards */}
+          {searchQuery.trim() && searchAlbumResults.length > 0 && (
+            <section className="p-4 sm:p-6 pb-2">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                  {isHe ? 'אלבומים' : 'Albums'}
+                </h2>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                {searchAlbumResults.map((album) => {
+                  const albumTracks = allTracks.filter((t) => album.trackIds?.includes(t.id));
+                  const coverToUse = album.coverUrl || albumTracks[0]?.coverUrl || undefined;
+                  return (
+                    <div
+                      key={album.id}
+                      onClick={() => setSelectedAlbum(album)}
+                      className="group p-3 rounded-[10px] bg-white/[0.04] hover:bg-white/[0.10] backdrop-blur-md transition-all duration-200 cursor-pointer flex flex-col justify-between border border-white/10 hover:border-white/20 shadow-[0_8px_25px_rgba(0,0,0,0.5)]"
+                    >
+                      <div>
+                        <div className="relative aspect-square w-full rounded-xl overflow-hidden mb-3 bg-neutral-900 shadow-sm border border-white/10">
+                          {coverToUse ? (
+                            <img
+                              src={getStreamingMediaUrl(coverToUse)}
+                              alt={album.title}
+                              loading="eager"
+                              decoding="async"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-900 text-white/70 p-3">
+                              <Disc className="w-10 h-10 text-white/50" />
+                            </div>
+                          )}
+                        </div>
+                        <h3 className="font-semibold text-sm text-white truncate">{album.title}</h3>
+                        <p
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openArtistProfile(album.artistName, album.uploadedByUid || album.artistId);
+                          }}
+                          className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                        >
+                          {album.artistName}
+                        </p>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
+                        <span>{albumTracks.length} {isHe ? 'שירים' : 'tracks'}</span>
+                        <span className="text-[10px] text-white/40 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           {/* MAIN VERTICAL FEED */}
           {isFilteredOrSearching ? (
             /* Flat Grid for Filter/Search Results */
@@ -1914,7 +2001,25 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     <Music className="w-3.5 h-3.5 text-white shrink-0" />
                     <span>{isHe ? `הכל (${validHomeTracks.length})` : `All (${validHomeTracks.length})`}</span>
                   </button>
-                  {CANONICAL_GENRES.filter((g) => (genreCounts[g.id] || 0) > 0).map((g) => {
+                  {[
+                    ...CANONICAL_GENRES.filter((g) => (genreCounts[g.id] || 0) > 0).map((g) => ({
+                      id: g.id,
+                      labelHe: g.labelHe,
+                      labelEn: g.labelEn,
+                    })),
+                    ...Object.keys(genreCounts)
+                      .filter(
+                        (gid) =>
+                          genreCounts[gid] > 0 &&
+                          !CANONICAL_GENRES.some((cg) => cg.id === gid) &&
+                          gid !== 'ללא סגנון מוזיקלי'
+                      )
+                      .map((gid) => ({
+                        id: gid,
+                        labelHe: getGenreDisplayLabel(gid, true),
+                        labelEn: getGenreDisplayLabel(gid, false),
+                      })),
+                  ].map((g) => {
                     const count = genreCounts[g.id] || 0;
                     const active = selectedGenre === g.id;
                     return (
@@ -2050,16 +2155,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                 </div>
               </section>
 
-              {/* ROW 2: אלבומים פופולאריים (Popular Albums Carousel) */}
+              {/* ROW 2: אלבומים מומלצים (Recommended Albums Carousel) */}
               {popularAlbums.length > 0 && (
                 <section className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
                       <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                        {isHe ? 'אלבומים פופולאריים' : 'Popular albums'}
+                        {isHe ? 'אלבומים מומלצים' : 'Recommended albums'}
                       </h2>
                       <p className="text-xs text-white/60 mt-0.5 font-normal">
-                        {isHe ? 'אלבומים ואוספים מובחרים של האמנים המובילים' : 'Featured albums and collections'}
+                        {isHe ? 'אלבומים ואוספים מומלצים של היוצרים באתר' : 'Recommended albums and collections'}
                       </p>
                     </div>
                   </div>
@@ -2085,6 +2190,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                   alt={album.title}
                                   loading="eager"
                                   decoding="async"
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                  }}
                                   className="w-full h-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
                                 />
                               ) : (
@@ -2100,7 +2208,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             <p
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setProfileArtistName(album.artistName);
+                                openArtistProfile(album.artistName, album.uploadedByUid || album.artistId);
                               }}
                               className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                             >
@@ -2110,7 +2218,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
                           <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
                             <span>
-                              {album.trackIds?.length || 0} {isHe ? 'שירים' : 'tracks'}
+                              {albumTracks.length || album.trackIds?.length || 0} {isHe ? 'שירים' : 'tracks'}
                             </span>
                             <span className="text-[10px] text-white/40 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
                           </div>
@@ -2447,6 +2555,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
         {playerTrack && (
           <SongPlayerPage
             track={playerTrack}
+            activeAlbumContext={playerAlbumContext}
             onBack={closeSongPlayer}
             onFilterByArtist={(artist) => {
               setArtistFilter(artist);
@@ -2459,7 +2568,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
             allTracks={allTracks}
             allArtists={allArtists}
             allAlbums={popularAlbums}
-            onPlayTrack={(track) => setPlayerTrack(track)}
+            onPlayTrack={(track, albCtx) => {
+              setPlayerAlbumContext(albCtx ?? null);
+              setPlayerTrack(track);
+            }}
             onRemoveTrack={async (trackId) => {
               markSongAsDeleted(trackId);
               setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
@@ -2485,7 +2597,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
             onClose={closeArtistProfile}
             allTracks={Array.isArray(allTracks) ? allTracks : []}
             allArtists={allArtists}
-            onPlayTrack={(track) => openSongPlayer(track)}
+            allAlbums={popularAlbums}
+            onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
             lang={lang}
             onToggleLike={toggleFavorite}
             likedSongIds={likedSongIds}
@@ -2517,6 +2630,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
           setIsArtistPortalOpen(false);
         }}
         lang={lang}
+        allAlbums={popularAlbums}
+        onAlbumsSync={(albums) => {
+          setRemoteAlbums(albums);
+          onAlbumsSync?.(albums);
+        }}
         onTrackPublished={async (newTrack) => {
           setAllTracks((prev) => {
             const replaced = prev.some((t) => t.id === newTrack.id)
@@ -2573,7 +2691,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
           });
         }}
         allTracks={allTracks}
-        onPlayTrack={(track) => openSongPlayer(track)}
+        onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
         onAccountDeleted={(deletedUid) => {
           const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
           removeMemoryArtistProfile(deletedUid);
@@ -2609,11 +2727,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
         onClose={() => setSelectedAlbum(null)}
         album={selectedAlbum}
         allTracks={allTracks}
-        onPlayTrack={(track) => openSongPlayer(track)}
+        onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx ?? selectedAlbum)}
         lang={lang}
         onToggleLike={toggleFavorite}
         likedSongIds={likedSongIds}
-        onOpenArtistProfile={(artistName) => openArtistProfile(artistName)}
+        onOpenArtistProfile={(artistName, artistUid) => openArtistProfile(artistName, artistUid || selectedAlbum?.uploadedByUid)}
       />
 
       {/* GOOGLE OAUTH AUTH MODAL */}

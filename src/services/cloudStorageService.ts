@@ -1102,7 +1102,6 @@ export const fetchTracksFromCloud = fetchTracksFromCloudStorage;
 export const deleteTrackFromCloud = deleteTrackFromCloudStorage;
 
 export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob): Promise<{ success: boolean; coverUrl?: string; error?: string }> {
-
   try {
     let coverUrl = album.coverUrl;
     if (coverFile) {
@@ -1120,7 +1119,10 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
         body: formData
       });
       const data = await safeJson(res, 'העלאת תמונת אלבום נכשלה');
-      if (data.success) coverUrl = data.url;
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'העלאת תמונת אלבום נכשלה' };
+      }
+      coverUrl = data.url;
     }
     const albumToSave = { ...album, coverUrl };
     const metaRes = await fetch('/api/storage/upload', {
@@ -1136,7 +1138,10 @@ export async function uploadAlbumToCloud(album: Album, coverFile?: File | Blob):
       })
     });
     const metaData = await safeJson(metaRes, 'שמירת אלבום בענן נכשלה');
-    return { success: !!metaData.success, coverUrl };
+    if (!metaRes.ok || !metaData.success) {
+      return { success: false, error: metaData.error || 'שמירת אלבום בענן נכשלה' };
+    }
+    return { success: true, coverUrl };
   } catch (err: any) {
     return { success: false, error: err.message || 'שגיאה בשמירת האלבום' };
   }
@@ -1151,10 +1156,23 @@ export async function deleteAlbumFromCloud(albumId: string) {
   return true;
 }
 
-export async function fetchAlbumsFromCloud(): Promise<Album[]> {
+export async function fetchAlbumsFromCloud(): Promise<Album[] | null> {
   try {
+    const feedRes = await fetch(`/api/storage/albums-feed?_t=${Date.now()}`, {
+      headers: getR2AuthHeaders(),
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    if (feedRes.ok) {
+      const feedData = await safeJson(feedRes, 'טעינת אלבומים נכשלה');
+      if (feedData.success && Array.isArray(feedData.albums)) {
+        return feedData.albums.filter(Boolean);
+      }
+    }
+
     const res = await fetch('/api/storage/list?prefix=albums/', {
       headers: getR2AuthHeaders(),
+      credentials: 'include',
       cache: 'no-store',
     });
     const data = await safeJson(res, 'טעינת רשימת אלבומים נכשלה');
@@ -1163,7 +1181,7 @@ export async function fetchAlbumsFromCloud(): Promise<Album[]> {
       const albums = await Promise.all(
         albumFiles.map(async (f: any) => {
           try {
-            const albumRes = await fetch(f.url, { cache: 'no-store' });
+            const albumRes = await fetch(getStreamingMediaUrl(f.url) || f.url, { cache: 'no-store' });
             if (albumRes.ok) return await safeJson(albumRes, 'עיבוד נתוני אלבום נכשל');
           } catch {}
           return null;
@@ -1174,7 +1192,7 @@ export async function fetchAlbumsFromCloud(): Promise<Album[]> {
   } catch (err) {
     console.warn('Failed to fetch albums from Cloud Storage:', err);
   }
-  return [];
+  return null;
 }
 
 

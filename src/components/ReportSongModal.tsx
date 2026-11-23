@@ -180,7 +180,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
   return (
     <AnimatePresence>
       <div
-        className="fixed inset-0 z-[160] w-full h-[100dvh] bg-white text-black flex flex-col justify-between overflow-y-auto custom-scrollbar animate-fadeIn"
+        className="fixed inset-0 z-[220] w-full h-[100dvh] bg-white text-black flex flex-col justify-between overflow-y-auto custom-scrollbar animate-fadeIn"
         dir={isHe ? 'rtl' : 'ltr'}
       >
         {/* CONTAINER */}

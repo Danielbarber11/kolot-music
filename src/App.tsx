@@ -18,6 +18,7 @@ import {
   TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
   TRACK_DELETED_EVENT,
+  ALBUMS_UPDATED_EVENT,
 } from './services/multiMusicService';
 import {
   getStreamingMediaUrl,
@@ -105,6 +106,7 @@ function preloadAndDecodeImages(urls: Array<string | undefined>): Promise<void> 
 export default function App() {
   const [lang] = useState<Language>('he');
   const [activePlayerTrack, setActivePlayerTrack] = useState<JamendoTrack | null>(null);
+  const [activeAlbumContext, setActiveAlbumContext] = useState<Album | null>(null);
   const [isInitializing, setIsInitializing] = useState(() => getInstantSongPool().length === 0);
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
@@ -166,7 +168,7 @@ export default function App() {
     };
   }, [authUser?.uid]);
 
-  const handleEnterTrack = (track: JamendoTrack) => {
+  const handleEnterTrack = (track: JamendoTrack, albumContext?: Album | null) => {
     const existingTrack = allTracks.find((t) => t.id === track.id);
     const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
     const nextViews = currentViews + 1;
@@ -182,6 +184,7 @@ export default function App() {
         ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
         : prev
     );
+    setActiveAlbumContext(albumContext ?? null);
     syncSongQueryParam(track.id);
     setActivePlayerTrack(updatedTrack);
     trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
@@ -234,6 +237,7 @@ export default function App() {
     syncSongQueryParam(null);
     trackPageView('/', 'Kolot Music');
     setActivePlayerTrack(null);
+    setActiveAlbumContext(null);
     refreshCloudTracksInBackground(true);
   };
 
@@ -270,6 +274,7 @@ export default function App() {
             : [hydrated, ...prev]
         );
         trackPageView(`/?song=${encodeURIComponent(targetTrack.id)}`, targetTrack.name);
+        setActiveAlbumContext(null);
         setActivePlayerTrack(hydrated);
         void incrementTrackViewsInCloud(targetTrack).then((serverViews) => {
           trackSongPlay({ ...targetTrack!, viewsCount: serverViews ?? nextViews });
@@ -312,6 +317,7 @@ export default function App() {
       const songFromUrl = getSongIdFromUrl();
       if (!songFromUrl) {
         setActivePlayerTrack(null);
+        setActiveAlbumContext(null);
         return;
       }
       pendingDeepLinkRef.current = songFromUrl;
@@ -402,6 +408,12 @@ export default function App() {
       setAllTracks((prev) => prev.filter((t) => t.id !== deletedId));
     };
 
+    const handleAlbumsUpdated = (ev: Event) => {
+      if (!active) return;
+      const detail = (ev as CustomEvent<{ albums?: Album[] }>)?.detail;
+      setAllAlbums(Array.isArray(detail?.albums) ? detail.albums : getCachedAlbums());
+    };
+
     const handleOnline = () => {
       if (active) setIsOnline(true);
     };
@@ -413,6 +425,7 @@ export default function App() {
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
     window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
     window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+    window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
@@ -424,6 +437,7 @@ export default function App() {
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
       window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
       window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+      window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleVisibilityRefresh);
@@ -460,6 +474,7 @@ export default function App() {
             initialAlbums={allAlbums}
             onTracksSync={setAllTracks}
             onArtistsSync={setAllArtists}
+            onAlbumsSync={setAllAlbums}
             onNavigateHome={handleExitTrack}
             onPlayTrack={handleEnterTrack}
             onOpenAccessibility={() => setIsAccessibilityOpen(true)}
@@ -472,6 +487,7 @@ export default function App() {
               <SongPlayerPage
                 key={activePlayerTrack.id}
                 track={activePlayerTrack}
+                activeAlbumContext={activeAlbumContext}
                 onBack={handleExitTrack}
                 onFilterByArtist={handleExitTrack}
                 isLiked={likedSongIds.includes(activePlayerTrack.id)}
@@ -490,6 +506,7 @@ export default function App() {
                   if (activePlayerTrack?.id === trackId) {
                     syncSongQueryParam(null);
                     setActivePlayerTrack(null);
+                    setActiveAlbumContext(null);
                   }
                 }}
               />

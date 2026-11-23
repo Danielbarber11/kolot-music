@@ -74,12 +74,16 @@ import {
   ensureTrackSubtitlesInBackground,
   SubtitleDraftSnapshot,
 } from '../services/backgroundSubtitleManager';
-import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult } from '../services/audioClassificationService';
+import { classifyTrackAudio, CANONICAL_GENRES, AudioClassificationResult, getGenreDisplayLabel } from '../services/audioClassificationService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import {
   getCachedAlbums,
   saveCachedAlbums,
+  fetchRealAlbums,
+  ALBUMS_UPDATED_EVENT,
+  upsertAlbumInMemory,
+  removeAlbumFromMemory,
   fetchAllRealSongs,
   getInstantSongPool,
   saveCachedCloudTracks,
@@ -100,8 +104,10 @@ interface ArtistPortalModalProps {
   lang: Language;
   onTrackPublished: (track: JamendoTrack) => void;
   allTracks: JamendoTrack[];
+  allAlbums?: Album[];
+  onAlbumsSync?: (albums: Album[]) => void;
   initialTab?: 'profile' | 'manual_upload' | 'account_settings' | 'albums';
-  onPlayTrack?: (track: JamendoTrack) => void;
+  onPlayTrack?: (track: JamendoTrack, albumContext?: Album | null) => void;
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
   onAccountDeleted?: (deletedUid: string) => void;
@@ -118,6 +124,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   lang,
   onTrackPublished,
   allTracks,
+  allAlbums: initialAlbumsProp = [],
+  onAlbumsSync,
   initialTab = 'profile',
   onPlayTrack,
   onRemoveTrack,
@@ -269,9 +277,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   // Album creation song selector modal & search states
   const [isAlbumSongSelectorOpen, setIsAlbumSongSelectorOpen] = useState(false);
   const [albumSongSearchQuery, setAlbumSongSearchQuery] = useState('');
-
-  // Mandatory upload copyright certification checkbox
-  const [hasCertifiedRights, setHasCertifiedRights] = useState(false);
 
   // AI generation marker state
   const [isAiGeneratedInput, setIsAiGeneratedInput] = useState(false);
@@ -769,12 +774,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [newAlbumDescription, setNewAlbumDescription] = useState('');
   const [selectedTrackIdsForAlbum, setSelectedTrackIdsForAlbum] = useState<string[]>([]);
   const [allAlbums, setAllAlbums] = useState<Album[]>(() => {
-    const stored: Album[] = getCachedAlbums();
+    const stored: Album[] = initialAlbumsProp.length > 0 ? initialAlbumsProp : getCachedAlbums();
 
     const albumMap = new Map<string, Album>();
     stored.forEach((a) => {
       if (a.title && a.id) {
-        const ownerKey = (a.uploadedByUid || a.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+        const ownerKey = (a.uploadedByUid || a.artistId || a.artistName || '').replace(/^artist_/, '').toLowerCase().trim();
         albumMap.set(`${ownerKey}::${a.title.toLowerCase().trim()}`, a);
       }
     });
@@ -785,7 +790,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       const cleanAlbum = (t.albumName || '').trim();
       const lower = cleanAlbum.toLowerCase();
       if (cleanAlbum && !invalidNames.has(lower) && !lower.startsWith('סינגל') && !lower.startsWith('single')) {
-        const ownerKey = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const ownerKey = (t.uploadedByUid || t.artistName || '').replace(/^artist_/, '').toLowerCase().trim();
         const key = `${ownerKey}::${lower}`;
         if (!albumMap.has(key)) {
           albumMap.set(key, {
@@ -801,7 +806,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         } else {
           const alb = albumMap.get(key)!;
           if (!alb.trackIds.includes(t.id)) {
-            alb.trackIds.push(t.id);
+            alb.trackIds = [...alb.trackIds, t.id];
           }
           if (!alb.coverUrl && t.coverUrl) {
             alb.coverUrl = t.coverUrl;
@@ -812,6 +817,36 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     return Array.from(albumMap.values());
   });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    fetchRealAlbums()
+      .then((fresh) => {
+        if (!active || !Array.isArray(fresh) || fresh.length === 0) return;
+        setAllAlbums((prev) => {
+          const mergedMap = new Map<string, Album>();
+          [...prev, ...fresh].forEach((a) => {
+            if (a?.id) mergedMap.set(a.id, a);
+          });
+          return Array.from(mergedMap.values());
+        });
+      })
+      .catch(() => {});
+
+    const handleAlbumsUpdated = (ev: Event) => {
+      if (!active) return;
+      const detail = (ev as CustomEvent<{ albums?: Album[] }>)?.detail;
+      if (Array.isArray(detail?.albums)) {
+        setAllAlbums(detail.albums);
+      }
+    };
+    window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
+    return () => {
+      active = false;
+      window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
+    };
+  }, [isOpen]);
 
   const canManageAlbum = (album: Album): boolean => {
     if (!currentUser?.uid) return false;
@@ -1201,7 +1236,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!target || !canManageAlbum(target)) return;
     const updated = allAlbums.filter((a) => a.id !== albumId);
     setAllAlbums(updated);
-    saveCachedAlbums(updated);
+    removeAlbumFromMemory(albumId);
+    onAlbumsSync?.(updated);
     if (editingAlbum?.id === albumId) {
       handleCancelEditAlbum();
     }
@@ -1215,8 +1251,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     if (!currentUser?.uid) return;
     if (editingAlbum && !canManageAlbum(editingAlbum)) return;
     if (!newAlbumTitle.trim()) return;
-    if (!newAlbumCover.trim() && !rawAlbumCoverFile) {
-      setAlbumErrorMessage(isHe ? 'חובה להעלות תמונת עטיפה לאלבום מהמכשיר' : 'Album cover image upload is required');
+
+    const allowedMyTrackIds = new Set(myUploadedTracks.map((t) => t.id));
+    const cleanSelectedTrackIds = selectedTrackIdsForAlbum.filter((id) => allowedMyTrackIds.has(id));
+    const firstSelectedTrackCover =
+      myUploadedTracks.find((t) => cleanSelectedTrackIds.includes(t.id) && t.coverUrl)?.coverUrl || '';
+    const resolvedCoverInput = newAlbumCover.trim() || firstSelectedTrackCover;
+
+    if (!resolvedCoverInput && !rawAlbumCoverFile) {
+      setAlbumErrorMessage(isHe ? 'חובה לבחור תמונת עטיפה לאלבום או שיר עם עטיפה' : 'Album cover image is required');
       return;
     }
 
@@ -1224,8 +1267,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setAlbumErrorMessage(null);
 
     try {
-      const allowedMyTrackIds = new Set(myUploadedTracks.map((t) => t.id));
-      const cleanSelectedTrackIds = selectedTrackIdsForAlbum.filter((id) => allowedMyTrackIds.has(id));
       let album: Album;
       if (editingAlbum) {
         album = {
@@ -1233,7 +1274,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           artistId: currentUser.uid,
           uploadedByUid: currentUser.uid,
           title: newAlbumTitle.trim(),
-          coverUrl: newAlbumCover.trim() || undefined,
+          coverUrl: resolvedCoverInput || undefined,
           description: newAlbumDescription.trim() || undefined,
           trackIds: cleanSelectedTrackIds,
         };
@@ -1244,7 +1285,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           artistName: currentArtist.name || currentUser?.displayName || (isHe ? 'אמן' : 'Artist'),
           artistId: currentUser.uid,
           uploadedByUid: currentUser.uid,
-          coverUrl: newAlbumCover.trim() || undefined,
+          coverUrl: resolvedCoverInput || undefined,
           description: newAlbumDescription.trim() || undefined,
           trackIds: cleanSelectedTrackIds,
           createdDate: new Date().toISOString().split('T')[0],
@@ -1267,7 +1308,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         : [album, ...allAlbums];
 
       setAllAlbums(updatedAlbums);
+      upsertAlbumInMemory(album);
       saveCachedAlbums(updatedAlbums);
+      onAlbumsSync?.(updatedAlbums);
       setEditingAlbum(null);
       setNewAlbumTitle('');
       setNewAlbumCover('');
@@ -1540,7 +1583,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   // Publish Track -> Direct, Verified Fast Commit to Public Cloud Storage
   const handlePublishTrack = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isPublishing || !currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim() || !hasCertifiedRights) return;
+    if (isPublishing || !currentArtist || !songTitle.trim() || !audioStreamUrl.trim() || !coverArtUrl.trim()) return;
 
     setIsPublishing(true);
     setPublishErrorMessage(null);
@@ -1914,7 +1957,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setGenreDetectionNotice(null);
       setGenreInput('ללא סגנון מוזיקלי');
       setCustomGenreText('');
-      setHasCertifiedRights(false);
 
       setTimeout(() => {
         setPublishSuccess(false);
@@ -2151,8 +2193,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                 <div className="flex items-center gap-4 overflow-x-auto pb-3 custom-scrollbar">
                   {myAlbums.map((album) => {
-                    const validTrackIdSet = new Set(myUploadedTracks.map((t) => t.id));
-                    const filteredTrackCount = (album.trackIds || []).filter((id) => validTrackIdSet.has(id)).length;
+                    const albumTitleLower = (album.title || '').trim().toLowerCase();
+                    const matchedTracks = myUploadedTracks.filter(
+                      (t) =>
+                        album.trackIds?.includes(t.id) ||
+                        (albumTitleLower && t.albumName && t.albumName.trim().toLowerCase() === albumTitleLower)
+                    );
+                    const filteredTrackCount = matchedTracks.length;
+                    const resolvedAlbumCover = getStreamingMediaUrl(
+                      album.coverUrl || matchedTracks[0]?.coverUrl || undefined
+                    );
                     return (
                       <div
                         key={album.id}
@@ -2163,8 +2213,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           className="cursor-pointer"
                         >
                           <div className="w-full aspect-square rounded-xl bg-neutral-900 overflow-hidden flex items-center justify-center border border-white/10 relative group-hover:scale-[1.02] transition-transform">
-                            {album.coverUrl ? (
-                              <img src={album.coverUrl} alt="" loading="eager" decoding="async" className="w-full h-full object-cover" />
+                            {resolvedAlbumCover ? (
+                              <img src={resolvedAlbumCover} alt={album.title} loading="eager" decoding="async" className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-900 p-2">
                                 <Disc className="w-8 h-8 text-white/50" />
@@ -2501,7 +2551,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                               </option>
                             ))}
                             {editGenre !== 'ללא סגנון מוזיקלי' && !CANONICAL_GENRES.some((g) => g.id === editGenre) && (
-                              <option value="custom">{editGenre || (isHe ? 'מותאם אישית' : 'Custom')}</option>
+                              <option value="custom">{getGenreDisplayLabel(editGenre, isHe) || (isHe ? 'מותאם אישית' : 'Custom')}</option>
                             )}
                           </select>
                         </div>
@@ -3004,6 +3054,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {[
                       { id: 'ללא סגנון מוזיקלי', label: isHe ? 'אוטומטי' : 'Automatic' },
+                      ...(genreInput &&
+                      genreInput !== 'ללא סגנון מוזיקלי' &&
+                      genreInput !== 'אחר' &&
+                      !CANONICAL_GENRES.some((cg) => cg.id === genreInput)
+                        ? [{ id: genreInput, label: getGenreDisplayLabel(genreInput, isHe) }]
+                        : []),
                       ...CANONICAL_GENRES.map((g) => ({
                         id: g.id,
                         label: isHe ? g.labelHe : g.labelEn,
@@ -3143,24 +3199,17 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   </label>
 
                   <div className="pt-3 border-t border-white/10">
-                    <label htmlFor="rightsCertCheck" className="flex items-start gap-3 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        id="rightsCertCheck"
-                        required
-                        checked={hasCertifiedRights}
-                        onChange={(e) => setHasCertifiedRights(e.target.checked)}
-                        className="mt-1 w-4.5 h-4.5 rounded border-white/40 bg-black accent-white cursor-pointer flex-shrink-0"
-                      />
-                      <span className="text-xs text-neutral-300 leading-relaxed">
-                        <span className="text-white font-black block mb-0.5">
-                          {isHe ? 'אישור זכויות יוצרים, שיפוי וויתור זכות מוסרית (חובה) *' : 'Copyright, Indemnification & Moral Rights Waiver (Required) *'}
+                    <div className="p-3 rounded-xl bg-white/[0.04] border border-white/15 text-[11px] text-neutral-300 leading-relaxed flex items-start gap-2.5">
+                      <ShieldCheck className="w-4 h-4 text-white shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-white font-bold block mb-0.5">
+                          {isHe ? 'תזכורת תנאי שימוש וזכויות (אושרו בפרופיל)' : 'Terms & Rights Notice (Accepted in Profile)'}
                         </span>
                         {isHe
-                          ? 'אני מאשר/ת שיש לי את מלוא הזכויות בשיר, במילים, בעטיפה ובקול (ללא שיבוט קול/דמות וללא חובת תמלוגים לאקו״ם/פדרציה), מוותר/ת על טענת הזכות המוסרית בגין כתוביות ותרגומים אוטומטיים, מודע/ת להפצה הפומבית ומתחייב/ת לשיפוי מלא לפי תנאי השימוש.'
-                          : 'I certify 100% copyright/master/likeness clearance (no collecting-society claims or unauthorized voice cloning), waive moral rights for automated subtitles/translations, acknowledge public hosting, and agree to full indemnification under the Terms.'}
-                      </span>
-                    </label>
+                          ? 'כפוף לתנאי השימוש שכבר אישרת בחשבון: ניתן להעלות שירים מקוריים ושירים שהולחנו או נוצרו ב-AI (כגון Gemini). חל איסור להעלות תוכן המפר זכויות יוצרים או לחקות/לשכפל קול של אדם אמיתי מזוהה ללא אישורו.'
+                          : 'Subject to your accepted account Terms: original songs and AI-composed music (e.g. Gemini) are welcome. Copyright infringement or impersonating/cloning a real identifiable person’s voice without consent is prohibited.'}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400">
@@ -3203,7 +3252,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                   <button
                     type="submit"
-                    disabled={isPublishing || !audioStreamUrl || !songTitle || !coverArtUrl || !hasCertifiedRights}
+                    disabled={isPublishing || !audioStreamUrl || !songTitle || !coverArtUrl}
                     className="flex-1 py-4 rounded-2xl bg-white hover:bg-neutral-200 active:scale-[0.99] text-black font-black text-sm transition-all cursor-pointer shadow-[0_0_30px_rgba(255,255,255,0.16)] flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-5 h-5 text-black" />
@@ -3264,8 +3313,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                     {myAlbums.map((album) => {
-                      const validTrackIdSet = new Set(myUploadedTracks.map((t) => t.id));
-                      const filteredTrackCount = (album.trackIds || []).filter((id) => validTrackIdSet.has(id)).length;
+                      const albumTitleLower = (album.title || '').trim().toLowerCase();
+                      const matchedTracks = myUploadedTracks.filter(
+                        (t) =>
+                          album.trackIds?.includes(t.id) ||
+                          (albumTitleLower && t.albumName && t.albumName.trim().toLowerCase() === albumTitleLower)
+                      );
+                      const filteredTrackCount = matchedTracks.length;
+                      const resolvedAlbumCover = getStreamingMediaUrl(
+                        album.coverUrl || matchedTracks[0]?.coverUrl || undefined
+                      );
                       const isCurrentlyEditing = editingAlbum?.id === album.id;
 
                       return (
@@ -3282,8 +3339,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                             className="flex items-center gap-3 min-w-0 cursor-pointer flex-1"
                           >
                             <div className="w-12 h-12 rounded-xl bg-neutral-900 border border-white/15 overflow-hidden flex items-center justify-center shrink-0">
-                              {album.coverUrl ? (
-                                <img src={album.coverUrl} alt="" className="w-full h-full object-cover" />
+                              {resolvedAlbumCover ? (
+                                <img src={resolvedAlbumCover} alt={album.title} className="w-full h-full object-cover" />
                               ) : (
                                 <Disc className="w-6 h-6 text-white/40" />
                               )}
@@ -3496,16 +3553,22 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                 </div>
 
                 {albumErrorMessage && (
-                    <div className="flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                      <span>{albumErrorMessage}</span>
-                    </div>
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-200 flex items-center gap-2 text-xs font-semibold">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{albumErrorMessage}</span>
+                  </div>
                 )}
 
                 <div className="flex items-center gap-3 pt-2">
                   <button
                     type="submit"
-                    disabled={isSavingAlbum || !newAlbumTitle.trim() || (!newAlbumCover.trim() && !rawAlbumCoverFile)}
+                    disabled={
+                      isSavingAlbum ||
+                      !newAlbumTitle.trim() ||
+                      (!newAlbumCover.trim() &&
+                        !rawAlbumCoverFile &&
+                        !selectedTrackIdsForAlbum.some((id) => Boolean(myUploadedTracks.find((t) => t.id === id)?.coverUrl)))
+                    }
                     className="flex-1 py-4 rounded-2xl bg-white hover:bg-neutral-200 text-black font-black text-xs sm:text-sm transition-all shadow-xl cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {isSavingAlbum ? (
@@ -3959,10 +4022,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             onClose={() => setSelectedAlbumForView(null)}
             album={selectedAlbumForView}
             allTracks={allTracks}
-            onPlayTrack={(track) => {
+            onPlayTrack={(track, albCtx) => {
+              setSelectedAlbumForView(null);
               if (onPlayTrack) {
-                onPlayTrack(track);
+                onPlayTrack(track, albCtx ?? selectedAlbumForView);
               }
+              onClose();
             }}
             lang={lang}
             onToggleLike={() => {}}

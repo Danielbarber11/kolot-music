@@ -680,6 +680,8 @@ export function initializeMultiMusicService(): Promise<any> {
   return initPromise;
 }
 
+export const ALBUMS_UPDATED_EVENT = 'kolot:albums-updated';
+
 export function getCachedAlbums(): Album[] {
   return memorySessionAlbums;
 }
@@ -687,14 +689,36 @@ export function getCachedAlbums(): Album[] {
 export function saveCachedAlbums(albums: Album[]): void {
   if (Array.isArray(albums)) {
     memorySessionAlbums = albums;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(ALBUMS_UPDATED_EVENT, { detail: albums }));
+    }
   }
+}
+
+export function upsertAlbumInMemory(album: Album): void {
+  if (!album?.id) return;
+  const exists = memorySessionAlbums.some((a) => a.id === album.id);
+  const next = exists
+    ? memorySessionAlbums.map((a) => (a.id === album.id ? album : a))
+    : [album, ...memorySessionAlbums];
+  saveCachedAlbums(next);
+}
+
+export function removeAlbumFromMemory(albumId: string): void {
+  if (!albumId) return;
+  saveCachedAlbums(memorySessionAlbums.filter((a) => a.id !== albumId));
 }
 
 export async function fetchRealAlbums(): Promise<Album[]> {
   try {
     const cloudAlbums = await fetchAlbumsFromCloud();
-    saveCachedAlbums(cloudAlbums);
-    return cloudAlbums;
+    if (Array.isArray(cloudAlbums)) {
+      if (cloudAlbums.length > 0 || memorySessionAlbums.length === 0) {
+        saveCachedAlbums(cloudAlbums);
+      }
+      return memorySessionAlbums;
+    }
+    return memorySessionAlbums;
   } catch {
     return memorySessionAlbums;
   }

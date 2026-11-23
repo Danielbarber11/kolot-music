@@ -18,44 +18,71 @@ const isPreviewEnvironment = (): boolean => {
   );
 };
 
-const isMobileOrStandalonePWA = (): boolean => {
+const isMobileTabletOrTouchBrowser = (): boolean => {
   if (typeof window === 'undefined') return false;
   try {
     const ua = (navigator.userAgent || '').toLowerCase();
-    const isTouchDevice =
-      navigator.maxTouchPoints > 0 ||
+    const navAny = navigator as unknown as {
+      standalone?: boolean;
+      userAgentData?: { mobile?: boolean };
+    };
+    const isUaMobile =
+      navAny.userAgentData?.mobile === true ||
+      /android|iphone|ipad|ipod|mobile|tablet|samsungbrowser|sm-|galaxy|knox|silk|opera mini|iemobile/i.test(ua);
+    const hasTouch =
+      'ontouchstart' in window ||
+      (navigator.maxTouchPoints || 0) > 0;
+    const hasCoarsePointer =
       window.matchMedia('(pointer: coarse)').matches ||
-      /android|iphone|ipad|ipod|mobile|tablet/.test(ua);
+      window.matchMedia('(any-pointer: coarse)').matches ||
+      window.matchMedia('(hover: none)').matches;
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
-    return isTouchDevice || isStandalone;
+      navAny.standalone === true;
+    const isCompactViewport = Math.min(window.screen?.width || 9999, window.innerWidth || 9999) <= 1024;
+    return isUaMobile || hasTouch || hasCoarsePointer || isStandalone || isCompactViewport;
   } catch {
-    return false;
+    return true;
   }
 };
 
 export const DevToolsProtection: React.FC = () => {
   const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
-  const isPreview = isPreviewEnvironment();
-  const skipDimensionCheck = isPreview || isMobileOrStandalonePWA();
+  const [skipCheck, setSkipCheck] = useState<boolean>(() => isPreviewEnvironment() || isMobileTabletOrTouchBrowser());
 
   useEffect(() => {
-    // If in preview or mobile/tablet/standalone PWA, never run outer/inner window size heuristics
-    if (skipDimensionCheck) {
+    const updateSkip = () => {
+      const shouldSkip = isPreviewEnvironment() || isMobileTabletOrTouchBrowser();
+      setSkipCheck(shouldSkip);
+      if (shouldSkip) setIsDevToolsOpen(false);
+    };
+
+    updateSkip();
+    window.addEventListener('resize', updateSkip, { passive: true });
+    window.addEventListener('orientationchange', updateSkip, { passive: true });
+    return () => {
+      window.removeEventListener('resize', updateSkip);
+      window.removeEventListener('orientationchange', updateSkip);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Never run outer/inner dimension heuristics in preview, Galaxy/mobile/tablet browsers, touchscreens, or PWAs
+    if (skipCheck) {
       setIsDevToolsOpen(false);
       return;
     }
 
     const checkDevTools = () => {
-      if (document.visibilityState !== 'visible') {
+      if (isPreviewEnvironment() || isMobileTabletOrTouchBrowser() || document.visibilityState !== 'visible') {
         setIsDevToolsOpen(false);
         return;
       }
-      const widthThreshold = window.outerWidth - window.innerWidth > 220;
-      const heightThreshold = window.outerHeight - window.innerHeight > 220;
+      // Only check docked side-panel DevTools width delta on true non-touch desktop screens
+      // (Avoid outerHeight - innerHeight completely as mobile/Galaxy/desktop toolbars & address bars trigger false locks before scrolling)
+      const widthThreshold = window.outerWidth - window.innerWidth > 260;
 
-      if (widthThreshold || heightThreshold) {
+      if (widthThreshold) {
         setIsDevToolsOpen(true);
       } else {
         setIsDevToolsOpen(false);
@@ -100,10 +127,10 @@ export const DevToolsProtection: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [skipDimensionCheck]);
+  }, [skipCheck]);
 
-  // Completely inactive in AI Studio preview, mobile devices, and standalone PWA
-  if (skipDimensionCheck || !isDevToolsOpen) return null;
+  // Completely inactive in AI Studio preview, Galaxy/mobile/tablet devices, and standalone PWA
+  if (skipCheck || !isDevToolsOpen) return null;
 
   return (
     <AnimatePresence>

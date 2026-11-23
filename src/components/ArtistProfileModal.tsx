@@ -14,7 +14,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
-import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums, getCachedArtistProfiles, fetchAllArtistProfiles } from '../services/multiMusicService';
+import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums, fetchRealAlbums, ALBUMS_UPDATED_EVENT, getCachedArtistProfiles, fetchAllArtistProfiles } from '../services/multiMusicService';
+import { AlbumModal } from './AlbumModal';
 import { deleteTrackFromCloud, getStreamingMediaUrl } from '../services/cloudStorageService';
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
@@ -32,7 +33,8 @@ interface ArtistProfileModalProps {
   onClose: () => void;
   allTracks: JamendoTrack[];
   allArtists?: ArtistProfile[];
-  onPlayTrack: (track: JamendoTrack) => void;
+  allAlbums?: Album[];
+  onPlayTrack: (track: JamendoTrack, albumContext?: Album | null) => void;
   lang: Language;
   onToggleLike?: (id: string) => void;
   likedSongIds?: string[];
@@ -48,8 +50,11 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   onClose,
   allTracks,
   allArtists = [],
+  allAlbums = [],
   onPlayTrack,
   lang,
+  onToggleLike,
+  likedSongIds = [],
   currentTrack,
   onRemoveTrack,
 }) => {
@@ -76,13 +81,24 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
+  const [loadedAlbums, setLoadedAlbums] = useState<Album[]>(() => getCachedAlbums());
+  const [selectedAlbumForView, setSelectedAlbumForView] = useState<Album | null>(null);
+  const [failedAlbumCoverIds, setFailedAlbumCoverIds] = useState<Record<string, boolean>>({});
   const [currentUid, setCurrentUid] = useState<string | null>(() => getCurrentAuthUser()?.uid || null);
 
   useEffect(() => {
     const unsub = onAuthUserChanged((user) => {
       setCurrentUid(user?.uid || null);
     });
-    return () => unsub();
+    const handleAlbumsUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ albums?: Album[] }>)?.detail;
+      setLoadedAlbums(Array.isArray(detail?.albums) ? detail.albums : getCachedAlbums());
+    };
+    window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
+    return () => {
+      unsub();
+      window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
+    };
   }, []);
 
   useEffect(() => {
@@ -91,6 +107,13 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
         .then((profiles) => {
           if (Array.isArray(profiles) && profiles.length > 0) {
             setLoadedArtists(profiles);
+          }
+        })
+        .catch(() => {});
+      fetchRealAlbums()
+        .then((albums) => {
+          if (Array.isArray(albums) && albums.length > 0) {
+            setLoadedAlbums(albums);
           }
         })
         .catch(() => {});
@@ -202,27 +225,89 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
   // Profile modal opens even if track count is currently 0 (reliable loading)
   if (!isOpen || !effectiveArtistName) return null;
 
-  // Retrieve albums for this artist from cloud session albums
+  // Retrieve albums for this artist from cloud session albums + track albumName tags
   const artistAlbums: Album[] = (() => {
     try {
-      const parsed: Album[] = getCachedAlbums();
-      if (!parsed.length) return [];
+      const invalidAlbumNames = new Set([
+        '',
+        'single',
+        'single release',
+        'unknown album',
+        'סינגל',
+        'סינגל עצמאי',
+        'ללא אלבום',
+        'independent single',
+        'none',
+      ]);
       const validTrackIds = new Set(artistTracks.map((t) => t.id));
-      return parsed
-        .filter((a) => {
-          const aArtist = (a.artistName || '').toLowerCase().trim();
-          return (
-            aArtist === effectiveCleanName ||
-            aArtist === cleanQuery ||
-            effectiveCleanName.includes(aArtist) ||
-            aArtist.includes(effectiveCleanName)
-          );
-        })
-        .map((a) => ({
+      const albumMap = new Map<string, Album>();
+
+      const merged = [...getCachedAlbums(), ...loadedAlbums, ...allAlbums];
+      merged.forEach((a) => {
+        if (!a?.id || !a?.title) return;
+        const cleanTitle = a.title.trim();
+        const lowerTitle = cleanTitle.toLowerCase();
+        if (invalidAlbumNames.has(lowerTitle) || lowerTitle.startsWith('סינגל') || lowerTitle.startsWith('single')) return;
+
+        const aUid = (a.uploadedByUid || a.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+        const aArtist = (a.artistName || '').toLowerCase().trim();
+        const ownerMatches =
+          (canonicalUid && aUid && canonicalUid === aUid) ||
+          (!aUid && effectiveCleanName && aArtist === effectiveCleanName) ||
+          (effectiveCleanName && aArtist && (aArtist === effectiveCleanName || aArtist === cleanQuery));
+        if (!ownerMatches) return;
+
+        const matchedTrackIds = new Set<string>(
+          (a.trackIds || []).filter((id) => validTrackIds.has(id))
+        );
+        artistTracks.forEach((t) => {
+          if (t.albumName && t.albumName.trim().toLowerCase() === lowerTitle) {
+            matchedTrackIds.add(t.id);
+          }
+        });
+
+        const key = `${aUid || aArtist}::${lowerTitle}`;
+        const prev = albumMap.get(key);
+        const combinedIds = Array.from(new Set([...(prev?.trackIds || []), ...Array.from(matchedTrackIds)]));
+        const firstTrackCover = artistTracks.find((t) => combinedIds.includes(t.id) && t.coverUrl)?.coverUrl;
+        albumMap.set(key, {
+          ...(prev || {}),
           ...a,
-          trackIds: (a.trackIds || []).filter((id) => validTrackIds.has(id)),
-        }))
-        .filter((a) => a.trackIds.length > 0);
+          coverUrl: a.coverUrl || prev?.coverUrl || firstTrackCover,
+          trackIds: combinedIds,
+        });
+      });
+
+      artistTracks.forEach((t) => {
+        const cleanAlb = (t.albumName || '').trim();
+        const lowerAlb = cleanAlb.toLowerCase();
+        if (!cleanAlb || invalidAlbumNames.has(lowerAlb) || lowerAlb.startsWith('סינגל') || lowerAlb.startsWith('single')) return;
+        const tUid = (t.uploadedByUid || canonicalUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const tArtist = (t.artistName || effectiveArtistName || '').toLowerCase().trim();
+        const key = `${tUid || tArtist}::${lowerAlb}`;
+        if (!albumMap.has(key)) {
+          albumMap.set(key, {
+            id: `album-${t.id}`,
+            title: cleanAlb,
+            artistName: t.artistName || effectiveArtistName,
+            artistId: t.uploadedByUid || canonicalUid,
+            uploadedByUid: t.uploadedByUid || canonicalUid,
+            coverUrl: t.coverUrl,
+            trackIds: [t.id],
+            createdDate: t.publishedDate || new Date().toISOString().split('T')[0],
+          });
+        } else {
+          const existing = albumMap.get(key)!;
+          if (!existing.trackIds.includes(t.id)) {
+            existing.trackIds = [...existing.trackIds, t.id];
+          }
+          if (!existing.coverUrl && t.coverUrl) {
+            existing.coverUrl = t.coverUrl;
+          }
+        }
+      });
+
+      return Array.from(albumMap.values()).filter((a) => a.trackIds.length > 0);
     } catch {
       return [];
     }
@@ -361,19 +446,42 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
             </h3>
 
             <div className="flex items-center gap-4 overflow-x-auto pb-2 custom-scrollbar">
-              {artistAlbums.map((album) => (
-                <div key={album.id} className="min-w-[150px] max-w-[170px] p-3 rounded-2xl bg-white/5 border border-white/15 shadow-xl space-y-2">
-                  <div className="w-full aspect-square rounded-xl bg-neutral-900 overflow-hidden flex items-center justify-center border border-white/10">
-                    {album.coverUrl ? (
-                      <img src={album.coverUrl} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <Disc className="w-8 h-8 text-white/40" />
-                    )}
-                  </div>
-                  <h4 className="font-normal text-xs text-white truncate">{album.title}</h4>
-                  <p className="text-[10px] text-white/60 font-normal">{album.trackIds.length} {isHe ? 'שירים' : 'tracks'}</p>
-                </div>
-              ))}
+              {artistAlbums.map((album) => {
+                const resolvedCover = getStreamingMediaUrl(
+                  album.coverUrl || artistTracks.find((t) => album.trackIds.includes(t.id) && t.coverUrl)?.coverUrl
+                );
+                const isCoverBroken = !!failedAlbumCoverIds[album.id];
+                return (
+                  <button
+                    key={album.id}
+                    type="button"
+                    onClick={() => setSelectedAlbumForView(album)}
+                    className="group min-w-[150px] max-w-[170px] shrink-0 p-3 rounded-2xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 hover:border-white/30 shadow-xl space-y-2 text-start cursor-pointer transition-all"
+                  >
+                    <div className="w-full aspect-square rounded-xl bg-neutral-900 overflow-hidden flex items-center justify-center border border-white/10 relative">
+                      {resolvedCover && !isCoverBroken ? (
+                        <img
+                          src={resolvedCover}
+                          alt={album.title}
+                          onError={() => setFailedAlbumCoverIds((prev) => ({ ...prev, [album.id]: true }))}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : (
+                        <Disc className="w-8 h-8 text-white/40" />
+                      )}
+                      <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                        <span className="px-2.5 py-1 rounded-full bg-white text-black text-[10px] font-bold shadow">
+                          {isHe ? 'צפה באלבום' : 'Open Album'}
+                        </span>
+                      </div>
+                    </div>
+                    <h4 className="font-semibold text-xs text-white truncate">{album.title}</h4>
+                    <p className="text-[10px] text-white/60 font-normal">
+                      {album.trackIds.length} {isHe ? 'שירים' : 'tracks'}
+                    </p>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -404,7 +512,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
                 <div
                   key={track.id}
                   onClick={() => {
-                    onPlayTrack(track);
+                    onPlayTrack(track, null);
                     onClose();
                   }}
                   style={{
@@ -508,6 +616,23 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
           )}
         </main>
       </div>
+
+      {/* ALBUM DETAIL MODAL */}
+      <AlbumModal
+        isOpen={!!selectedAlbumForView}
+        onClose={() => setSelectedAlbumForView(null)}
+        album={selectedAlbumForView}
+        allTracks={fullPool}
+        onPlayTrack={(track, albCtx) => {
+          setSelectedAlbumForView(null);
+          onPlayTrack(track, albCtx ?? selectedAlbumForView);
+          onClose();
+        }}
+        lang={lang}
+        onToggleLike={(trackId) => onToggleLike?.(trackId)}
+        likedSongIds={likedSongIds}
+        onOpenArtistProfile={() => setSelectedAlbumForView(null)}
+      />
     </motion.div>
   );
 };

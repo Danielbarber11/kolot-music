@@ -27,6 +27,55 @@ export const CANONICAL_GENRES: CanonicalGenreMeta[] = [
   { id: 'Cinematic', labelHe: 'קולנועי', labelEn: 'Cinematic', descriptionHe: 'פסקולים ומוזיקה אפית' },
 ];
 
+export const EXTRA_GENRE_HEBREW_LABELS: Record<string, string> = {
+  'r&b': 'אר אנד בי (R&B)',
+  rnb: 'אר אנד בי (R&B)',
+  soul: 'סול / נשמה',
+  reggae: 'רגאיי',
+  reggaeton: 'רגאטון',
+  latin: 'לטיני',
+  country: 'קאנטרי',
+  metal: 'מטאל',
+  'heavy metal': 'הבי מטאל',
+  punk: 'פאנק רוק',
+  indie: 'אינדי',
+  folk: 'פולק',
+  trance: 'טראנס',
+  'psytrance': 'פסי-טראנס',
+  house: 'האוס',
+  'deep house': 'דיפ האוס',
+  techno: 'טכנו',
+  edm: 'דאנס / EDM',
+  trap: 'טראפ',
+  drill: 'דריל',
+  'lo-fi': 'לו-פיי (Lo-Fi)',
+  lofi: 'לו-פיי (Lo-Fi)',
+  ambient: 'אמביינט',
+  funk: 'פאנק (Funk)',
+  disco: 'דיסקו',
+  hasidic: 'חסידי / יהודי',
+  jewish: 'יהודי / דתי',
+  piyut: 'פיוט',
+  opera: 'אופרה',
+  'k-pop': 'קיי-פופ (K-Pop)',
+  kpop: 'קיי-פופ (K-Pop)',
+  afrobeat: 'אפרוביט',
+  afropop: 'אפרופופ',
+  gospel: 'גוספל',
+  'spoken word': 'ספוקן וורד',
+  kids: 'שירי ילדים',
+  world: 'מוזיקת עולם',
+  ballad: 'בלדה',
+  dancehall: 'דאנסהול',
+  synthwave: 'סינת׳ווייב',
+  bossa: 'בוסה נובה',
+  flamenco: 'פלמנקו',
+  mediterranean: 'ים-תיכוני',
+  greek: 'יווני',
+};
+
+const DISTINCT_CUSTOM_GENRE_KEYS = new Set(Object.keys(EXTRA_GENRE_HEBREW_LABELS));
+
 const UNTAGGED_VALUES = new Set([
   '',
   'none',
@@ -41,47 +90,53 @@ const UNTAGGED_VALUES = new Set([
 ]);
 
 /**
- * Normalizes any Hebrew or English genre string to a canonical genre ID (or '' if untagged).
+ * Normalizes any Hebrew or English genre string to a canonical or distinct custom genre ID (or '' if untagged).
  */
 export function normalizeGenreId(rawGenre?: string): string {
-  const clean = (rawGenre || '').trim().toLowerCase();
+  const trimmed = (rawGenre || '').trim();
+  const clean = trimmed.toLowerCase();
   if (!clean || UNTAGGED_VALUES.has(clean)) return '';
 
-  if (clean.includes('mizrahi') || clean.includes('מזרח') || clean.includes('ים תיכונ') || clean.includes('חפלה')) {
+  // Keep distinct non-canonical genres (like Metal, Trance, House, Reggae, Indie, Hasidic, R&B, Lo-Fi, Country, etc.) intact!
+  if (DISTINCT_CUSTOM_GENRE_KEYS.has(clean)) {
+    return trimmed;
+  }
+
+  if (clean === 'mizrahi' || clean === 'מזרחית' || clean.includes('מזרח') || clean.includes('סלסול') || clean.includes('חפלה')) {
     return 'Mizrahi';
   }
-  if (clean.includes('hip') || clean.includes('rap') || clean.includes('trap') || clean.includes('היפ') || clean.includes('ראפ')) {
+  if (clean === 'hip hop' || clean === 'היפ הופ' || clean === 'היפ הופ / ראפ' || clean === 'ראפ' || clean === 'rap') {
     return 'Hip Hop';
   }
-  if (clean.includes('rock') || clean.includes('metal') || clean.includes('punk') || clean.includes('רוק')) {
+  if (clean === 'rock' || clean === 'רוק') {
     return 'Rock';
   }
-  if (clean.includes('elect') || clean.includes('edm') || clean.includes('house') || clean.includes('techno') || clean.includes('trance') || clean.includes('אלקטרונ')) {
+  if (clean === 'electronic' || clean === 'אלקטרוני' || clean === 'אלקטרוניקה') {
     return 'Electronic';
   }
-  if (clean.includes('acoust') || clean.includes('folk') || clean.includes('אקוסט')) {
+  if (clean === 'acoustic' || clean === 'אקוסטי') {
     return 'Acoustic';
   }
-  if (clean.includes('chill') || clean.includes('lofi') || clean.includes('lo-fi') || clean.includes('ambient') || clean.includes('צ׳יל') || clean.includes("צ'יל")) {
+  if (clean === 'chill' || clean === 'צ׳יל' || clean === "צ'יל") {
     return 'Chill';
   }
-  if (clean.includes('classic') || clean.includes('קלאס')) {
+  if (clean === 'classical' || clean === 'קלאסי' || clean.includes('תזמורת')) {
     return 'Classical';
   }
-  if (clean.includes('jazz') || clean.includes('ג׳אז') || clean.includes("ג'אז")) {
+  if (clean === 'jazz' || clean === 'ג׳אז' || clean === "ג'אז") {
     return 'Jazz';
   }
-  if (clean.includes('blues') || clean.includes('soul') || clean.includes('בלוז')) {
+  if (clean === 'blues' || clean === 'בלוז') {
     return 'Blues';
   }
-  if (clean.includes('cinematic') || clean.includes('soundtrack') || clean.includes('קולנוע')) {
+  if (clean === 'cinematic' || clean === 'קולנועי' || clean === 'פסקול') {
     return 'Cinematic';
   }
-  if (clean.includes('pop') || clean.includes('פופ')) {
+  if (clean === 'pop' || clean === 'פופ') {
     return 'Pop';
   }
 
-  return rawGenre!.trim();
+  return trimmed;
 }
 
 export function isUntaggedGenre(rawGenre?: string): boolean {
@@ -96,6 +151,10 @@ export function getGenreDisplayLabel(rawGenre?: string, isHe = true): string {
   const found = CANONICAL_GENRES.find((g) => g.id.toLowerCase() === canonical.toLowerCase());
   if (found) {
     return isHe ? found.labelHe : found.labelEn;
+  }
+  if (isHe) {
+    const heExtra = EXTRA_GENRE_HEBREW_LABELS[canonical.toLowerCase()];
+    if (heExtra) return heExtra;
   }
   return canonical;
 }
@@ -341,9 +400,52 @@ function mapAudioSetLabelsToGenre(
     if (/baby|love|tonight|yeah|heart|dance|feel/.test(combinedText)) scores.Pop += 0.25;
   }
 
+  // Additional non-preset genre candidates recognized locally too
+  const extraScores: Record<string, number> = {
+    Reggae: 0,
+    Reggaeton: 0,
+    Country: 0,
+    Metal: 0,
+    Trance: 0,
+    House: 0,
+    'R&B': 0,
+    Hasidic: 0,
+    Indie: 0,
+    Folk: 0,
+    'Lo-Fi': 0,
+    Latin: 0,
+  };
+
+  for (const item of labels) {
+    const lbl = item.label.toLowerCase();
+    const w = item.score * 1.45;
+    if (lbl.includes('reggae')) extraScores.Reggae += w + 0.4;
+    if (lbl.includes('country') || lbl.includes('bluegrass') || lbl.includes('banjo')) extraScores.Country += w + 0.4;
+    if (lbl.includes('heavy metal') || lbl.includes('death metal') || lbl.includes('thrash')) extraScores.Metal += w + 0.45;
+    if (lbl.includes('trance') || lbl.includes('psychedelic')) extraScores.Trance += w + 0.35;
+    if (lbl.includes('house music')) extraScores.House += w + 0.35;
+    if (lbl.includes('rhythm and blues') || lbl.includes('r&b') || lbl.includes('soul music')) extraScores['R&B'] += w + 0.35;
+    if (lbl.includes('folk') || lbl.includes('celtic')) extraScores.Folk += w + 0.3;
+    if (lbl.includes('indie')) extraScores.Indie += w + 0.35;
+    if (lbl.includes('salsa') || lbl.includes('flamenco') || lbl.includes('tango') || lbl.includes('latin')) extraScores.Latin += w + 0.4;
+  }
+
+  if (/רגאיי|reggae|rasta|dub/.test(combinedText)) extraScores.Reggae += 0.85;
+  if (/רגאטון|reggaeton|perreo|dembow/.test(combinedText)) extraScores.Reggaeton += 0.85;
+  if (/קאנטרי|country|cowboy|nashville/.test(combinedText)) extraScores.Country += 0.85;
+  if (/מטאל|heavy metal|death metal|metalcore/.test(combinedText)) extraScores.Metal += 0.88;
+  if (/חסיד|ניגון|פיוט|קודש|השם|אלוהים|תורה|ירושלים|hasidic|jewish|piyut/.test(combinedText)) extraScores.Hasidic += 0.9;
+  if (/טראנס|פסיטראנס|trance|psytrance|goa/.test(combinedText)) extraScores.Trance += 0.82;
+  if (/האוס|house|deep house/.test(combinedText)) extraScores.House += 0.8;
+  if (/r&b|rnb|אר אנד בי|soul music|neo soul/.test(combinedText)) extraScores['R&B'] += 0.82;
+  if (/לטיני|סלסה|סמבה|latin|salsa|bachata/.test(combinedText)) extraScores.Latin += 0.82;
+  if (/אינדי|indie/.test(combinedText)) extraScores.Indie += 0.78;
+  if (/לו-פיי|lo-fi|lofi/.test(combinedText)) extraScores['Lo-Fi'] += 0.82;
+
+  const allScores: Record<string, number> = { ...scores, ...extraScores };
   let bestGenre = 'Pop';
   let bestScore = -1;
-  for (const [g, s] of Object.entries(scores)) {
+  for (const [g, s] of Object.entries(allScores)) {
     if (s > bestScore) {
       bestScore = s;
       bestGenre = g;
@@ -365,12 +467,24 @@ function mapAudioSetLabelsToGenre(
     Jazz: 'גרובי / מתוחכם',
     Blues: 'עמוק / נשמה',
     Cinematic: 'דרמטי / קולנועי',
+    Reggae: 'גרובי / רגאיי',
+    Reggaeton: 'קצבי / לטיני',
+    Country: 'שורשי / קאנטרי',
+    Metal: 'עוצמתי / כבד',
+    Trance: 'סוחף / מסיבתי',
+    House: 'רקיד / מועדוני',
+    'R&B': 'חלק / נשמה',
+    Hasidic: 'מרומם / יהודי',
+    Indie: 'אלטרנטיבי / ייחודי',
+    Folk: 'חם / מסורתי',
+    'Lo-Fi': 'רגוע / לו-פיי',
+    Latin: 'תוסס / לטיני',
   };
 
   return {
     success: true,
     genre: bestGenre,
-    hebrewGenre: foundMeta?.labelHe || bestGenre,
+    hebrewGenre: foundMeta?.labelHe || EXTRA_GENRE_HEBREW_LABELS[bestGenre.toLowerCase()] || bestGenre,
     confidence: Number(confidence.toFixed(2)),
     mood: moodMap[bestGenre] || 'מוזיקלי',
     bpmEstimate: bpm,
@@ -447,12 +561,13 @@ export async function classifyTrackAudio(params: {
         if (res.ok) {
           const data: any = await res.json().catch(() => null);
           if (data?.success && data.genre && data.provider && data.provider !== 'heuristic-metadata') {
-            const canonical = normalizeGenreId(data.genre) || 'Pop';
-            const foundMeta = CANONICAL_GENRES.find((g) => g.id === canonical);
+            const rawDetected = String(data.genre || '').trim();
+            const canonical = normalizeGenreId(rawDetected) || rawDetected || 'Pop';
+            const foundMeta = CANONICAL_GENRES.find((g) => g.id.toLowerCase() === canonical.toLowerCase());
             return {
               success: true,
               genre: canonical,
-              hebrewGenre: foundMeta?.labelHe || data.hebrewGenre || canonical,
+              hebrewGenre: foundMeta?.labelHe || String(data.hebrewGenre || '').trim() || EXTRA_GENRE_HEBREW_LABELS[canonical.toLowerCase()] || canonical,
               confidence: Number(data.confidence) || 0.9,
               mood: data.mood || '',
               bpmEstimate: Number(data.bpmEstimate) || 110,
