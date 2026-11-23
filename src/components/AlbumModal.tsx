@@ -33,26 +33,33 @@ export const AlbumModal: React.FC<AlbumModalProps> = ({
   if (!isOpen || !album) return null;
   const isHe = lang === 'he';
 
-  // Find all tracks belonging to this album with multi-criteria matching
-  const explicitMatches = allTracks.filter((t) => {
-    if (album.trackIds && album.trackIds.length > 0 && album.trackIds.includes(t.id)) {
+  const albumOwnerUid = (album.uploadedByUid || album.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+  const albumArtistLower = (album.artistName || '').toLowerCase().trim();
+  const albumTitleLower = (album.title || '').toLowerCase().trim();
+
+  const belongsToAlbumOwner = (t: JamendoTrack): boolean => {
+    const trkUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+    const trkArtist = (t.artistName || '').toLowerCase().trim();
+    if (albumOwnerUid && trkUid) {
+      return albumOwnerUid === trkUid;
+    }
+    if (albumOwnerUid && !trkUid) {
+      return false;
+    }
+    return Boolean(albumArtistLower && trkArtist && albumArtistLower === trkArtist);
+  };
+
+  // Match strictly tracks owned by the same profile and linked to this album
+  const albumTracks = allTracks.filter((t) => {
+    if (!belongsToAlbumOwner(t)) return false;
+    if (Array.isArray(album.trackIds) && album.trackIds.includes(t.id)) {
       return true;
     }
-    if (t.albumName && album.title && t.albumName.toLowerCase().trim() === album.title.toLowerCase().trim()) {
+    if (albumTitleLower && t.albumName && t.albumName.toLowerCase().trim() === albumTitleLower) {
       return true;
-    }
-    if (album.artistName && t.artistName && t.artistName.toLowerCase().trim() === album.artistName.toLowerCase().trim()) {
-      if (t.albumName && t.albumName.toLowerCase().trim() === album.title.toLowerCase().trim()) {
-        return true;
-      }
     }
     return false;
   });
-
-  // Fallback: If no explicit album name match, load top tracks by that artist
-  const albumTracks = explicitMatches.length > 0
-    ? explicitMatches
-    : allTracks.filter((t) => album.artistName && t.artistName?.toLowerCase().trim() === album.artistName.toLowerCase().trim()).slice(0, 10);
 
   const effectiveCover = getStreamingMediaUrl(
     album.coverUrl || albumTracks[0]?.coverUrl || undefined

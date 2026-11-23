@@ -10,7 +10,7 @@ import {
   fetchAlbumsFromCloud,
   isTrackViewIncrementPending,
 } from './cloudStorageService';
-import { getDeletedSongIds } from './deletedTracksService';
+import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
  * 100% Cloud-Native Music Service (Cloudflare R2 Profiles & Storage)
@@ -279,6 +279,19 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
 
 export const TRACK_VIEWS_UPDATED_EVENT = 'kolot:track-views-updated';
 export const TRACK_UPDATED_EVENT = 'kolot:track-updated';
+export const TRACK_DELETED_EVENT = 'kolot:track-deleted';
+
+export function removeTrackFromMemory(trackId: string): JamendoTrack[] {
+  if (!trackId) return memorySessionTracks;
+  markSongAsDeleted(trackId);
+  memorySessionTracks = memorySessionTracks.filter((t) => t.id !== trackId);
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent(TRACK_DELETED_EVENT, { detail: { trackId } }));
+    } catch {}
+  }
+  return memorySessionTracks;
+}
 
 export function upsertTrackInMemory(updatedTrack: JamendoTrack): JamendoTrack[] {
   if (!updatedTrack?.id) return memorySessionTracks;

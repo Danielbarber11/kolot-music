@@ -469,23 +469,38 @@ export async function fetchTracksFromCloudStorage(): Promise<JamendoTrack[]> {
   return Array.from(trackMap.values());
 }
 
-export async function fetchSingleTrackFromCloud(trackId: string): Promise<JamendoTrack | null> {
+export type SingleTrackStatusResult =
+  | { status: 'found'; track: JamendoTrack }
+  | { status: 'deleted' }
+  | { status: 'error' };
+
+export async function fetchSingleTrackStatusFromCloud(trackId: string): Promise<SingleTrackStatusResult> {
   const cleanId = String(trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
-  if (!cleanId) return null;
+  if (!cleanId) return { status: 'deleted' };
   try {
     const res = await fetch(`/api/storage/track/${encodeURIComponent(cleanId)}?_t=${Date.now()}`, {
       headers: { ...getR2AuthHeaders(), 'Cache-Control': 'no-cache' },
       cache: 'no-store',
     });
-    if (!res.ok) return null;
+    if (res.status === 404) {
+      return { status: 'deleted' };
+    }
+    if (!res.ok) {
+      return { status: 'error' };
+    }
     const data = await safeJson(res, 'טעינת שיר');
     if (data?.success && data.track && isCloudPlayableTrack(data.track)) {
-      return data.track as JamendoTrack;
+      return { status: 'found', track: data.track as JamendoTrack };
     }
-    return null;
+    return { status: 'deleted' };
   } catch {
-    return null;
+    return { status: 'error' };
   }
+}
+
+export async function fetchSingleTrackFromCloud(trackId: string): Promise<JamendoTrack | null> {
+  const result = await fetchSingleTrackStatusFromCloud(trackId);
+  return result.status === 'found' ? result.track : null;
 }
 
 export async function deleteTrackFromCloudStorage(trackId: string): Promise<boolean> {

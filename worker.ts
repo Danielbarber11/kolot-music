@@ -352,9 +352,9 @@ export default {
     }
     if (request.method === 'GET' && pathname === '/manifest.json') {
       const origin = url.origin;
-      const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json` }];
+      const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json`, id: '/' }];
       if (origin !== 'https://kolot-music.kolot-music.workers.dev') {
-        relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json' });
+        relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json', id: '/' });
       }
       return new Response(
         JSON.stringify({
@@ -370,6 +370,7 @@ export default {
           background_color: '#000000',
           lang: 'he',
           dir: 'rtl',
+          launch_handler: { client_mode: ['focus-existing', 'auto'] },
           prefer_related_applications: false,
           related_applications: relatedApps,
           icons: [
@@ -705,6 +706,31 @@ export default {
           if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
             return jsonResponse({ success: false, error: 'רק בעל הפרופיל רשאי ליצור או לערוך אלבום זה.' }, 403);
           }
+          try {
+            const incomingAlbum = JSON.parse(new TextDecoder().decode(bodyBytes));
+            if (incomingAlbum && typeof incomingAlbum === 'object') {
+              incomingAlbum.uploadedByUid = cleanSessUid;
+              incomingAlbum.artistId = cleanSessUid;
+              if (Array.isArray(incomingAlbum.trackIds)) {
+                const verifiedIds: string[] = [];
+                for (const rawTid of incomingAlbum.trackIds) {
+                  const cleanTid = String(rawTid || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+                  if (!cleanTid) continue;
+                  const trk = await readR2JsonTop(`tracks/${cleanTid}.json`);
+                  const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
+                  if (!trk || !trkOwner || trkOwner !== cleanSessUid) {
+                    return jsonResponse(
+                      { success: false, error: 'ניתן להוסיף לאלבום שירים שהועלו מהפרופיל שלך בלבד.' },
+                      403
+                    );
+                  }
+                  if (!verifiedIds.includes(cleanTid)) verifiedIds.push(cleanTid);
+                }
+                incomingAlbum.trackIds = verifiedIds;
+              }
+              bodyBytes = encoder.encode(JSON.stringify(incomingAlbum, null, 2));
+            }
+          } catch {}
         }
 
         if (env.R2_BUCKET) {

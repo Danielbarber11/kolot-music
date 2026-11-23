@@ -50,6 +50,7 @@ import {
   isValidTrackWithOwner,
   TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
+  TRACK_DELETED_EVENT,
 } from '../services/multiMusicService';
 import { SongPlayerPage } from './SongPlayerPage';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
@@ -591,10 +592,22 @@ export const SongsView: React.FC<SongsViewProps> = ({
       setPlayerTrack((cur) => (cur && cur.id === updated.id ? { ...cur, ...updated } : cur));
     };
 
+    const handleTrackDeleted = (ev: Event) => {
+      const deletedId = (ev as CustomEvent<{ trackId?: string }>)?.detail?.trackId;
+      if (!deletedId || !active) return;
+      setAllTracks((prev) => {
+        const next = prev.filter((t) => t.id !== deletedId);
+        saveCachedCloudTracks(next);
+        onTracksSync?.(next);
+        return next;
+      });
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     window.addEventListener('focus', handleVisibilityOrFocus);
     window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
+    window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
 
     return () => {
       active = false;
@@ -602,6 +615,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       window.removeEventListener('focus', handleVisibilityOrFocus);
       window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
+      window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
     };
   }, []);
 
@@ -809,13 +823,27 @@ export const SongsView: React.FC<SongsViewProps> = ({
     return [...allTracks].sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
   }, [allTracks, getTrackPopularity]);
 
-  // Row 2: Popular albums synthesized purely from R2 cloud albums and cloud tracks
+  // Row 2: Popular albums synthesized purely from R2 cloud albums and cloud tracks (strictly isolated per owner)
   const popularAlbums = React.useMemo(() => {
     const albumMap = new Map<string, Album>();
+    const trackOwnerById = new Map<string, string>();
+    allTracks.forEach((t) => {
+      if (t?.id) {
+        trackOwnerById.set(t.id, (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim());
+      }
+    });
 
     remoteAlbums.forEach((a) => {
       if (a.title && a.id) {
-        albumMap.set(a.title.toLowerCase().trim(), a);
+        const albOwner = (a.uploadedByUid || a.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
+        const key = `${albOwner || (a.artistName || '').toLowerCase().trim()}::${a.title.toLowerCase().trim()}`;
+        const filteredTrackIds = Array.isArray(a.trackIds)
+          ? a.trackIds.filter((tid) => {
+              const tOwn = trackOwnerById.get(tid);
+              return !albOwner || !tOwn || tOwn === albOwner;
+            })
+          : [];
+        albumMap.set(key, { ...a, trackIds: filteredTrackIds });
       }
     });
 
@@ -839,12 +867,15 @@ export const SongsView: React.FC<SongsViewProps> = ({
         !lower.startsWith('סינגל') &&
         !lower.startsWith('single')
       ) {
-        const key = `${t.artistName} - ${cleanAlbumName}`.toLowerCase().trim();
+        const tOwner = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        const ownerOrArtistKey = tOwner || (t.artistName || '').toLowerCase().trim();
+        const key = `${ownerOrArtistKey}::${lower}`;
         if (!albumMap.has(key)) {
           albumMap.set(key, {
             id: `album-${t.id}`,
             title: cleanAlbumName,
             artistName: t.artistName,
+            uploadedByUid: t.uploadedByUid,
             coverUrl: t.coverUrl,
             trackIds: [t.id],
             createdDate: t.publishedDate || new Date().toISOString(),

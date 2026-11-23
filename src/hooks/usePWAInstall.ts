@@ -99,13 +99,17 @@ export function usePWAInstall() {
     setIsAndroid(isAndroidDevice);
 
     void verifyInstalledStatus(false);
+    // Re-check slightly later once service worker registration completes (improves getInstalledRelatedApps reliability on Android Chrome)
+    const retryTimer = window.setTimeout(() => {
+      void verifyInstalledStatus(promptSeen);
+    }, 650);
 
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       promptSeen = true;
       setDeferredPrompt(e as BeforeInstallPromptEvent);
-      writePersistedInstallFlag(false);
-      setIsInstalled(false);
+      // Do NOT erase persisted flag unconditionally if getInstalledRelatedApps confirmed install, only clear when Chrome explicitly says installable
+      void verifyInstalledStatus(true);
     };
 
     const handleAppInstalled = () => {
@@ -135,6 +139,7 @@ export function usePWAInstall() {
     }
 
     return () => {
+      window.clearTimeout(retryTimer);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('focus', handleFocusOrVisibility);
@@ -164,6 +169,11 @@ export function usePWAInstall() {
     return false;
   };
 
+  const getAppLaunchUrl = (): string => {
+    if (typeof window === 'undefined') return '/';
+    return `${window.location.origin}/?kolot_app=1`;
+  };
+
   return {
     isInstallable: !!deferredPrompt,
     isInstalled,
@@ -171,6 +181,7 @@ export function usePWAInstall() {
     isIOS,
     isAndroid,
     install,
+    getAppLaunchUrl,
     promptAvailable: !!deferredPrompt,
   };
 }

@@ -11,6 +11,7 @@ import {
   FileCode,
   ShieldCheck,
   Zap,
+  ExternalLink,
 } from 'lucide-react';
 import { Language } from '../types';
 import { usePWAInstall } from '../hooks/usePWAInstall';
@@ -22,7 +23,7 @@ interface AppDownloadViewProps {
 export const AppDownloadView: React.FC<AppDownloadViewProps> = ({ lang }) => {
   const isHe = lang === 'he';
 
-  const { isInstallable, isInstalled, install } = usePWAInstall();
+  const { isInstallable, isInstalled, isStandaloneMode, install, getAppLaunchUrl } = usePWAInstall();
   const [exportingBundle, setExportingBundle] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
 
@@ -187,26 +188,30 @@ export const AppDownloadView: React.FC<AppDownloadViewProps> = ({ lang }) => {
             </div>
           </div>
 
-          <button
-            onClick={handleInstallPWA}
-            className={`w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition-all ${
-              isInstalled
-                ? 'bg-emerald-600 text-white'
-                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/30'
-            }`}
-          >
-            {isInstalled ? (
-              <>
-                <ShieldCheck className="w-4 h-4" />
-                <span>{isHe ? 'האפליקציה מותקנת במכשיר!' : 'App Installed on Device!'}</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4" />
-                <span>{isHe ? 'התקן אפליקציה כעת' : 'Install PWA Now'}</span>
-              </>
-            )}
-          </button>
+          {isStandaloneMode ? (
+            <div className="w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg bg-emerald-600 text-white">
+              <ShieldCheck className="w-4 h-4" />
+              <span>{isHe ? 'האפליקציה פתוחה ומותקנת במכשיר!' : 'App Installed & Running!'}</span>
+            </div>
+          ) : isInstalled ? (
+            <a
+              href={getAppLaunchUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg bg-white text-black hover:bg-neutral-200 transition-all"
+            >
+              <ExternalLink className="w-4 h-4" />
+              <span>{isHe ? 'פתח באפליקציה' : 'Open in App'}</span>
+            </a>
+          ) : (
+            <button
+              onClick={handleInstallPWA}
+              className="w-full py-3 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition-all bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/30"
+            >
+              <Download className="w-4 h-4" />
+              <span>{isHe ? 'התקן אפליקציה כעת' : 'Install PWA Now'}</span>
+            </button>
+          )}
         </div>
 
         {/* Option 2: Standalone Local Bot Bundle Download */}

@@ -35,15 +35,30 @@ export const DEFAULT_ACCESSIBILITY_SETTINGS: AccessibilitySettings = {
 
 const STORAGE_KEY = 'kolot_accessibility_settings_v1';
 
+function isMobileOrTouchUserAgent(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(
+    navigator.userAgent || ''
+  );
+}
+
 export function detectPointerCapabilities(): PointerCapabilities {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return { hasFinePointer: true, hasCoarsePointer: false };
+    return { hasFinePointer: !isMobileOrTouchUserAgent(), hasCoarsePointer: isMobileOrTouchUserAgent() };
   }
-  const hasFinePointer = window.matchMedia('(any-pointer: fine)').matches;
-  const hasCoarsePointer = window.matchMedia('(any-pointer: coarse)').matches;
+  const mobileUa = isMobileOrTouchUserAgent();
+  const primaryFine = window.matchMedia('(pointer: fine)').matches;
+  const primaryCoarse = window.matchMedia('(pointer: coarse)').matches;
+  const canHover = window.matchMedia('(hover: hover)').matches;
+  const anyCoarse = window.matchMedia('(any-pointer: coarse)').matches;
+
+  // Mobile phones (including Samsung Galaxy with S-Pen reporting any-pointer: fine) must NOT receive mouse/desktop-keyboard UI tools
+  const hasFinePointer = !mobileUa && (primaryFine || (canHover && !primaryCoarse));
+  const hasCoarsePointer = mobileUa || primaryCoarse || anyCoarse || !hasFinePointer;
+
   return {
     hasFinePointer,
-    hasCoarsePointer: hasCoarsePointer || !hasFinePointer,
+    hasCoarsePointer,
   };
 }
 
@@ -51,13 +66,12 @@ export function subscribePointerCapabilities(cb: (caps: PointerCapabilities) => 
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return () => {};
   }
-  const fineMq = window.matchMedia('(any-pointer: fine)');
-  const coarseMq = window.matchMedia('(any-pointer: coarse)');
+  const fineMq = window.matchMedia('(pointer: fine)');
+  const coarseMq = window.matchMedia('(pointer: coarse)');
+  const anyCoarseMq = window.matchMedia('(any-pointer: coarse)');
+  const hoverMq = window.matchMedia('(hover: hover)');
   const sync = () => {
-    cb({
-      hasFinePointer: fineMq.matches,
-      hasCoarsePointer: coarseMq.matches || !fineMq.matches,
-    });
+    cb(detectPointerCapabilities());
   };
   sync();
   const add = (mq: MediaQueryList) => {
@@ -70,9 +84,13 @@ export function subscribePointerCapabilities(cb: (caps: PointerCapabilities) => 
   };
   add(fineMq);
   add(coarseMq);
+  add(anyCoarseMq);
+  add(hoverMq);
   return () => {
     remove(fineMq);
     remove(coarseMq);
+    remove(anyCoarseMq);
+    remove(hoverMq);
   };
 }
 
@@ -113,19 +131,20 @@ export function saveAccessibilitySettings(settings: AccessibilitySettings): void
 export function applyAccessibilitySettingsToDom(settings: AccessibilitySettings): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
+  const caps = detectPointerCapabilities();
 
   root.style.fontSize = `${settings.fontScale}%`;
 
   const classMap: Array<[string, boolean]> = [
     ['kolot-a11y-contrast', settings.highContrast],
     ['kolot-a11y-links', settings.highlightLinks],
-    ['kolot-a11y-focus', settings.strongFocus],
+    ['kolot-a11y-focus', settings.strongFocus && caps.hasFinePointer],
     ['kolot-a11y-readable', settings.readableFont],
     ['kolot-a11y-spacing', settings.extraSpacing],
     ['kolot-a11y-no-motion', settings.stopAnimations],
-    ['kolot-a11y-cursor', settings.largeCursor],
+    ['kolot-a11y-cursor', settings.largeCursor && caps.hasFinePointer],
     ['kolot-allow-select', settings.allowTextSelection],
-    ['kolot-a11y-touch', settings.touchTargets],
+    ['kolot-a11y-touch', settings.touchTargets && caps.hasCoarsePointer],
   ];
 
   for (const [cls, active] of classMap) {

@@ -40,7 +40,7 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
 
           <div className="space-y-3 text-xs leading-relaxed text-white/85 max-h-64 overflow-y-auto p-4 rounded-2xl bg-neutral-900 border border-white/10 custom-scrollbar">
             <h4 className="font-extrabold text-white text-sm">
-              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v3):' : 'Terms of Service, Privacy & Liability (v3):'}
+              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v4):' : 'Terms of Service, Privacy & Liability (v4):'}
             </h4>
             <ul className="space-y-2 list-disc list-inside text-[11px] text-white/80">
               <li>
@@ -55,18 +55,23 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
               </li>
               <li>
                 {isHe
-                  ? 'רישיון, ויתור על "הזכות המוסרית" ועיבוד קריוקי: העלאה מעניקה רישיון לאחסן, לעבד קריוקי/הסרת שירה, להפיק כתוביות ותרגומים ולהזרים לציבור, תוך ויתור מראש על טענת פגיעה בזכות המוסרית. אין באחסון הקבצים הצפנת קצה-לקצה והשירים זמינים בכתובות ציבוריות; העלאה אינה יוצרת יחסי עבודה, שותפות או זכאות לתשלום.'
-                  : 'License & Moral Rights Waiver: Uploading grants license for public streaming, karaoke vocal processing, and automated subtitles with waiver of moral rights. Files use open cloud URLs; no agency/partnership/royalty relationship is created.'}
+                  ? 'רישיון וויתור על "הזכות המוסרית": העלאה מעניקה רישיון לאחסן, לדחוס, לעבד כתוביות ותרגומים ולהזרים לציבור, תוך ויתור מראש על טענת פגיעה בזכות המוסרית. אין באחסון הקבצים הצפנת קצה-לקצה והשירים זמינים בכתובות ציבוריות; העלאה אינה יוצרת יחסי עבודה, שותפות או זכאות לתשלום.'
+                  : 'License & Moral Rights Waiver: Uploading grants license for public streaming, compression, and automated subtitles with waiver of moral rights. Files use open cloud URLs; no agency/partnership/royalty relationship is created.'}
               </li>
               <li>
                 {isHe
-                  ? 'איסור לשון הרע, התחזות, ספאם ודיווחי שווא: חל איסור להעלות לשון הרע, הסתה, אלימות, פורנוגרפיה, ספאם/הונאה, קוד זדוני, להתחזות לאחר או להגיש דיווחי סרק בחוסר תום לב.'
-                  : 'Prohibited Conduct: Defamation, impersonation, hate speech, explicit/illegal content, spam, malware, and bad-faith false reports are strictly forbidden.'}
+                  ? 'איסור לשון הרע, התחזות, ספאם, נוזקות ודיווחי שווא: חל איסור להעלות לשון הרע, הסתה, אלימות, פורנוגרפיה, ספאם/הונאה, קוד זדוני/ווירוסים, להתחזות לאחר או להגיש דיווחי סרק בחוסר תום לב.'
+                  : 'Prohibited Conduct: Defamation, impersonation, hate speech, explicit/illegal content, spam, viruses/malware, and bad-faith false reports are strictly forbidden.'}
               </li>
               <li>
                 {isHe
-                  ? 'AI, כתוביות, צריכת גלישה וציוד קצה: תמלול, תרגום וסיווגי AI מסופקים "AS IS" ועלולים לכלול שגיאות ללא עילת לשון הרע. הורדת מודלים בדפדפן והזרמת אודיו צורכות חבילת גלישה, מעבד, Cache וסוללה על חשבון המשתמש בלבד. המאזין אחראי לבטיחות עוצמת השמע, מצב קריוקי, Wake Lock ומניעת נזק לרמקולים/מסך.'
-                  : 'AI "AS IS", Bandwidth & Safety: AI outputs may contain errors without defamation liability. In-browser AI and audio use user cellular data, CPU, cache, and battery. Listeners bear sole risk for volume, karaoke gain, speaker protection, and Wake Lock.'}
+                  ? 'כתוביות AI (עלולות לטעות), צריכת גלישה וציוד קצה: תמלול, תרגום וסיווגי AI מסופקים "AS IS" ועלולים לטעות, לשבש מילים או לא להיות מסונכרנים ללא עילת לשון הרע. הורדת מודלים בדפדפן והזרמת אודיו צורכות חבילת גלישה, מעבד, Cache וסוללה על חשבון המשתמש בלבד. המאזין אחראי לבטיחות עוצמת השמע, בטיחות בנהיגה, Wake Lock ומניעת נזק לרמקולים/מסך.'
+                  : 'AI Subtitles (May Contain Mistakes), Bandwidth & Safety: AI subtitles/outputs may contain transcription or sync mistakes without defamation liability. In-browser AI and audio use user cellular data, CPU, cache, and battery. Listeners bear sole risk for volume, driving laws, speaker protection, and Wake Lock.'}
+              </li>
+              <li>
+                {isHe
+                  ? 'היעדר סינון גיל, קישורים שהוסרו ושיתופים: האתר אינו כולל סינון מותאם גיל והשירים ניתנים להסרה מיידית ללא התראה (גם מתוך מועדפים/קישורים משותפים). להנהלה אין שליטה על מטמון תצוגה מקדימה ב-Google/WhatsApp לאחר מחיקה.'
+                  : 'No Age-Gating, Immediate Removal & External Caches: Tracks may contain explicit language and may be removed without notice; operators do not control search/social link-preview caches after deletion.'}
               </li>
               <li>
                 {isHe
@@ -75,13 +80,13 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
               </li>
               <li>
                 {isHe
-                  ? 'אבטחה, PWA, כוח עליון ואין גיבוי: השירות ניתן ללא אחריות גיבוי. חסימות מניעת העתקה/DevTools, נפילות ספקי צד שלישי (Cloudflare/Google/Audius) ומחיקת Cache ע"י הדפדפן הינן ללא פיצוי. האתר פטור מאי-התאמות נגישות בתוכן משתמשים או במנוע הקראה קולית (TTS).'
-                  : 'Security, Force Majeure & No Backup: No backup warranty; anti-copy/DevTools locks, browser cache eviction, third-party outages, user-disabled accessibility, and TTS pronunciation errors carry zero liability.'}
+                  ? 'אבטחה, הודעה והסרה, כוח עליון והמחאת זכויות: השירות ניתן ללא אחריות גיבוי וללא חובת ניטור כללית (Notice & Takedown מחייב זיהוי מדויק). חסימות מניעת העתקה/DevTools, נפילות ספקי צד שלישי ומחיקת Cache ע"י הדפדפן הינן ללא פיצוי. ההנהלה רשאית להמחות זכויות בכל שינוי בעלות, ואי-אכיפה אינה ויתור.'
+                  : 'Security, Notice-and-Takedown & Assignment: No backup warranty and no general monitoring duty. Anti-copy/DevTools locks, browser cache eviction, and third-party outages carry zero liability. Operators may assign rights on transfer/merger.'}
               </li>
               <li>
                 {isHe
-                  ? 'חובת פנייה מוקדמת, ויתור ייצוגית, שיפוט בישראל והנוסח המחייב: אחריות ההנהלה מוגבלת ל-0 ש״ח. כל תביעה תתברר אישית בלבד (ויתור על תובענה ייצוגית בכפוף לדין) לאחר פנייה מוקדמת בכתב ל-kolot-music@googlegroups.com והמתנה 7–14 ימי עסקים. דין מדינת ישראל חל בלעדית, סמכות בלעדית בתל-אביב-יפו (תביעות עד 12 חודשים), והנוסח העברי הוא המחייב.'
-                  : 'Notice, Individual Claims & Jurisdiction: Liability capped at 0 NIS. Individual claims only (class action waiver) after 7–14 business days written notice to kolot-music@googlegroups.com. Israeli law, Tel Aviv-Jaffa courts, 12-month limit; Hebrew text controls.'}
+                  ? 'פנייה מוקדמת, ויתור ייצוגית/צו מניעה, הפרדת סעיפים ושיפוט בישראל: אחריות ההנהלה מוגבלת ל-0 ש״ח. כל תביעה תתברר אישית בלבד (ויתור על תובענה ייצוגית וצו מניעה בכפוף לדין) לאחר פנייה מוקדמת בכתב ל-kolot-music@googlegroups.com והמתנה 7–14 ימי עסקים. דין מדינת ישראל חל בלעדית, סמכות בלעדית בתל-אביב-יפו (תביעות עד 12 חודשים), הפרדת סעיפים חלה והנוסח העברי הוא המחייב.'
+                  : 'Notice, Individual Claims, No Injunction & Jurisdiction: Liability capped at 0 NIS. Individual claims only (class action & injunctive relief waiver) after 7–14 business days written notice to kolot-music@googlegroups.com. Israeli law, Tel Aviv-Jaffa courts, 12-month limit, severability applies; Hebrew text controls.'}
               </li>
             </ul>
           </div>

@@ -1224,16 +1224,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setAlbumErrorMessage(null);
 
     try {
+      const allowedMyTrackIds = new Set(myUploadedTracks.map((t) => t.id));
+      const cleanSelectedTrackIds = selectedTrackIdsForAlbum.filter((id) => allowedMyTrackIds.has(id));
       let album: Album;
       if (editingAlbum) {
         album = {
           ...editingAlbum,
-          artistId: editingAlbum.artistId || currentUser.uid,
-          uploadedByUid: editingAlbum.uploadedByUid || currentUser.uid,
+          artistId: currentUser.uid,
+          uploadedByUid: currentUser.uid,
           title: newAlbumTitle.trim(),
           coverUrl: newAlbumCover.trim() || undefined,
           description: newAlbumDescription.trim() || undefined,
-          trackIds: selectedTrackIdsForAlbum,
+          trackIds: cleanSelectedTrackIds,
         };
       } else {
         album = {
@@ -1244,7 +1246,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           uploadedByUid: currentUser.uid,
           coverUrl: newAlbumCover.trim() || undefined,
           description: newAlbumDescription.trim() || undefined,
-          trackIds: selectedTrackIdsForAlbum,
+          trackIds: cleanSelectedTrackIds,
           createdDate: new Date().toISOString().split('T')[0],
         };
       }
@@ -3155,8 +3157,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           {isHe ? 'אישור זכויות יוצרים, שיפוי וויתור זכות מוסרית (חובה) *' : 'Copyright, Indemnification & Moral Rights Waiver (Required) *'}
                         </span>
                         {isHe
-                          ? 'אני מאשר/ת שיש לי את מלוא הזכויות בשיר, במילים, בעטיפה ובקול (ללא שיבוט קול/דמות וללא חובת תמלוגים לאקו״ם/פדרציה), מוותר/ת על טענת הזכות המוסרית בגין עיבוד קריוקי וכתוביות אוטומטיות, מודע/ת להפצה הפומבית ומתחייב/ת לשיפוי מלא לפי תנאי השימוש.'
-                          : 'I certify 100% copyright/master/likeness clearance (no collecting-society claims or unauthorized voice cloning), waive moral rights for automated karaoke/subtitles, acknowledge public hosting, and agree to full indemnification under the Terms.'}
+                          ? 'אני מאשר/ת שיש לי את מלוא הזכויות בשיר, במילים, בעטיפה ובקול (ללא שיבוט קול/דמות וללא חובת תמלוגים לאקו״ם/פדרציה), מוותר/ת על טענת הזכות המוסרית בגין כתוביות ותרגומים אוטומטיים, מודע/ת להפצה הפומבית ומתחייב/ת לשיפוי מלא לפי תנאי השימוש.'
+                          : 'I certify 100% copyright/master/likeness clearance (no collecting-society claims or unauthorized voice cloning), waive moral rights for automated subtitles/translations, acknowledge public hosting, and agree to full indemnification under the Terms.'}
                       </span>
                     </label>
                   </div>

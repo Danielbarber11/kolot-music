@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence } from 'motion/react';
+import { WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
 import { SongsView } from './components/SongsView';
 import { SongPlayerPage } from './components/SongPlayerPage';
 import { SplashScreen } from './components/SplashScreen';
@@ -12,14 +13,17 @@ import {
   getCachedAlbums,
   incrementTrackViewInMemory,
   syncTrackViewFromServer,
+  removeTrackFromMemory,
   TRACK_SUBTITLES_UPDATED_EVENT,
   TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
+  TRACK_DELETED_EVENT,
 } from './services/multiMusicService';
 import {
   getStreamingMediaUrl,
   incrementTrackViewsInCloud,
   fetchSingleTrackFromCloud,
+  fetchSingleTrackStatusFromCloud,
   isTrackViewIncrementPending,
 } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
@@ -105,6 +109,10 @@ export default function App() {
   const [allTracks, setAllTracks] = useState<JamendoTrack[]>(() => getInstantSongPool());
   const [allArtists, setAllArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const [allAlbums, setAllAlbums] = useState<Album[]>(() => getCachedAlbums());
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine !== false : true
+  );
+  const [removedSongNotice, setRemovedSongNotice] = useState(false);
   const pendingDeepLinkRef = React.useRef<string | null>(getSongIdFromUrl());
 
   const [a11ySettings, setA11ySettings] = useState<AccessibilitySettings>(() => {
@@ -241,7 +249,16 @@ export default function App() {
       pendingDeepLinkRef.current = null;
       let targetTrack = tracksPool.find((t) => t.id === requestedId) || null;
       if (!targetTrack) {
-        targetTrack = await fetchSingleTrackFromCloud(requestedId).catch(() => null);
+        const res = await fetchSingleTrackStatusFromCloud(requestedId).catch(() => ({ status: 'error' as const }));
+        if (res.status === 'deleted' && active) {
+          removeTrackFromMemory(requestedId);
+          syncSongQueryParam(null);
+          setRemovedSongNotice(true);
+          return;
+        }
+        if (res.status === 'found') {
+          targetTrack = res.track;
+        }
       }
       if (targetTrack && active) {
         const nextViews = (Number(targetTrack.viewsCount) || 0) + 1;
@@ -379,9 +396,25 @@ export default function App() {
       }
     };
 
+    const handleTrackDeleted = (ev: Event) => {
+      const deletedId = (ev as CustomEvent<{ trackId?: string }>)?.detail?.trackId;
+      if (!deletedId || !active) return;
+      setAllTracks((prev) => prev.filter((t) => t.id !== deletedId));
+    };
+
+    const handleOnline = () => {
+      if (active) setIsOnline(true);
+    };
+    const handleOffline = () => {
+      if (active) setIsOnline(false);
+    };
+
     window.addEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
     window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+    window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
 
     return () => {
@@ -390,6 +423,9 @@ export default function App() {
       window.removeEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
       window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
+      window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleVisibilityRefresh);
     };
   }, [refreshCloudTracksInBackground]);
@@ -448,6 +484,14 @@ export default function App() {
                 allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
                 allAlbums={allAlbums}
                 onPlayTrack={handleEnterTrack}
+                onRemoveTrack={(trackId) => {
+                  removeTrackFromMemory(trackId);
+                  setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+                  if (activePlayerTrack?.id === trackId) {
+                    syncSongQueryParam(null);
+                    setActivePlayerTrack(null);
+                  }
+                }}
               />
             )}
           </AnimatePresence>
@@ -481,6 +525,75 @@ export default function App() {
             style={{ top: `${guideY}px` }}
             className="fixed left-0 right-0 h-1 -translate-y-1/2 z-[99991] pointer-events-none bg-white/80 shadow-[0_0_16px_rgba(255,255,255,0.85)]"
           />
+        )}
+
+        {/* REMOVED SONG NOTICE (For stale direct ?song= links) */}
+        {removedSongNotice && (
+          <div
+            dir={lang === 'he' ? 'rtl' : 'ltr'}
+            className="fixed inset-0 z-[99992] bg-black/85 backdrop-blur-xl flex items-center justify-center p-6 text-center"
+          >
+            <div className="w-full max-w-sm rounded-3xl bg-[#0a0a0c] border border-white/20 p-6 space-y-4 shadow-2xl">
+              <div className="w-14 h-14 mx-auto rounded-full bg-white text-black flex items-center justify-center shadow-lg">
+                <AlertCircle className="w-7 h-7" />
+              </div>
+              <h2 className="text-xl font-black text-white">
+                {lang === 'he' ? 'השיר הוסר' : 'Song Removed'}
+              </h2>
+              <p className="text-sm text-white/80 leading-relaxed">
+                {lang === 'he'
+                  ? 'השיר שניסית לפתוח הוסר מהפלטפורמה ואינו זמין יותר להשמעה.'
+                  : 'The song you tried to play has been removed and is no longer available.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => setRemovedSongNotice(false)}
+                className="w-full py-3 rounded-full bg-white text-black font-bold text-sm hover:bg-neutral-200 transition-all cursor-pointer active:scale-95"
+              >
+                {lang === 'he' ? 'חזור לאתר' : 'Back to Site'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* FULL-SCREEN OFFLINE OVERLAY */}
+        {!isOnline && (
+          <div
+            role="alert"
+            aria-live="assertive"
+            dir={lang === 'he' ? 'rtl' : 'ltr'}
+            className="fixed inset-0 z-[99995] bg-black flex flex-col items-center justify-center p-6 text-center select-none"
+          >
+            <div className="w-24 h-24 rounded-full bg-white text-black flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(255,255,255,0.22)]">
+              <WifiOff className="w-11 h-11 text-black" />
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-black text-white mb-3 tracking-tight">
+              {lang === 'he' ? 'אין אינטרנט' : 'No Internet Connection'}
+            </h1>
+            <p className="text-sm sm:text-base text-white/85 max-w-sm leading-relaxed mb-7">
+              {lang === 'he'
+                ? 'אין חיבור פעיל לאינטרנט כרגע. בדוק את חיבור ה-Wi-Fi או הנתונים הסלולריים במכשירך כדי להמשיך להאזין לשירים.'
+                : 'No active internet connection right now. Check your Wi-Fi or mobile data connection to continue streaming music.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof navigator !== 'undefined' && navigator.onLine) {
+                  setIsOnline(true);
+                } else {
+                  fetch(`/api/storage/status?_t=${Date.now()}`, { cache: 'no-store' })
+                    .then((res) => {
+                      if (res.ok) setIsOnline(true);
+                    })
+                    .catch(() => {});
+                }
+              }}
+              className="px-7 py-3 rounded-full bg-white text-black font-bold text-sm hover:bg-neutral-200 active:scale-95 transition-all flex items-center gap-2 cursor-pointer shadow-xl"
+            >
+              <RefreshCw className="w-4 h-4 text-black" />
+              <span>{lang === 'he' ? 'נסה שוב' : 'Try Again'}</span>
+            </button>
+          </div>
         )}
       </div>
     </SecurityGuard>

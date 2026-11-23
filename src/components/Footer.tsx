@@ -13,6 +13,7 @@ import {
   Copy,
   Upload,
   Paperclip,
+  ExternalLink,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
@@ -37,12 +38,13 @@ export const Footer: React.FC<FooterProps> = ({
   onOpenAccessibility,
 }) => {
   const isHe = lang === 'he';
-  const { isInstalled, isInstallable, isIOS, isAndroid, install } = usePWAInstall();
+  const { isInstalled, isStandaloneMode, isInstallable, isIOS, isAndroid, install, getAppLaunchUrl } = usePWAInstall();
 
   // Internal Modals state
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showContactModal, setShowContactModal] = useState(false);
   const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
+  const [showOpenInAppHint, setShowOpenInAppHint] = useState(false);
 
   // Auth state for sender email pre-fill when signed in
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => getCurrentAuthUser());
@@ -298,21 +300,57 @@ export const Footer: React.FC<FooterProps> = ({
               </div>
             </div>
 
-            {/* PWA INSTALL CARD (ALWAYS SHOWN WHEN NOT INSTALLED ON THIS DEVICE) */}
+            {/* PWA INSTALL OR OPEN IN APP CARD */}
             <div className="md:col-span-3 text-right">
-              {isInstalled ? (
+              {isStandaloneMode ? (
                 <div className="h-full p-4 rounded-2xl bg-white/[0.02] border border-white/10 flex flex-col justify-center items-center text-center space-y-2">
                   <div className="w-9 h-9 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-white">
                     <Check className="w-4 h-4" />
                   </div>
                   <p className="text-xs font-semibold text-white/90">
-                    {isHe ? 'האפליקציה מותקנת במכשיר' : 'App Installed on Device'}
+                    {isHe ? 'אתה גולש מתוך האפליקציה המותקנת' : 'Running Inside Installed App'}
                   </p>
                   <p className="text-[11px] text-white/50 max-w-[210px]">
                     {isHe
-                      ? 'ניתן לפתוח את Kolot Music ישירות דרך אייקון האפליקציה או כפתור "פתח ביישום" בשורת הכתובת.'
-                      : 'Launch Kolot Music directly from your device or the Open in App button.'}
+                      ? 'Kolot Music פועלת כעת במצב אפליקציה מלא במכשירך.'
+                      : 'Kolot Music is currently running in standalone app mode.'}
                   </p>
+                </div>
+              ) : isInstalled ? (
+                <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/15 shadow-xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-white/10 text-white flex items-center justify-center">
+                      <Check className="w-4 h-4" />
+                    </div>
+                    <span className="text-xs font-bold text-white">
+                      {isHe ? 'האפליקציה מותקנת במכשיר' : 'App Already Installed'}
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-white/70 leading-relaxed font-normal">
+                    {isHe
+                      ? 'אפליקציית Kolot Music כבר מותקנת במכשירך. ניתן לפתוח אותה ישירות כיישום:'
+                      : 'Kolot Music is already installed on this device. Open it directly in the app:'}
+                  </p>
+
+                  <a
+                    href={getAppLaunchUrl()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => setShowOpenInAppHint(true)}
+                    className="w-full py-2.5 px-3 rounded-xl bg-white hover:bg-neutral-200 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <ExternalLink className="w-4 h-4 text-black" />
+                    <span>{isHe ? 'פתח באפליקציה' : 'Open in App'}</span>
+                  </a>
+
+                  {showOpenInAppHint && (
+                    <p className="text-[10px] text-white/60 leading-relaxed font-normal">
+                      {isHe
+                        ? 'אם הדפדפן פתח כרטיסייה רגילה, לחץ על תפריט ⋮ או סמל היישום בשורת הכתובת ובחר "פתח ב-Kolot Music".'
+                        : 'If your browser opened a regular tab, tap ⋮ or the app icon in the address bar and choose "Open in Kolot Music".'}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/15 shadow-xl space-y-3">
@@ -753,7 +791,7 @@ export const TermsReaderModal: React.FC<{
   const sectionsHe = [
     {
       title: '1. כללי, שימוש פרטי ומתן השירות "AS IS"',
-      body: 'קולות מוזיקה (Kolot Music) הינה פלטפורמה חינמית להאזנה, שיתוף, גילוי והפצת יצירות מוזיקליות (כולל שירי משתמשים ויצירות שנוצרו או עובדו בסיוע בינה מלאכותית). השימוש באתר, בנגן, בכתוביות, במצב הקריוקי, בפורטל האמן ובשירותי הענן ניתן בחינם, לשימוש אישי ולא-מסחרי בלבד, כמות שהוא ("AS IS") וכפי שהוא זמין ("AS AVAILABLE"), ללא כל מצג, התחייבות או אחריות מכל סוג – מפורשת או משתמעת – לרבות לזמינות רציפה, תקינות, דיוק, התאמה למטרה מסוימת או היעדר תקלות.',
+      body: 'קולות מוזיקה (Kolot Music) הינה פלטפורמה חינמית להאזנה, שיתוף, גילוי והפצת יצירות מוזיקליות (כולל שירי משתמשים ויצירות שנוצרו או עובדו בסיוע בינה מלאכותית). השימוש באתר, בנגן, בכתוביות האוטומטיות, בפורטל האמן ובשירותי הענן ניתן בחינם, לשימוש אישי ולא-מסחרי בלבד, כמות שהוא ("AS IS") וכפי שהוא זמין ("AS AVAILABLE"), ללא כל מצג, התחייבות או אחריות מכל סוג – מפורשת או משתמעת – לרבות לזמינות רציפה, תקינות, דיוק, התאמה למטרה מסוימת או היעדר תקלות.',
     },
     {
       title: '2. כשירות משפטית, קטינים והצהרת גיל',
@@ -772,8 +810,8 @@ export const TermsReaderModal: React.FC<{
       body: 'המשתמש מתחייב לשפות, להגן ולפצות את מפעילי האתר, בעליו, מנהליו, מפתחיו, נציגיו ושותפיו, מיד עם דרישה ראשונה, בגין כל תביעה, דרישה, נזק, הפסד, פיצוי סטטוטורי (ללא הוכחת נזק), קנס, הוצאה או שכר טרחת עורכי דין הנובעים במישרין או בעקיפין מכל תוכן שהעלה, פרסם או קישר באתר, מהתחזות, משיבוט קול/דמות, מלשון הרע, מפגיעה בפרטיות, מדיווח שווא או מהפרת תנאי שימוש אלה.',
     },
     {
-      title: '6. רישיון שימוש בפלטפורמה וויתור על טענות "הזכות המוסרית" (עיבוד קריוקי, תמלול ותרגום)',
-      body: 'בעצם העלאת שיר, קישור שמע, מילים, עטיפה, תמונת פרופיל או פרטי אלבום לאתר, המשתמש מעניק להנהלת האתר רישיון עולמי, לא-בלעדי, פטור מתמלוגים, ניתן להעברה ולהענקת רישיונות משנה, לאחסן, לדחוס, לעבד, להפיק גרסאות קריוקי/אינסטרומנטל (לרבות הפרדת קול באמצעות Web Audio או שמירת קבצי עזר), ליצור כתוביות ותרגומים אוטומטיים, לסווג לז׳אנרים, לחלץ גווני צבע, לשמור במטמון ולהזרים את התוכן לכלל הציבור. המעלה מצהיר ומסכים מראש לביצוע עיבודים טכניים ונגזרות אוטומטיות אלו ומוותר באופן בלתי חוזר על כל טענה או תביעה בגין פגיעה בזכות המוסרית (Moral Rights, סעיפים 45–46 לחוק זכות יוצרים, תשס"ח-2007) עקב שינוי צליל, הפרדת ערוצי שירה, חוסר דיוק בכתוביות/תרגום או התאמת עיצוב.',
+      title: '6. רישיון שימוש בפלטפורמה וויתור על טענות "הזכות המוסרית" (עיבוד אודיו, תמלול ותרגום)',
+      body: 'בעצם העלאת שיר, קישור שמע, מילים, עטיפה, תמונת פרופיל או פרטי אלבום לאתר, המשתמש מעניק להנהלת האתר רישיון עולמי, לא-בלעדי, פטור מתמלוגים, ניתן להעברה ולהענקת רישיונות משנה, לאחסן, לדחוס, לעבד אודיו ותצוגה, ליצור כתוביות ותרגומים אוטומטיים, לסווג לז׳אנרים, לחלץ גווני צבע, לשמור במטמון ולהזרים את התוכן לכלל הציבור. המעלה מצהיר ומסכים מראש לביצוע עיבודים טכניים ונגזרות אוטומטיות אלו ומוותר באופן בלתי חוזר על כל טענה או תביעה בגין פגיעה בזכות המוסרית (Moral Rights, סעיפים 45–46 לחוק זכות יוצרים, תשס"ח-2007) עקב דחיסה, המרת שמע, חוסר דיוק בכתוביות/תרגום או התאמת עיצוב.',
     },
     {
       title: '7. היעדר יחסי עבודה, שותפות, סוכנות או זכאות לתמלוגים',
@@ -784,16 +822,16 @@ export const TermsReaderModal: React.FC<{
       body: 'חל איסור מוחלט להעלות, לשתף או לכתוב בשם שיר, שם אמן, תיאור אמן, מילות שיר, אלבום או טופס פנייה: (א) תוכן המהווה לשון הרע, השמצה, הסתה לאלימות, גזענות, איומים, הטרדה או פגיעה בפרטיות; (ב) התחזות לאמן קיים, אדם אחר, מותג או גוף רשמי; (ג) תוכן מיני מפורש, פורנוגרפיה, פגיעה בקטינים, קידום הימורים או פעילות בלתי חוקית; (ד) ספאם, קישורי הונאה, פרסום מסחרי מטעה או קוד זדוני/פישינג; (ה) שימוש במערכת הדיווח לצורך דיווח כוזב, הטרדה או הסרת יצירות של מתחרים בחוסר תום לב. המדווח דיווח שווא יישא באחריות משפטית מלאה לנזקים שיגרמו ליוצר ולפלטפורמה.',
     },
     {
-      title: '9. כתוביות, תרגומים, סיווג AI, עיבוד בדפדפן וצריכת חבילת גלישה',
-      body: 'שירותי התמלול, סנכרון הכתוביות, התרגום (לעברית/אנגלית) וסיווג הז׳אנרים מופעלים בחלקם באמצעות מודלי בינה מלאכותית (AI) בענן או ישירות בדפדפן המשתמש (WebAssembly / WebGPU / Whisper / ONNX / AudioContext). תוצרי AI עלולים להכיל שגיאות קשות, טעויות זיהוי, מילים פוגעניות או מעוותות כתוצאה מטעות אלגוריתמית, השמטות, טעויות תרגום, חוסר סנכרון או שיוך ז׳אנר שגוי. תוצרים אלו אינם משקפים את עמדת הנהלת האתר, מסופקים "AS IS" ללא אחריות, ולא תקום בגינם כל עילה בגין לשון הרע, פגיעה בשם הטוב או אי-דיוק. טעינת מודלי AI לדפדפן והזרמת קובצי שמע עשויות לצרוך נפח גלישה (כולל תעבורה סלולרית על חשבון המשתמש), מעבד, זיכרון, Cache מקומי וסוללה – והכול באחריות המשתמש ובעלותו הבלעדית.',
+      title: '9. כתוביות ותרגומים אוטומטיים (AI עלול לטעות), סיווג ז׳אנר וצריכת גלישה',
+      body: 'שירותי התמלול, סנכרון הכתוביות, התרגום (לעברית/אנגלית) וסיווג הז׳אנרים מופעלים בחלקם באמצעות מודלי בינה מלאכותית (AI) בענן או ישירות בדפדפן המשתמש (WebAssembly / WebGPU / Whisper / ONNX). מודגשת בזאת כי הכתוביות והתרגומים האוטומטיים עלולים לטעות, לשבש מילים, להשמיט קטעים, להציג מילים פוגעניות או שגויות עקב טעות אלגוריתמית, לסבול מחוסר סנכרון או לשייך ז׳אנר שגוי. תוצרים אלו אינם משקפים את עמדת הנהלת האתר, מסופקים "AS IS" ללא אחריות, ולא תקום בגינם כל עילה בגין לשון הרע, פגיעה בשם הטוב או אי-דיוק. טעינת מודלי AI לדפדפן והזרמת קובצי שמע עשויות לצרוך נפח גלישה (כולל תעבורה סלולרית על חשבון המשתמש), מעבד, זיכרון, Cache מקומי וסוללה – והכול באחריות המשתמש ובעלותו הבלעדית.',
     },
     {
-      title: '10. בטיחות שמע, מצב קריוקי, ציוד קצה, רגישות לאור ו-Wake Lock',
-      body: 'קבצי שמע המועלים בידי משתמשים ועיבודי אודיו/קריוקי בדפדפן (כולל הגברת שמע וסינון תדרים בזמן אמת) עלולים ליצור עוצמות קול חריגות, עיוותים או צלילים צורמים; המאזין אחראי בלעדית לווסת את עוצמת השמע, והאתר פטור מכל אחריות לנזקי שמיעה או נזק לרמקולים/אוזניות. הנגן עשוי להפעיל מנגנון מניעת כיבוי מסך (Screen Wake Lock) בזמן נגינה; האחריות לצריכת סוללה, התחממות או צריבת מסך חלה על המשתמש בלבד. בעלי רגישות לתנועה או תאורה משתנה מתבקשים להפעיל הפחתת תנועה בתפריט הנגישות.',
+      title: '10. בטיחות שמע, ציוד קצה, רגישות לאור ו-Wake Lock',
+      body: 'קבצי שמע המועלים בידי משתמשים עלולים להכיל עוצמות קול חריגות, קפיצות ווליום, עיוותים או צלילים צורמים; המאזין אחראי בלעדית לווסת את עוצמת השמע במכשירו, והאתר פטור מכל אחריות לנזקי שמיעה או נזק לרמקולים/אוזניות. הנגן עשוי להפעיל מנגנון מניעת כיבוי מסך (Screen Wake Lock) בזמן נגינה; האחריות לצריכת סוללה, התחממות או צריבת מסך חלה על המשתמש בלבד. בעלי רגישות לתנועה או תאורה משתנה מתבקשים להפעיל הפחתת תנועה בתפריט הנגישות.',
     },
     {
       title: '11. אופי ציבורי של תכנים בענן (היעדר הצפנת קצה-לקצה)',
-      body: 'כל שיר, אלבום, עטיפה, תמונת פרופיל, כתוביות או גרסת קריוקי המפורסמים באתר מאוחסנים ומונגשים באמצעות תשתיות אחסון ענן וכתובות ציבוריות פתוחות לצורך הזרמה מהירה. סימון חשבון כ"פרטי" (ככל שמופיע בהגדרות מסוימות) הינו סימון ממשק בלבד ואינו מבטיח הצפנת קצה-לקצה או חסימת גישה ברמת שרת. חל איסור מוחלט להעלות קבצים סודיים, פרטיים או טרם-השקה שאין בכוונתך לחשוף לציבור.',
+      body: 'כל שיר, אלבום, עטיפה, תמונת פרופיל וכתוביות המפורסמים באתר מאוחסנים ומונגשים באמצעות תשתיות אחסון ענן וכתובות ציבוריות פתוחות לצורך הזרמה מהירה. סימון חשבון כ"פרטי" (ככל שמופיע בהגדרות מסוימות) הינו סימון ממשק בלבד ואינו מבטיח הצפנת קצה-לקצה או חסימת גישה ברמת שרת. חל איסור מוחלט להעלות קבצים סודיים, פרטיים או טרם-השקה שאין בכוונתך לחשוף לציבור.',
     },
     {
       title: '12. מדדי צפיות, השמעות, אהבות וקידום תכנים',
@@ -801,7 +839,7 @@ export const TermsReaderModal: React.FC<{
     },
     {
       title: '13. שירותי צד שלישי, קישורים חיצוניים ותצוגת נגן במסך נעילה / רכב (MediaSession)',
-      body: 'האתר עשוי להציג או להזרים תכנים, קישורי שמע, תמונות וקישורים שמקורם בפלטפורמות צד שלישי (כגון Audius, Google, OpenAI, HuggingFace, CDN ואחרים) או בקישורי משתמשים. הנהלת האתר אינה שולטת בזמינותם, חוקיותם או מדיניות הפרטיות שלהם. בעת ניגון, הדפדפן ומערכת ההפעלה (Android/iOS/Desktop) עשויים להציג שם שיר, שם אמן ועטיפה במסך הנעילה, בהתראות המערכת או בצגי Bluetooth ורכב (MediaSession) באחריות המשתמש בסביבה ציבורית או משותפת.',
+      body: 'האתר עשוי להציג או להזרים תכנים, קישורי שמע, תמונות וקישורים שמקורם בפלטפורמות צד שלישי (כגון Google, Cloudflare, HuggingFace, CDN ואחרים) או בקישורי משתמשים. הנהלת האתר אינה שולטת בזמינותם, חוקיותם או מדיניות הפרטיות שלהם. בעת ניגון, הדפדפן ומערכת ההפעלה (Android/iOS/Desktop) עשויים להציג שם שיר, שם אמן ועטיפה במסך הנעילה, בהתראות המערכת או בצגי Bluetooth ורכב (MediaSession) באחריות המשתמש בסביבה ציבורית או משותפת.',
     },
     {
       title: '14. מדיניות פרטיות (חוק הגנת הפרטיות תיקון 13), עוגיות, GA4 ומחיקת חשבון',
@@ -831,12 +869,52 @@ export const TermsReaderModal: React.FC<{
       title: '20. חובת פנייה מוקדמת, התיישנות, שיפוט בלעדי והנוסח המחייב',
       body: 'כתנאי סף מוקדם לכל תביעה, התראה משפטית או הליך מכל סוג (לרבות זכויות יוצרים, לשון הרע, פרטיות או נגישות), מתחייב הטוען לפנות תחילה בכתב ובפירוט מלא (כולל זיהוי השיר המדויק ואסמכתאות בעלות או הוכחה משפטית) לקבוצת הפניות הרשמית (Google Groups) בכתובת: kolot-music@googlegroups.com (או דרך כפתור הדיווח באתר) ולאפשר להנהלת האתר פרק זמן סביר של לפחות 7 ימי עסקים (ובפניות נגישות/כלליות 14 ימי עסקים) לבדיקה ולהסרה או תיקון. על תנאי שימוש אלה ועל כל סכסוך בקשר לאתר יחולו אך ורק דיני מדינת ישראל (ללא כללי ברירת הדין), וסמכות השיפוט הבלעדית והייחודית תהא נתונה לבתי המשפט המוסמכים במחוז תל-אביב-יפו בלבד. בכפוף לדין, כל תביעה תוגש תוך 12 חודשים ממועד היווצרות העילה. הנהלת האתר רשאית לעדכן תנאים אלה מעת לעת, והמשך השימוש באתר מהווה הסכמה מחייבת. בכל סתירה בין התרגום לאנגלית לנוסח העברי – הנוסח העברי הוא הקובע והמחייב בלעדית.',
     },
+    {
+      title: '21. בטיחות בנהיגה, פעילות ספורטיבית והפעלת ציוד',
+      body: 'חל איסור מוחלט להפעיל את ממשק האתר, לקרוא כתוביות, להעלות קבצים או להביט במסך בעת נהיגה ברכב, רכיבה או הפעלת מכונות מסוכנות. כל האזנה בדרכים תיעשה בהתאם לחוקי התעבורה ורק באמצעות הפעלה בטוחה ללא הסחת דעת, ובאחריות המשתמש הבלעדית.',
+    },
+    {
+      title: '22. היעדר סינון תוכן מותאם גיל (Content Advisory) והשגחת הורים',
+      body: 'האתר אינו מבצע סיווג גיל או סינון מילים אוטומטי מלא (Explicit / Clean) על שירי משתמשים. חלק מהשירים, העטיפות או הכתוביות עלולים להכיל שפה בוטה, תכנים רגישים או נושאים למבוגרים בלבד. השימוש והחשיפה של קטינים הינם באחריות ההורה או האפוטרופוס החוקי בלבד.',
+    },
+    {
+      title: '23. עיבוד טכני, שמירת מטא-דאטה, דגימת צבע ומטמון דפדפן',
+      body: 'העלאה וניגון שירים עשויים לכלול דחיסה אוטומטית, קיצור, יצירת קובצי JSON/אינדקס, דגימת צבע דומיננטי מהעטיפה, יצירת תמונות ממוזערות ושמירת מטמון זמנית בדפדפן (Cache API / Service Worker) לטובת יציבות ההשמעה. המשתמש מוותר על כל טענה בגין שינוי איכות צליל, הפרשי עוצמה או פורמט מטא-דאטה.',
+    },
+    {
+      title: '24. הסרת שירים מיידית, קישורים שבורים ושלמות אלבומים/מועדפים',
+      body: 'בעלי פרופילים והנהלת האתר רשאים למחוק שירים, אלבומים או פרופילים בכל רגע ללא התראה מראש. הסרת שיר עשויה להפסיק ניגון פעיל או להביא לביטול זמינותו ברשימות מועדפים, אלבומים או קישורים משותפים. האתר אינו אחראי לקישורים שחדלו לפעול.',
+    },
+    {
+      title: '25. תצוגה מקדימה בשיתופים, מנועי חיפוש ומטמון צד שלישי',
+      body: 'דפי שירים, שמות אמנים ועטיפות ציבוריים עשויים להיסרק או להישמר במטמון של מנועי חיפוש (כגון Google) או תצוגות מקדימות באפליקציות מסרים (כגון WhatsApp, Telegram). להנהלת האתר אין שליטה על משך שמירת התוצאה או תצוגת התמונה בשרתי צד שלישי לאחר הסרת השיר מהאתר.',
+    },
+    {
+      title: '26. נוהל "הודעה והסרה" (Notice and Takedown) והיעדר חובת ניטור כללית',
+      body: 'הנהלת האתר אינה נושאת בחובה חוקית לבצע ניטור כללי יזום (No General Monitoring) לאיתור הפרות זכויות. פניית הסרה מחייבת זיהוי מדויק של כתובת ה-URL או מזהה השיר, פירוט העילה והצהרה בתום לב כי הטוען הינו בעל הזכויות או מורשה מטעמו. פניות חסרות זיהוי לא יטופלו.',
+    },
+    {
+      title: '27. אבטחת קבצים, מניעת נוזקות ואחריות למכשיר המשתמש',
+      body: 'המעלה מתחייב כי כל קובץ שמע, תמונה או טקסט שהועלה על ידו נקי מווירוסים, נוזקות, סוסים טרויאניים או קוד זדוני. הנהלת האתר אינה מתחייבת לסרוק כל קובץ בתוכנות אנטי-וירוס, והמשתמשים נושאים באחריות להגן על מכשיריהם האישיים.',
+    },
+    {
+      title: '28. המחאת זכויות, מיזוגים ושינוי שליטה בפלטפורמה',
+      body: 'הנהלת האתר רשאית בכל עת, ללא צורך בהסכמת המשתמש, להמחות, להעביר או למסור את זכויותיה וחובותיה על פי תנאים אלה – לרבות רישיונות ההזרמה והנתונים התפעוליים בכפוף לדין – לכל חברה קשורה, רוכש פוטנציאלי או גורם שיחליף את הפעלת האתר.',
+    },
+    {
+      title: '29. ויתור על צו מניעה, איסור השבתת שירות ואי-ויתור עתידי',
+      body: 'במידה המרבית המותרת על פי דין, המשתמש מוותר באופן בלתי חוזר על הזכות לבקש או לקבל צו מניעה, צו עשה זמני או קבוע העלול לעכב או להשבית את פעילות הפלטפורמה בכללותה, וסעדו הבלעדי (ככל שייפסק) יוגבל לתביעת נזק בהתאם לתקרת האחריות. אי-אכיפה מצד ההנהלה של סעיף כלשהו במקרה מסוים לא תיחשב כוויתור עליו במקרים עתידיים.',
+    },
+    {
+      title: '30. הפרדת סעיפים (Severability), מיצוי הסכם והסכמה אלקטרונית',
+      body: 'אם ייקבע על ידי בית משפט מוסמך כי תנאי כלשהו מתנאים אלה אינו חוקי, בטל או בלתי ניתן לאכיפה, אותו סעיף יצומצם או יופרד במידה המינימלית הנדרשת ויתר הוראות ההסכם ימשיכו לעמוד בתוקפן המלא. מסמך זה ממצה את מלוא ההסכמות בין הצדדים, ולחיצה על כפתור האישור או המשך שימוש באתר מהווה הסכמה וחתימה אלקטרונית מחייבת לכל דבר ועניין.',
+    },
   ];
 
   const sectionsEn = [
     {
       title: '1. Platform Purpose & "AS IS" / "AS AVAILABLE" Disclaimer',
-      body: 'Kolot Music is a free streaming and independent music publishing platform. Access to the site, audio player, karaoke mode, subtitles, artist portal, and cloud storage is provided strictly for personal, non-commercial use on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind—express or implied—including uptime, accuracy, merchantability, or fitness for a particular purpose.',
+      body: 'Kolot Music is a free streaming and independent music publishing platform. Access to the site, audio player, automated subtitles, artist portal, and cloud storage is provided strictly for personal, non-commercial use on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind—express or implied—including uptime, accuracy, merchantability, or fitness for a particular purpose.',
     },
     {
       title: '2. Eligibility & Strict Under-13 Prohibition',
@@ -855,8 +933,8 @@ export const TermsReaderModal: React.FC<{
       body: 'You agree to indemnify, defend, and hold harmless Kolot Music, its owners, operators, developers, and representatives upon first demand from any claim, lawsuit, statutory damages, fines, settlements, and legal fees arising out of your uploaded content, external links, deepfakes, defamation, privacy breach, impersonation, false reports, or breach of these Terms.',
     },
     {
-      title: '6. Platform License Grant & Waiver of Moral Rights (Karaoke, Subtitles & Translations)',
-      body: 'By uploading content, you grant Kolot Music a worldwide, non-exclusive, royalty-free, transferable, sublicensable license to store, compress, extract colors, generate karaoke/vocal-removed versions (via Web Audio or derivative audio files), generate automated subtitles/translations and genre labels, cache, and stream the content. The uploader expressly consents to these technical adaptations and irrevocably waives any Moral Rights claim (Israeli Copyright Act Sections 45–46) regarding vocal cancellation, audio alterations, AI subtitle/translation inaccuracies, or presentation.',
+      title: '6. Platform License Grant & Waiver of Moral Rights (Audio, Subtitles & Translations)',
+      body: 'By uploading content, you grant Kolot Music a worldwide, non-exclusive, royalty-free, transferable, sublicensable license to store, compress, process audio and artwork, extract colors, generate automated subtitles/translations and genre labels, cache, and stream the content. The uploader expressly consents to these technical adaptations and irrevocably waives any Moral Rights claim (Israeli Copyright Act Sections 45–46) regarding compression, audio alterations, AI subtitle/translation inaccuracies, or presentation.',
     },
     {
       title: '7. No Employment, Partnership, Agency or Royalties',
@@ -867,16 +945,16 @@ export const TermsReaderModal: React.FC<{
       body: 'Uploading or submitting defamatory content (לשון הרע), hate speech, harassment, privacy violations, artist/brand impersonation, explicit sexual or illegal content, spam, misleading ads, malware/phishing links, or bad-faith/false copyright reports is strictly prohibited. Bad-faith reporters bear full liability for resulting damages.',
     },
     {
-      title: '9. AI Subtitles, Translations, Genre Classifier & User Bandwidth / Cache Costs',
-      body: 'Automated subtitles, translations, and genre classifications use AI models (cloud and in-browser WASM/WebGPU/Whisper/ONNX). Automated AI outputs may contain severe transcription/translation errors, accidental offensive wording, timing drift, or genre mislabeling, provided "AS IS" without defamation or inaccuracy liability. Streaming audio and downloading browser AI models consume cellular/internet data bandwidth, CPU, RAM, local Cache, and battery at the user’s sole expense and risk.',
+      title: '9. AI Subtitles (May Contain Mistakes), Translations & Bandwidth Costs',
+      body: 'Automated subtitles, translations, and genre classifications use AI models (cloud and in-browser WASM/WebGPU/Whisper/ONNX). Users acknowledge that AI-generated subtitles and translations MAY MAKE MISTAKES, mishear lyrics, omit sections, introduce unintended/offensive wording due to algorithmic errors, drift out of sync, or mislabel genres. All AI outputs are provided strictly "AS IS" without defamation or inaccuracy liability. Streaming audio and downloading browser AI models consume cellular/internet data bandwidth, CPU, RAM, local Cache, and battery at the user’s sole expense and risk.',
     },
     {
-      title: '10. Hearing Safety, Karaoke Processing, Hardware & Screen Wake Lock',
-      body: 'User audio and real-time karaoke processing/gain boost may produce high volumes or distortion; listeners are solely responsible for device volume control and speaker/headphone protection. The player may request Screen Wake Lock; battery drain, heat, or screen burn-in are at user risk. Users sensitive to motion/visual effects should use Accessibility settings.',
+      title: '10. Hearing Safety, Hardware Protection & Screen Wake Lock',
+      body: 'User audio may produce sudden loud volumes or distortion; listeners are solely responsible for device volume control and speaker/headphone protection. The player may request Screen Wake Lock; battery drain, heat, or screen burn-in are at user risk. Users sensitive to motion/visual effects should use Accessibility settings.',
     },
     {
       title: '11. Public Cloud Storage Notice (No Private End-to-End Vault)',
-      body: 'Uploaded tracks, covers, avatars, subtitles, and karaoke files are stored and served via open public/shared cloud infrastructure for fast streaming without end-to-end encryption. Any "private" UI flag does not restrict server-level public media URLs. Do not upload confidential or unreleased material expecting sealed privacy.',
+      body: 'Uploaded tracks, covers, avatars, and subtitles are stored and served via open public/shared cloud infrastructure for fast streaming without end-to-end encryption. Any "private" UI flag does not restrict server-level public media URLs. Do not upload confidential or unreleased material expecting sealed privacy.',
     },
     {
       title: '12. View/Play Counts & Discovery Slots',
@@ -884,7 +962,7 @@ export const TermsReaderModal: React.FC<{
     },
     {
       title: '13. Third-Party Services & Lock-Screen / Bluetooth MediaSession',
-      body: 'Third-party streams, APIs, and links (e.g., Audius, Google, OpenAI, HuggingFace, CDN) are outside platform control. OS MediaSession notifications may display song titles, artists, and covers on lock screens, car displays, and Bluetooth devices at user responsibility.',
+      body: 'Third-party streams, APIs, and links (e.g., Google, Cloudflare, HuggingFace, CDN) are outside platform control. OS MediaSession notifications may display song titles, artists, and covers on lock screens, car displays, and Bluetooth devices at user responsibility.',
     },
     {
       title: '14. Privacy Policy (Israeli Privacy Law Amendment 13), Analytics & Account Deletion',
@@ -914,6 +992,46 @@ export const TermsReaderModal: React.FC<{
       title: '20. Pre-Litigation Notice, Limitation Period, Jurisdiction & Controlling Language',
       body: 'Before any legal action (copyright, defamation, privacy, accessibility, etc.), claimants must send detailed written notice with evidence to kolot-music@googlegroups.com and allow 7 business days (14 business days for non-urgent/accessibility matters) to cure. Governed exclusively by the laws of Israel, exclusive venue in Tel Aviv-Jaffa courts, 12-month claim limitation. Continued use constitutes acceptance of updated Terms. In any conflict between Hebrew and English versions, the Hebrew version exclusively controls.',
     },
+    {
+      title: '21. Driving, Athletics & Hazardous Activity Safety',
+      body: 'Operating interactive controls, reading subtitles, or uploading content while driving, cycling, or operating dangerous machinery is strictly prohibited. Users assume sole responsibility for obeying traffic and safety laws.',
+    },
+    {
+      title: '22. No Parental Content Rating Filter & Parental Advisory',
+      body: 'Kolot Music does not enforce age-gating or explicit-word filtering across user-uploaded audio, artwork, or AI subtitles. Content may contain coarse language or mature themes; supervision of minors rests exclusively with parents/legal guardians.',
+    },
+    {
+      title: '23. Transcoding, Metadata Indexing, Color Sampling & Caching',
+      body: 'Uploading and streaming may automatically compress, index, sample dominant cover colors, and cache data in browser Cache API / Service Workers. No claim lies regarding audio compression artifacts or metadata formatting differences.',
+    },
+    {
+      title: '24. Immediate Track Removal, Broken Links & Playlist Integrity',
+      body: 'Uploaders and administrators may remove tracks, albums, or profiles at any time without notice. Removal immediately terminates playback and availability across favorites, albums, and shared links with zero liability.',
+    },
+    {
+      title: '25. Search Engine Indexing & Messaging Link Previews',
+      body: 'Public song pages and covers may be cached by third-party search engines or messaging apps (Google, WhatsApp, Telegram). Operators have no control over third-party cache retention after content deletion.',
+    },
+    {
+      title: '26. Notice-and-Takedown Identification & No General Monitoring',
+      body: 'Operators owe no general proactive monitoring obligation. Takedown notices require exact song ID/URL identification and a good-faith ownership statement; vague or unidentifiable requests will not be acted upon.',
+    },
+    {
+      title: '27. Malware-Free Uploads & Device Security',
+      body: 'Uploaders warrant files are free of viruses, trojans, or malicious scripts. The platform does not guarantee antivirus scanning of all user media; listeners remain solely responsible for device security.',
+    },
+    {
+      title: '28. Assignment & Transfer of Platform',
+      body: 'Operators may freely assign or transfer this agreement, licenses, and operational rights to an affiliate or successor in connection with any merger, sale, or platform transfer without further user consent.',
+    },
+    {
+      title: '29. Waiver of Injunctive Relief & Non-Waiver',
+      body: 'To the fullest extent permitted by law, users waive any right to seek injunctive or equitable relief restraining platform operation; any remedy is strictly subject to liability caps. Failure to enforce any right is not a future waiver.',
+    },
+    {
+      title: '30. Severability, Entire Agreement & Electronic Acceptance',
+      body: 'If any provision is held unenforceable, it shall be severed to the minimum extent required while all other provisions remain in full force. This constitutes the entire agreement, and clicking accept or continued use serves as binding electronic acceptance.',
+    },
   ];
 
   const sections = isHe ? sectionsHe : sectionsEn;
@@ -931,7 +1049,7 @@ export const TermsReaderModal: React.FC<{
                 {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות' : 'Terms of Service, Privacy & Liability'}
               </h3>
               <p className="text-[11px] text-white/50">
-                {isHe ? 'גרסה משפטית מעודכנת (v3) • Kolot Music' : 'Updated Legal Terms (v3) • Kolot Music'}
+                {isHe ? 'גרסה משפטית מעודכנת (v4) • Kolot Music' : 'Updated Legal Terms (v4) • Kolot Music'}
               </p>
             </div>
           </div>

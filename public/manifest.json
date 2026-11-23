@@ -11,11 +11,15 @@
   "background_color": "#000000",
   "lang": "he",
   "dir": "rtl",
+  "launch_handler": {
+    "client_mode": ["focus-existing", "auto"]
+  },
   "prefer_related_applications": false,
   "related_applications": [
     {
       "platform": "webapp",
-      "url": "https://kolot-music.kolot-music.workers.dev/manifest.json"
+      "url": "https://kolot-music.kolot-music.workers.dev/manifest.json",
+      "id": "/"
     }
   ],
   "icons": [

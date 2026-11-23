@@ -36,6 +36,7 @@ import {
   updateTrackColorInCloud,
   incrementTrackPlaysInCloud,
   fetchSingleTrackFromCloud,
+  fetchSingleTrackStatusFromCloud,
   isTrackViewIncrementPending,
   waitForPendingTrackViewIncrement,
 } from '../services/cloudStorageService';
@@ -48,6 +49,7 @@ import {
   updateMemoryTracksArtistAvatar,
   syncTrackSubtitlesInMemory,
   syncTrackViewFromServer,
+  removeTrackFromMemory,
 } from '../services/multiMusicService';
 import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
@@ -230,6 +232,7 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [isArtistProfileOpen, setIsArtistProfileOpen] = useState(false);
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [trackRemovedError, setTrackRemovedError] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
@@ -277,11 +280,13 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     tracksById.set(track.id, track);
 
     if (matchedAlbum && Array.isArray(matchedAlbum.trackIds)) {
+      const albOwner = (matchedAlbum.uploadedByUid || matchedAlbum.artistId || '').replace(/^artist_/, '').toLowerCase().trim();
       matchedAlbum.trackIds.forEach((id) => {
         const found = tracksById.get(id);
-        if (found && !queueMap.has(found.id)) {
-          queueMap.set(found.id, found);
-        }
+        if (!found || queueMap.has(found.id)) return;
+        const foundOwner = (found.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+        if (albOwner && foundOwner && albOwner !== foundOwner) return;
+        queueMap.set(found.id, found);
       });
     }
 
@@ -679,8 +684,28 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   }, [effectiveAudioUrl, duration]);
 
   useEffect(() => {
+    let active = true;
+    setTrackRemovedError(false);
+    if (!track.id) return;
+    void fetchSingleTrackStatusFromCloud(track.id)
+      .then((res) => {
+        if (!active) return;
+        if (res.status === 'deleted') {
+          clearMediaSessionCompletely(audioRef.current, true);
+          setIsPlaying(false);
+          setTrackRemovedError(true);
+          removeTrackFromMemory(track.id);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [track.id]);
+
+  useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !effectiveAudioUrl) return;
+    if (!audio || !effectiveAudioUrl || trackRemovedError) return;
     const shouldAutoPlay = true;
 
     isSwitchingTrackRef.current = true;
@@ -1440,6 +1465,20 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             setCurrentTime(t);
           }
         }}
+        onError={() => {
+          const audio = audioRef.current;
+          if (!audio?.getAttribute('src')) return;
+          void fetchSingleTrackStatusFromCloud(track.id)
+            .then((res) => {
+              if (res.status === 'deleted') {
+                clearMediaSessionCompletely(audioRef.current, true);
+                setIsPlaying(false);
+                setTrackRemovedError(true);
+                removeTrackFromMemory(track.id);
+              }
+            })
+            .catch(() => {});
+        }}
         onEnded={() => {
           const d = audioRef.current?.duration && Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : duration;
           syncProgressDomImmediate(d, d, true);
@@ -1454,6 +1493,41 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
           }
         }}
       />
+
+      {/* SONG REMOVED NOTICE (Visible immediately without reload if uploader/admin removed track) */}
+      {trackRemovedError && (
+        <div
+          dir={isHe ? 'rtl' : 'ltr'}
+          className="fixed inset-0 z-[130] bg-black/92 backdrop-blur-2xl flex items-center justify-center p-6 text-center"
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-[#0c0c0e] border border-white/25 p-6 sm:p-7 space-y-5 shadow-2xl">
+            <div className="w-16 h-16 mx-auto rounded-full bg-white text-black flex items-center justify-center shadow-xl">
+              <ShieldAlert className="w-8 h-8 text-black" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-black text-white">
+                {isHe ? 'השיר הוסר' : 'Song Removed'}
+              </h2>
+              <p className="text-sm text-white/80 leading-relaxed">
+                {isHe
+                  ? 'השיר שבחרת הוסר מהפלטפורמה ואינו זמין יותר להשמעה.'
+                  : 'The selected song has been removed from the platform and is no longer available.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                removeTrackFromMemory(track.id);
+                onRemoveTrack?.(track.id);
+                handleExitPlayer();
+              }}
+              className="w-full py-3 rounded-full bg-white text-black font-bold text-sm hover:bg-neutral-200 active:scale-95 transition-all cursor-pointer shadow-lg"
+            >
+              {isHe ? 'חזור לרשימת השירים' : 'Back to Songs'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* FLOATING TOP BAR - FROSTED GLASS BACK BUTTON */}
       <div className="absolute top-[max(0.875rem,calc(env(safe-area-inset-top)+0.4rem))] sm:top-5 left-0 right-0 z-50 px-5 sm:px-8 flex items-center justify-start pointer-events-none" dir={isHe ? 'rtl' : 'ltr'}>

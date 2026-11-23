@@ -627,9 +627,9 @@ app.get('/manifest.json', (req, res) => {
   const proto = protoHeader.split(',')[0].trim();
   const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
   const origin = `${proto}://${host}`;
-  const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json` }];
+  const relatedApps = [{ platform: 'webapp', url: `${origin}/manifest.json`, id: '/' }];
   if (origin !== 'https://kolot-music.kolot-music.workers.dev') {
-    relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json' });
+    relatedApps.push({ platform: 'webapp', url: 'https://kolot-music.kolot-music.workers.dev/manifest.json', id: '/' });
   }
   res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
@@ -646,6 +646,7 @@ app.get('/manifest.json', (req, res) => {
     background_color: '#000000',
     lang: 'he',
     dir: 'rtl',
+    launch_handler: { client_mode: ['focus-existing', 'auto'] },
     prefer_related_applications: false,
     related_applications: relatedApps,
     icons: [
@@ -881,6 +882,31 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
         if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
           return res.status(403).json({ success: false, error: 'רק בעל הפרופיל רשאי ליצור או לערוך אלבום זה.' });
         }
+        try {
+          const incomingAlbum = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf-8') : String(body));
+          if (incomingAlbum && typeof incomingAlbum === 'object') {
+            incomingAlbum.uploadedByUid = cleanSessUid;
+            incomingAlbum.artistId = cleanSessUid;
+            if (Array.isArray(incomingAlbum.trackIds)) {
+              const verifiedIds: string[] = [];
+              for (const rawTid of incomingAlbum.trackIds) {
+                const cleanTid = String(rawTid || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+                if (!cleanTid) continue;
+                const trk = await readJsonR2(`tracks/${cleanTid}.json`);
+                const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
+                if (!trk || !trkOwner || trkOwner !== cleanSessUid) {
+                  return res.status(403).json({
+                    success: false,
+                    error: 'ניתן להוסיף לאלבום שירים שהועלו מהפרופיל שלך בלבד.',
+                  });
+                }
+                if (!verifiedIds.includes(cleanTid)) verifiedIds.push(cleanTid);
+              }
+              incomingAlbum.trackIds = verifiedIds;
+            }
+            body = Buffer.from(JSON.stringify(incomingAlbum, null, 2), 'utf-8');
+          }
+        } catch {}
       }
 
       const command = new PutObjectCommand({
