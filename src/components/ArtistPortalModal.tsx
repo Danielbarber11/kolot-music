@@ -111,6 +111,19 @@ import {
 } from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
 
+const AUTO_BOILERPLATE_BIOS = new Set([
+  'אמן עצמאי בפלטפורמה',
+  'אמן עצמאי בפלטפורמת kolot music',
+  'independent artist',
+  'independent artist on kolot music',
+]);
+
+function cleanArtistBio(bio?: string): string {
+  const trimmed = (bio || '').trim();
+  if (!trimmed) return '';
+  return AUTO_BOILERPLATE_BIOS.has(trimmed.toLowerCase()) ? '' : trimmed;
+}
+
 interface ArtistPortalModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -929,7 +942,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
             const autoPrivateArtist: ArtistProfile = {
               id: user.uid,
               name: user.displayName || (isHe ? 'אמן חדש' : 'New Artist'),
-              bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
               avatarUrl: googlePhoto,
               joinedDate: new Date().getFullYear().toString(),
               googleUid: user.uid,
@@ -1000,7 +1012,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           const autoPrivateArtist: ArtistProfile = {
             id: user.uid,
             name: user.displayName || (isHe ? 'משתמש גוגל' : 'Google User'),
-            bio: isHe ? 'אמן עצמאי בפלטפורמת Kolot Music' : 'Independent artist on Kolot Music',
             avatarUrl: googlePhoto,
             joinedDate: new Date().getFullYear().toString(),
             googleUid: user.uid,
@@ -1515,11 +1526,12 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         avatarBlobToUpload = await compressAvatarBlob(artistAvatarFile);
       }
 
+      const cleanedExistingBio = cleanArtistBio(currentArtist.bio);
       const updatedArtistDraft: ArtistProfile = {
         ...currentArtist,
         id: artistIdForUpload,
         name: finalName,
-        bio: currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
+        bio: cleanedExistingBio || undefined,
         avatarUrl: previewOrCurrent,
         genre: currentArtist.genre || 'Pop',
         concertShows: currentArtist.concertShows,
@@ -2132,7 +2144,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       ...(uploadCompletedUpTo > 0 ? { subtitlesCompletedUpTo: uploadCompletedUpTo } : {}),
       ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
       karaokeEnabled: false,
-      artistBio: currentArtist.bio,
+      artistBio: cleanArtistBio(currentArtist.bio) || undefined,
       artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
       publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
       uploadedByUid: verifiedUser.uid,
@@ -2519,8 +2531,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </button>
                   </div>
 
-                  {currentArtist.bio && (
-                    <p className="text-xs text-white/60 max-w-xl font-normal leading-relaxed pt-1">{currentArtist.bio}</p>
+                  {cleanArtistBio(currentArtist.bio) && (
+                    <p className="text-xs text-white/60 max-w-xl font-normal leading-relaxed pt-1">{cleanArtistBio(currentArtist.bio)}</p>
                   )}
                 </div>
               </div>

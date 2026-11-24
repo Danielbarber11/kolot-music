@@ -30,6 +30,19 @@ import {
   onAuthUserChanged,
 } from '../services/authService';
 
+const AUTO_BOILERPLATE_BIOS = new Set([
+  'אמן עצמאי בפלטפורמה',
+  'אמן עצמאי בפלטפורמת kolot music',
+  'independent artist',
+  'independent artist on kolot music',
+]);
+
+function cleanArtistBio(bio?: string): string {
+  const trimmed = (bio || '').trim();
+  if (!trimmed) return '';
+  return AUTO_BOILERPLATE_BIOS.has(trimmed.toLowerCase()) ? '' : trimmed;
+}
+
 interface ArtistProfileModalProps {
   artistName: string;
   artistUid?: string;
@@ -204,7 +217,7 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
 
   const sampleTrack = artistTracks[0] || currentTrack || fullPool[0];
 
-  const artistBio = artistInfo?.bio || sampleTrack?.artistBio || '';
+  const artistBio = cleanArtistBio(artistInfo?.bio || sampleTrack?.artistBio);
 
   // Dedicated artist avatar resolution: ArtistProfile avatar -> Track artistAvatarUrl (never invent an avatar from song coverUrl)
   let rawAvatarUrl: string | undefined = artistInfo?.avatarUrl;
@@ -426,10 +439,10 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
                 {effectiveArtistName}
               </h1>
 
-              {/* CLEAN SUBTITLE: NUMBER OF SONGS • NUMBER OF ALBUMS (NO GENRE) */}
+              {/* CLEAN SUBTITLE: NUMBER OF SONGS • NUMBER OF ALBUMS */}
               <p className="text-xs sm:text-sm text-white/80 font-normal">
                 {artistTracks.length} {isHe ? 'שירים' : 'tracks'}
-                {artistAlbums.length > 0 && ` • ${artistAlbums.length} ${isHe ? 'אלבומים' : 'albums'}`}
+                {` • ${artistAlbums.length} ${isHe ? 'אלבומים' : 'albums'}`}
               </p>
 
               {artistBio && (
