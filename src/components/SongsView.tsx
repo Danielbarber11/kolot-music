@@ -462,6 +462,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   // Randomized Spotlight Track Index on every site entry
   const [featuredTrackIndex] = useState<number>(() => Math.floor(Math.random() * 12));
+  const [pinnedFeaturedTrackId, setPinnedFeaturedTrackId] = useState<string | null>(null);
 
   // Active playing song overlay (if not passed via onPlayTrack)
   const [playerTrack, setPlayerTrack] = useState<JamendoTrack | null>(null);
@@ -700,20 +701,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   }, [activeTab, selectedGenre, artistFilter, searchQuery]);
 
-  // Popularity heuristic (views + plays count + favorite bonus + pseudo hash)
-  const getTrackPopularity = React.useCallback(
-    (t: JamendoTrack) => {
-      const views = Number(t.viewsCount) || 0;
-      const plays = Number(t.playsCount) || 0;
-      const isLikedBonus = likedSongIds.includes(t.id) ? 60 : 0;
-      let hash = 0;
-      for (let i = 0; i < t.name.length; i++) {
-        hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
-      }
-      return views * 2 + plays + isLikedBonus + hash;
-    },
-    [likedSongIds]
-  );
+  // Popularity heuristic (views + plays count + deterministic name hash — independent of user favorites)
+  const getTrackPopularity = React.useCallback((t: JamendoTrack) => {
+    const views = Number(t.viewsCount) || 0;
+    const plays = Number(t.playsCount) || 0;
+    let hash = 0;
+    for (let i = 0; i < t.name.length; i++) {
+      hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
+    }
+    return views * 2 + plays + hash;
+  }, []);
 
   const displayedTracks = React.useMemo(() => {
     let list = allTracks.filter(isValidTrackWithOwner);
@@ -846,10 +843,26 @@ export const SongsView: React.FC<SongsViewProps> = ({
       .slice(0, 15);
   }, [publishedArtists, validTracksList]);
 
-  // Row 1: Leading tracks sorted by highest plays and popularity
+  // Row 1: Leading tracks sorted by highest plays and popularity (never shifts on favorite toggle)
   const leadingTracks = React.useMemo(() => {
     return [...allTracks].filter(isValidTrackWithOwner).sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
   }, [allTracks, getTrackPopularity]);
+
+  // Pin spotlight featured track once chosen so liking or background count updates never swap or hide it
+  const featuredTrack = React.useMemo(() => {
+    if (leadingTracks.length === 0) return undefined;
+    if (pinnedFeaturedTrackId) {
+      const pinned = leadingTracks.find((t) => t.id === pinnedFeaturedTrackId);
+      if (pinned) return pinned;
+    }
+    return leadingTracks[featuredTrackIndex % leadingTracks.length] || leadingTracks[0];
+  }, [leadingTracks, pinnedFeaturedTrackId, featuredTrackIndex]);
+
+  useEffect(() => {
+    if (featuredTrack?.id && !pinnedFeaturedTrackId) {
+      setPinnedFeaturedTrackId(featuredTrack.id);
+    }
+  }, [featuredTrack?.id, pinnedFeaturedTrackId]);
 
   // Row 2: Recommended albums synthesized purely from R2 cloud albums and cloud tracks
   const popularAlbums = React.useMemo(() => {
@@ -1711,6 +1724,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             )}
                           </span>
                           <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleFavorite(track.id);
@@ -1745,10 +1759,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
             /* DEFAULT HOME SECTIONS: HERO SPOTLIGHT -> QUICK MIXES -> ROW 1 (LEADING SONGS) -> ROW 2 (POPULAR ALBUMS) -> ROW 3 (POPULAR ARTISTS) -> CURATED ROWS */
             <div key="home-feed" className="p-2.5 sm:p-6 space-y-3.5 md:space-y-10 flex-1 bg-black">
               {/* DESKTOP LUXURY HERO SPOTLIGHT BANNER */}
-              {(() => {
-                const featuredTrack = leadingTracks[featuredTrackIndex % leadingTracks.length] || leadingTracks[0];
-                if (!featuredTrack) return null;
-
+              {featuredTrack && (() => {
                 const resolvedFeaturedAvatar =
                   getEffectiveArtistAvatarForTrack(featuredTrack, allArtists);
                 const artistAvatarImg = getStreamingMediaUrl(resolvedFeaturedAvatar);
@@ -1859,6 +1870,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           </button>
 
                           <button
+                            type="button"
                             onClick={() => toggleFavorite(featuredTrack.id)}
                             className={`p-3 rounded-full border transition-all cursor-pointer active:scale-95 ${
                               likedSongIds.includes(featuredTrack.id)
@@ -2187,6 +2199,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleFavorite(track.id);
@@ -2416,6 +2429,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleFavorite(track.id);
@@ -2568,6 +2582,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               <span>{getGenreDisplayLabel(track.genre, isHe)}</span>
                             </span>
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 toggleFavorite(track.id);
