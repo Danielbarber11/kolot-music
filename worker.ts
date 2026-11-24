@@ -37,6 +37,8 @@ export interface Env {
   OPENAI_API_KEY?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM_EMAIL?: string;
+  BREVO_API_KEY?: string;
+  SMTP_USER?: string;
   Client_ID?: string;
   CLIENT_ID?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -2717,13 +2719,39 @@ export default {
           } catch {}
         }
 
+        const brevoKey = String(env.BREVO_API_KEY || '').trim();
+        if (brevoKey && !emailDispatched) {
+          try {
+            const brevoSenderEmail = extractValidEmail(String(env.SMTP_USER || '')) || 'kolot.music1@gmail.com';
+            const brevoSenderName = isSignedIn
+              ? sanitizeHeaderDisplayName(
+                  resolvedSenderName && reporterEmail && resolvedSenderName !== reporterEmail
+                    ? `${resolvedSenderName} (${reporterEmail})`
+                    : reporterEmail || resolvedSenderName || 'Kolot Music'
+                ) || 'Kolot Music'
+              : sanitizeHeaderDisplayName(reporterEmail || 'Kolot Music') || 'Kolot Music';
+            const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+              method: 'POST',
+              headers: {
+                'api-key': brevoKey,
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                sender: { name: brevoSenderName, email: brevoSenderEmail },
+                to: [{ email: targetGroupEmail }],
+                ...(reporterEmail ? { replyTo: { email: reporterEmail } } : {}),
+                subject: emailSubject,
+                htmlContent: emailBodyHtml,
+                textContent: emailBodyText,
+              }),
+            });
+            if (brevoRes.ok) emailDispatched = true;
+          } catch {}
+        }
+
         if (!emailDispatched) {
           try {
-            const formSenderDisplay = isSignedIn
-              ? resolvedSenderName && reporterEmail && resolvedSenderName !== reporterEmail
-                ? `${resolvedSenderName} (${reporterEmail})`
-                : reporterEmail || resolvedSenderName || fromBaseAddr
-              : reporterEmail || fromBaseAddr;
             const formRes = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(targetGroupEmail)}`, {
               method: 'POST',
               headers: {
@@ -2735,20 +2763,15 @@ export default {
               body: JSON.stringify({
                 email: reporterEmail || fromBaseAddr,
                 ...(reporterEmail ? { _replyto: reporterEmail } : {}),
-                name: formSenderDisplay,
-                category: categoryLabel,
                 _subject: emailSubject,
-                subject,
-                ...(isSignedIn && resolvedSenderName ? { sender_name: resolvedSenderName } : {}),
-                reporter_email: reporterEmail || 'לא סופק (ללא חשבון)',
-                ...(resolvedAvatarUrl ? { profile_photo: resolvedAvatarUrl } : {}),
-                ...(uploaderEmail ? { uploader_email: uploaderEmail } : {}),
-                ...(trackName ? { track: `${trackName}${artistName ? ` - ${artistName}` : ''}` } : {}),
-                ...(legalDocumentName ? { legal_document: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
-                message: messageBody,
-                full_details: emailBodyText,
+                קטגוריה: categoryLabel,
+                ...(isSignedIn && resolvedSenderName ? { שולח: resolvedSenderName } : {}),
+                ...(trackName ? { שיר: `${trackName}${artistName ? ` — ${artistName}` : ''}` } : {}),
+                ...(uploaderEmail ? { מייל_מעלה_השיר: uploaderEmail } : {}),
+                ...(legalDocumentName ? { מסמך_משפטי: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
+                הודעה: messageBody,
                 _captcha: 'false',
-                _template: 'table',
+                _template: 'box',
               }),
             });
             if (formRes.ok) {

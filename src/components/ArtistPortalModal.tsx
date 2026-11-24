@@ -2260,6 +2260,13 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const activeAvatar = artistAvatarPreview || getEffectiveUserAvatar(currentUser, currentArtist);
   const profileThemeColor = useExtractedColor(activeAvatar, currentArtist.genre || 'Pop');
+  const savedSettingsName = currentArtist.name || currentUser?.displayName || '';
+  const savedSettingsAvatar = getEffectiveUserAvatar(currentUser, currentArtist) || null;
+  const hasUnsavedSettingsChanges = Boolean(
+    artistAvatarFile ||
+      artistNameInput !== savedSettingsName ||
+      (artistAvatarPreview || null) !== savedSettingsAvatar
+  );
 
   if (!currentUser) {
     return (
@@ -2354,20 +2361,32 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           <div className="fixed top-4 left-4 right-4 sm:top-6 sm:left-6 sm:right-6 z-50 pointer-events-none flex items-center justify-between gap-3">
             <div className="pointer-events-auto">
               {activeTab === 'account_settings' ? (
-                <button
-                  type="button"
-                  onClick={handleConfirmAndExitSettings}
-                  disabled={isPairing || isRestoringGoogleAvatar || isSavingEdit || isSavingAlbum || isSavingShow}
-                  aria-label={isHe ? 'שמור הגדרות וצא' : 'Save settings and exit'}
-                  title={isHe ? 'שמור הגדרות וצא' : 'Save settings and exit'}
-                  className="w-11 h-11 rounded-full flex items-center justify-center text-black border border-white/50 bg-white hover:bg-neutral-200 shadow-xl cursor-pointer active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {isPairing ? (
-                    <Loader2 className="w-5 h-5 animate-spin text-black" />
-                  ) : (
-                    <Check className="w-5 h-5 stroke-[2.5] text-black" />
-                  )}
-                </button>
+                hasUnsavedSettingsChanges ? (
+                  <button
+                    type="button"
+                    onClick={handleConfirmAndExitSettings}
+                    disabled={isPairing || isRestoringGoogleAvatar || isSavingEdit || isSavingAlbum || isSavingShow}
+                    aria-label={isHe ? 'שמור הגדרות וצא' : 'Save settings and exit'}
+                    title={isHe ? 'שמור הגדרות וצא' : 'Save settings and exit'}
+                    className="w-11 h-11 rounded-full flex items-center justify-center text-black border border-white/50 bg-white hover:bg-neutral-200 shadow-xl cursor-pointer active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {isPairing ? (
+                      <Loader2 className="w-5 h-5 animate-spin text-black" />
+                    ) : (
+                      <Check className="w-5 h-5 stroke-[2.5] text-black" />
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleCancelAndExitSettings}
+                    disabled={isPairing || isRestoringGoogleAvatar || isSavingEdit || isSavingAlbum || isSavingShow}
+                    className="min-h-[44px] px-4 py-2 rounded-full flex items-center gap-2 text-xs sm:text-sm font-semibold text-white border border-white/20 bg-white/10 hover:bg-white/20 backdrop-blur-xl shadow-xl cursor-pointer active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {isHe ? <ArrowRight className="w-4 h-4 text-white" /> : <ArrowLeft className="w-4 h-4 text-white" />}
+                    <span>{isHe ? 'חזור' : 'Back'}</span>
+                  </button>
+                )
               ) : activeTab !== 'profile' ? (
                 <button
                   type="button"
@@ -2394,16 +2413,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
             <div className="pointer-events-auto flex items-center gap-2 sm:gap-3">
               {activeTab === 'account_settings' ? (
-                <button
-                  type="button"
-                  onClick={handleCancelAndExitSettings}
-                  disabled={isPairing || isRestoringGoogleAvatar || isSavingEdit || isSavingAlbum || isSavingShow}
-                  aria-label={isHe ? 'סגור ללא שמירה' : 'Close without saving'}
-                  title={isHe ? 'סגור ללא שמירה' : 'Close without saving'}
-                  className="w-11 h-11 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-xl backdrop-blur-xl border bg-white/10 hover:bg-white/20 text-white border-white/25 active:scale-95 disabled:opacity-50"
-                >
-                  <X className="w-5 h-5 text-white" />
-                </button>
+                hasUnsavedSettingsChanges ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelAndExitSettings}
+                    disabled={isPairing || isRestoringGoogleAvatar || isSavingEdit || isSavingAlbum || isSavingShow}
+                    aria-label={isHe ? 'בטל שינויים וצא' : 'Discard changes and exit'}
+                    title={isHe ? 'בטל שינויים וצא' : 'Discard changes and exit'}
+                    className="w-11 h-11 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-xl backdrop-blur-xl border bg-white/10 hover:bg-white/20 text-white border-white/25 active:scale-95 disabled:opacity-50"
+                  >
+                    <X className="w-5 h-5 text-white" />
+                  </button>
+                ) : null
               ) : (
                 <button
                   type="button"

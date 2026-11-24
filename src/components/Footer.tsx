@@ -198,11 +198,6 @@ export const Footer: React.FC<FooterProps> = ({
       // If datacenter IP dispatch to FormSubmit was skipped/blocked, also fire directly from browser
       // WITHOUT _autoresponse so the sender NEVER receives any email back
       if (!data?.emailDispatched) {
-        const displaySender = isSignedIn
-          ? resolvedName && resolvedEmail && resolvedName !== resolvedEmail
-            ? `${resolvedName} (${resolvedEmail})`
-            : resolvedEmail || resolvedName
-          : resolvedEmail || 'onboarding@resend.dev';
         void fetch(`https://formsubmit.co/ajax/${encodeURIComponent(GROUP_EMAIL)}`, {
           method: 'POST',
           headers: {
@@ -212,18 +207,13 @@ export const Footer: React.FC<FooterProps> = ({
           body: JSON.stringify({
             email: resolvedEmail || 'onboarding@resend.dev',
             ...(resolvedEmail ? { _replyto: resolvedEmail } : {}),
-            name: displaySender,
-            ...(isSignedIn && resolvedName ? { sender_name: resolvedName } : {}),
-            ...(resolvedEmail ? { reporter_email: resolvedEmail } : {}),
-            ...(resolvedAvatarUrl ? { profile_photo: resolvedAvatarUrl } : {}),
-            category: categoryLabel,
-            subject,
-            message,
-            legal_document: legalDocumentName || 'ללא',
-            full_details: `סוג פנייה: ${categoryLabel}\nשולח: ${displaySender}${resolvedAvatarUrl ? `\nתמונת פרופיל: ${resolvedAvatarUrl}` : ''}\nנושא: ${subject}\n\nתוכן ההודעה:\n${message}${legalDocumentName ? `\n\nמסמך משפטי מצורף: ${legalDocumentName}` : ''}`,
             _subject: `[${categoryLabel}] ${subject}`,
+            קטגוריה: categoryLabel,
+            ...(isSignedIn && resolvedName ? { שולח: resolvedName } : {}),
+            ...(legalDocumentName ? { מסמך_משפטי: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
+            הודעה: message,
             _captcha: 'false',
-            _template: 'table',
+            _template: 'box',
           }),
         }).catch(() => {});
       }

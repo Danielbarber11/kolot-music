@@ -142,11 +142,6 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
     };
 
     // Save to Cloudflare R2 backend + admin-only inbox + kolot-music@googlegroups.com (NEVER emailed back to reporter)
-    const senderLabel = isSignedIn
-      ? resolvedReporterName && resolvedReporterEmail && resolvedReporterName !== resolvedReporterEmail
-        ? `${resolvedReporterName} (${resolvedReporterEmail})`
-        : resolvedReporterEmail || resolvedReporterName
-      : resolvedReporterEmail || 'onboarding@resend.dev';
     const subjectLine = `דיווח על שיר (${reason}): ${track.name} - ${track.artistName}`;
     const bodyDetails =
       `נושא: ${subjectLine}\n` +
@@ -211,18 +206,14 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         body: JSON.stringify({
           email: resolvedReporterEmail,
           _replyto: resolvedReporterEmail,
-          name: senderLabel,
-          ...(isSignedIn && resolvedReporterName ? { sender_name: resolvedReporterName } : {}),
-          reporter_email: resolvedReporterEmail,
-          ...(resolvedReporterAvatarUrl ? { profile_photo: resolvedReporterAvatarUrl } : {}),
-          category: reason,
-          subject: subjectLine,
-          message: bodyDetails,
-          legal_document: legalDocumentName || 'ללא',
-          full_details: bodyDetails,
           _subject: `[דיווח שיר] ${subjectLine}`,
+          קטגוריה: reason,
+          ...(isSignedIn && resolvedReporterName ? { שולח: resolvedReporterName } : {}),
+          שיר: `${track.name} — ${track.artistName}`,
+          ...(legalDocumentName ? { מסמך_משפטי: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
+          הודעה: details.trim() || reason,
           _captcha: 'false',
-          _template: 'table',
+          _template: 'box',
         }),
       }).catch(() => {});
     }
