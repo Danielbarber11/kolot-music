@@ -2088,6 +2088,231 @@ export default {
       }
     }
 
+    // 12b. Account Favorites Sync & Profile-Owner-Only Favorite Counts
+    const isSameOriginOrBearerWorker = (): boolean => {
+      const authHdr = String(request.headers.get('Authorization') || '').trim();
+      if (authHdr.toLowerCase().startsWith('bearer ')) return true;
+      const originHdr = String(request.headers.get('Origin') || '').trim();
+      if (!originHdr) return true;
+      try {
+        return new URL(originHdr).host.toLowerCase() === url.host.toLowerCase();
+      } catch {
+        return false;
+      }
+    };
+
+    if (pathname === '/api/storage/favorites' && request.method === 'GET') {
+      try {
+        const sess = await extractSessionTop();
+        const cleanUid = String(sess?.uid || '')
+          .replace(/^artist_/, '')
+          .replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanUid) {
+          return jsonResponse({ success: false, likedIds: [], error: 'Authentication required' }, 401, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const doc = await r2ReadJson(`favorites/user_${cleanUid}.json`);
+        const likedIds = Array.isArray(doc?.trackIds)
+          ? Array.from(new Set(doc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)))
+          : [];
+        return jsonResponse({ success: true, likedIds }, 200, { 'Access-Control-Allow-Origin': url.origin });
+      } catch (err: any) {
+        return jsonResponse({ success: false, likedIds: [], error: err?.message || 'Failed to load favorites' }, 500, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      }
+    }
+
+    if (pathname === '/api/storage/favorites/toggle' && request.method === 'POST') {
+      try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const sess = await extractSessionTop();
+        const cleanUid = String(sess?.uid || '')
+          .replace(/^artist_/, '')
+          .replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanUid) {
+          return jsonResponse({ success: false, error: 'Authentication required' }, 401, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const body: any = await request.json().catch(() => ({}));
+        const cleanTrackId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanTrackId) {
+          return jsonResponse({ success: false, error: 'Missing trackId' }, 400, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const liked = Boolean(body?.liked);
+        const nowIso = new Date().toISOString();
+
+        const userKey = `favorites/user_${cleanUid}.json`;
+        const userDoc = await r2ReadJson(userKey);
+        const prevUserIds: string[] = Array.isArray(userDoc?.trackIds)
+          ? userDoc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+          : [];
+        const nextUserIds = liked
+          ? Array.from(new Set([cleanTrackId, ...prevUserIds]))
+          : prevUserIds.filter((id) => id !== cleanTrackId);
+        await r2WriteJson(userKey, {
+          uid: cleanUid,
+          trackIds: nextUserIds,
+          updatedAt: nowIso,
+        });
+
+        const trackFavKey = `favorites/track_${cleanTrackId}.json`;
+        const trackFavDoc = await r2ReadJson(trackFavKey);
+        const prevUids: string[] = Array.isArray(trackFavDoc?.uids)
+          ? trackFavDoc.uids.map((x: any) => String(x || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+          : [];
+        const nextUids = liked
+          ? Array.from(new Set([...prevUids, cleanUid]))
+          : prevUids.filter((u) => u !== cleanUid);
+        await r2WriteJson(trackFavKey, {
+          trackId: cleanTrackId,
+          uids: nextUids,
+          updatedAt: nowIso,
+        });
+
+        return jsonResponse({ success: true, likedIds: nextUserIds }, 200, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Failed to update favorite' }, 500, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      }
+    }
+
+    if (pathname === '/api/storage/favorites/sync' && request.method === 'POST') {
+      try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, likedIds: [], error: 'Cross-site request blocked' }, 403, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const sess = await extractSessionTop();
+        const cleanUid = String(sess?.uid || '')
+          .replace(/^artist_/, '')
+          .replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanUid) {
+          return jsonResponse({ success: false, likedIds: [], error: 'Authentication required' }, 401, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+        const body: any = await request.json().catch(() => ({}));
+        const incomingIds: string[] = Array.isArray(body?.trackIds)
+          ? Array.from(
+              new Set(
+                body.trackIds
+                  .slice(0, 500)
+                  .map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, ''))
+                  .filter(Boolean)
+              )
+            )
+          : [];
+
+        const userKey = `favorites/user_${cleanUid}.json`;
+        const userDoc = await r2ReadJson(userKey);
+        const existingIds: string[] = Array.isArray(userDoc?.trackIds)
+          ? userDoc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+          : [];
+        const mergedIds = Array.from(new Set([...existingIds, ...incomingIds]));
+        const nowIso = new Date().toISOString();
+
+        if (!userDoc || mergedIds.length !== existingIds.length) {
+          await r2WriteJson(userKey, {
+            uid: cleanUid,
+            trackIds: mergedIds,
+            updatedAt: nowIso,
+          });
+        }
+
+        const addedIds = userDoc ? mergedIds.filter((id) => !existingIds.includes(id)) : mergedIds;
+        if (addedIds.length > 0) {
+          await Promise.all(
+            addedIds.map(async (tid) => {
+              const trackFavKey = `favorites/track_${tid}.json`;
+              const trackFavDoc = await r2ReadJson(trackFavKey);
+              const prevUids: string[] = Array.isArray(trackFavDoc?.uids)
+                ? trackFavDoc.uids.map((x: any) => String(x || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+                : [];
+              if (!prevUids.includes(cleanUid)) {
+                await r2WriteJson(trackFavKey, {
+                  trackId: tid,
+                  uids: [...prevUids, cleanUid],
+                  updatedAt: nowIso,
+                });
+              }
+            })
+          );
+        }
+
+        return jsonResponse({ success: true, likedIds: mergedIds }, 200, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, likedIds: [], error: err?.message || 'Failed to sync favorites' }, 500, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      }
+    }
+
+    if (pathname === '/api/storage/my-tracks-favorites' && request.method === 'GET') {
+      try {
+        const sess = await extractSessionTop();
+        const cleanSessionUid = String(sess?.uid || '')
+          .replace(/^artist_/, '')
+          .trim()
+          .toLowerCase();
+        if (!cleanSessionUid) {
+          return jsonResponse({ success: false, counts: {}, error: 'Authentication required' }, 401, {
+            'Access-Control-Allow-Origin': url.origin,
+          });
+        }
+
+        const trackKeys = (await r2ListKeys('tracks/')).filter((k) => k.endsWith('.json'));
+        const ownedTrackIds: string[] = [];
+        await Promise.all(
+          trackKeys.map(async (k) => {
+            const trackData = await r2ReadJson(k).catch(() => null);
+            if (!trackData || typeof trackData !== 'object') return;
+            const ownerUid = String(trackData.uploadedByUid || '')
+              .replace(/^artist_/, '')
+              .trim()
+              .toLowerCase();
+            if (ownerUid && ownerUid === cleanSessionUid) {
+              const cleanId = String(trackData.id || k.replace(/^tracks\//, '').replace(/\.json$/, '')).replace(/[^a-zA-Z0-9_\-]/g, '');
+              if (cleanId) ownedTrackIds.push(cleanId);
+            }
+          })
+        );
+
+        const counts: Record<string, number> = {};
+        await Promise.all(
+          ownedTrackIds.map(async (tid) => {
+            const favDoc = await r2ReadJson(`favorites/track_${tid}.json`).catch(() => null);
+            const uniqueUids = Array.isArray(favDoc?.uids)
+              ? Array.from(new Set(favDoc.uids.filter((u: any) => typeof u === 'string' && u.trim().length > 0)))
+              : [];
+            counts[tid] = uniqueUids.length;
+          })
+        );
+
+        return jsonResponse({ success: true, counts }, 200, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      } catch (err: any) {
+        return jsonResponse({ success: false, counts: {}, error: err?.message || 'Failed to load favorite counts' }, 500, {
+          'Access-Control-Allow-Origin': url.origin,
+        });
+      }
+    }
+
     // 13. Fast Track Play Counter (100% R2)
     if (pathname === '/api/storage/track-play' && request.method === 'POST') {
       try {

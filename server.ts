@@ -3234,6 +3234,242 @@ app.delete('/api/storage/reports/:id', async (req, res) => {
   }
 });
 
+// 4h-2. Account Favorites Sync & Profile-Owner-Only Favorite Counts
+const isSameOriginOrBearerExpress = (req: express.Request): boolean => {
+  const authHdr = String(req.headers.authorization || '').trim();
+  if (authHdr.toLowerCase().startsWith('bearer ')) return true;
+  const originHdr = String(req.headers.origin || '').trim();
+  if (!originHdr) return true;
+  try {
+    const originHost = new URL(originHdr).host.toLowerCase();
+    const expectedHost = String((req.headers['x-forwarded-host'] as string) || req.get('host') || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    return Boolean(originHost && expectedHost && originHost === expectedHost);
+  } catch {
+    return false;
+  }
+};
+
+const readJsonObjR2 = async (client: S3Client, bucket: string, key: string): Promise<any | null> => {
+  try {
+    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const txt = obj.Body ? await obj.Body.transformToString('utf-8') : '';
+    return txt ? JSON.parse(txt) : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeJsonObjR2 = async (client: S3Client, bucket: string, key: string, payload: unknown): Promise<void> => {
+  await client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: Buffer.from(JSON.stringify(payload, null, 2), 'utf-8'),
+      ContentType: 'application/json',
+    })
+  );
+};
+
+app.get('/api/storage/favorites', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    const cleanUid = String(parsed?.session?.uid || '')
+      .replace(/^artist_/, '')
+      .replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanUid) {
+      return res.status(401).json({ success: false, likedIds: [], error: 'Authentication required' });
+    }
+    const { client, bucket } = await getR2Context(req);
+    const doc = await readJsonObjR2(client, bucket, `favorites/user_${cleanUid}.json`);
+    const likedIds = Array.isArray(doc?.trackIds)
+      ? Array.from(new Set(doc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)))
+      : [];
+    return res.json({ success: true, likedIds });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, likedIds: [], error: err?.message || 'Failed to load favorites' });
+  }
+});
+
+app.post('/api/storage/favorites/toggle', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    const cleanUid = String(parsed?.session?.uid || '')
+      .replace(/^artist_/, '')
+      .replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanUid) {
+      return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+    const cleanTrackId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanTrackId) {
+      return res.status(400).json({ success: false, error: 'Missing trackId' });
+    }
+    const liked = Boolean(req.body?.liked);
+    const { client, bucket } = await getR2Context(req);
+    const nowIso = new Date().toISOString();
+
+    const userKey = `favorites/user_${cleanUid}.json`;
+    const userDoc = await readJsonObjR2(client, bucket, userKey);
+    const prevUserIds: string[] = Array.isArray(userDoc?.trackIds)
+      ? userDoc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+      : [];
+    const nextUserIds = liked
+      ? Array.from(new Set([cleanTrackId, ...prevUserIds]))
+      : prevUserIds.filter((id) => id !== cleanTrackId);
+    await writeJsonObjR2(client, bucket, userKey, {
+      uid: cleanUid,
+      trackIds: nextUserIds,
+      updatedAt: nowIso,
+    });
+
+    const trackFavKey = `favorites/track_${cleanTrackId}.json`;
+    const trackFavDoc = await readJsonObjR2(client, bucket, trackFavKey);
+    const prevUids: string[] = Array.isArray(trackFavDoc?.uids)
+      ? trackFavDoc.uids.map((x: any) => String(x || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+      : [];
+    const nextUids = liked
+      ? Array.from(new Set([...prevUids, cleanUid]))
+      : prevUids.filter((u) => u !== cleanUid);
+    await writeJsonObjR2(client, bucket, trackFavKey, {
+      trackId: cleanTrackId,
+      uids: nextUids,
+      updatedAt: nowIso,
+    });
+
+    return res.json({ success: true, likedIds: nextUserIds });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to update favorite' });
+  }
+});
+
+app.post('/api/storage/favorites/sync', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    const cleanUid = String(parsed?.session?.uid || '')
+      .replace(/^artist_/, '')
+      .replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanUid) {
+      return res.status(401).json({ success: false, likedIds: [], error: 'Authentication required' });
+    }
+    const incomingIds: string[] = Array.isArray(req.body?.trackIds)
+      ? Array.from(
+          new Set(
+            req.body.trackIds
+              .slice(0, 500)
+              .map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, ''))
+              .filter(Boolean)
+          )
+        )
+      : [];
+
+    const { client, bucket } = await getR2Context(req);
+    const userKey = `favorites/user_${cleanUid}.json`;
+    const userDoc = await readJsonObjR2(client, bucket, userKey);
+    const existingIds: string[] = Array.isArray(userDoc?.trackIds)
+      ? userDoc.trackIds.map((x: any) => String(x || '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+      : [];
+
+    const mergedIds = Array.from(new Set([...existingIds, ...incomingIds]));
+    const nowIso = new Date().toISOString();
+
+    if (!userDoc || mergedIds.length !== existingIds.length) {
+      await writeJsonObjR2(client, bucket, userKey, {
+        uid: cleanUid,
+        trackIds: mergedIds,
+        updatedAt: nowIso,
+      });
+    }
+
+    const addedIds = userDoc ? mergedIds.filter((id) => !existingIds.includes(id)) : mergedIds;
+    if (addedIds.length > 0) {
+      await Promise.all(
+        addedIds.map(async (tid) => {
+          const trackFavKey = `favorites/track_${tid}.json`;
+          const trackFavDoc = await readJsonObjR2(client, bucket, trackFavKey);
+          const prevUids: string[] = Array.isArray(trackFavDoc?.uids)
+            ? trackFavDoc.uids.map((x: any) => String(x || '').replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '')).filter(Boolean)
+            : [];
+          if (!prevUids.includes(cleanUid)) {
+            await writeJsonObjR2(client, bucket, trackFavKey, {
+              trackId: tid,
+              uids: [...prevUids, cleanUid],
+              updatedAt: nowIso,
+            });
+          }
+        })
+      );
+    }
+
+    return res.json({ success: true, likedIds: mergedIds });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, likedIds: [], error: err?.message || 'Failed to sync favorites' });
+  }
+});
+
+app.get('/api/storage/my-tracks-favorites', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsed = extractSessionFromRequest(req, sessionSecret);
+    const cleanSessionUid = String(parsed?.session?.uid || '')
+      .replace(/^artist_/, '')
+      .trim()
+      .toLowerCase();
+    if (!cleanSessionUid) {
+      return res.status(401).json({ success: false, counts: {}, error: 'Authentication required' });
+    }
+
+    const { client, bucket } = await getR2Context(req);
+    const listedTracks = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'tracks/' }));
+    const trackKeys = (listedTracks.Contents || []).map((c) => c.Key || '').filter((k) => k.endsWith('.json'));
+    const ownedTrackIds: string[] = [];
+
+    await Promise.all(
+      trackKeys.map(async (k) => {
+        const trackData = await readJsonObjR2(client, bucket, k);
+        if (!trackData || typeof trackData !== 'object') return;
+        const ownerUid = String(trackData.uploadedByUid || '')
+          .replace(/^artist_/, '')
+          .trim()
+          .toLowerCase();
+        if (ownerUid && ownerUid === cleanSessionUid) {
+          const cleanId = String(trackData.id || k.replace(/^tracks\//, '').replace(/\.json$/, '')).replace(/[^a-zA-Z0-9_\-]/g, '');
+          if (cleanId) ownedTrackIds.push(cleanId);
+        }
+      })
+    );
+
+    const counts: Record<string, number> = {};
+    await Promise.all(
+      ownedTrackIds.map(async (tid) => {
+        const favDoc = await readJsonObjR2(client, bucket, `favorites/track_${tid}.json`);
+        const uniqueUids = Array.isArray(favDoc?.uids)
+          ? Array.from(new Set(favDoc.uids.filter((u: any) => typeof u === 'string' && u.trim().length > 0)))
+          : [];
+        counts[tid] = uniqueUids.length;
+      })
+    );
+
+    return res.json({ success: true, counts });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, counts: {}, error: err?.message || 'Failed to load favorite counts' });
+  }
+});
+
 // 4i. Fast Track Play Counter (100% R2)
 app.post('/api/storage/track-play', async (req, res) => {
   try {

@@ -44,6 +44,7 @@ import { AuthUser, onAuthUserChanged, loginWithGoogle } from './services/authSer
 import {
   getUserFavorites,
   toggleUserFavorite,
+  syncUserFavoritesWithCloud,
   FAVORITES_CHANGED_EVENT,
 } from './services/favoritesService';
 import { prewarmTrackColor } from './services/colorService';
@@ -158,6 +159,9 @@ export default function App() {
     const unsub = onAuthUserChanged((user) => {
       setAuthUser(user);
       setLikedSongIds(user?.uid ? getUserFavorites(user.uid) : []);
+      if (user?.uid) {
+        void syncUserFavoritesWithCloud(user.uid);
+      }
     });
     const handleFavoritesSync = () => {
       setLikedSongIds(() => {

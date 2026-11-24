@@ -91,6 +91,7 @@ import { useNetworkHealth } from '../services/networkHealthService';
 import {
   getUserFavorites,
   toggleUserFavorite,
+  syncUserFavoritesWithCloud,
   FAVORITES_CHANGED_EVENT,
 } from '../services/favoritesService';
 import { trackSearchQuery, trackEvent } from '../services/analyticsService';
@@ -449,6 +450,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   useEffect(() => {
     setLikedSongIds(authUser?.uid ? getUserFavorites(authUser.uid) : []);
+    if (authUser?.uid) {
+      void syncUserFavoritesWithCloud(authUser.uid);
+    }
     const handleSync = () => {
       setLikedSongIds(authUser?.uid ? getUserFavorites(authUser.uid) : []);
     };

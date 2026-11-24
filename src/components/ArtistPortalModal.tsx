@@ -40,6 +40,7 @@ import {
   Camera,
   RotateCcw,
   MapPin,
+  Heart,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -110,6 +111,11 @@ import {
   upsertTrackInMemory,
 } from '../services/multiMusicService';
 import { AlbumModal } from './AlbumModal';
+import {
+  fetchMyTracksFavoriteCounts,
+  FAVORITES_CHANGED_EVENT,
+  MY_FAVORITE_COUNTS_CHANGED_EVENT,
+} from '../services/favoritesService';
 
 const AUTO_BOILERPLATE_BIOS = new Set([
   'אמן עצמאי בפלטפורמה',
@@ -288,7 +294,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [rawAlbumCoverFile, setRawAlbumCoverFile] = useState<File | null>(null);
   const [albumCoverFileName, setAlbumCoverFileName] = useState<string>('');
   const [isAlbumCoverDragging, setIsAlbumCoverDragging] = useState<boolean>(false);
-
+  const [myTrackFavoriteCounts, setMyTrackFavoriteCounts] = useState<Record<string, number>>({});
 
   // File upload refs & drag-and-drop states
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -985,6 +991,29 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       setShowFormSuccess(null);
     }
   }, [isOpen, settingsSubTab]);
+
+  useEffect(() => {
+    if (!isOpen || !currentUser?.uid) {
+      setMyTrackFavoriteCounts({});
+      return;
+    }
+    let active = true;
+    const loadCounts = async () => {
+      const counts = await fetchMyTracksFavoriteCounts();
+      if (active) setMyTrackFavoriteCounts(counts);
+    };
+    void loadCounts();
+    const handleRefresh = () => {
+      void loadCounts();
+    };
+    window.addEventListener(FAVORITES_CHANGED_EVENT, handleRefresh);
+    window.addEventListener(MY_FAVORITE_COUNTS_CHANGED_EVENT, handleRefresh);
+    return () => {
+      active = false;
+      window.removeEventListener(FAVORITES_CHANGED_EVENT, handleRefresh);
+      window.removeEventListener(MY_FAVORITE_COUNTS_CHANGED_EVENT, handleRefresh);
+    };
+  }, [isOpen, currentUser?.uid, activeTab, settingsSubTab]);
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
@@ -2744,12 +2773,26 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
                         {/* CARD FOOTER WITH EXPLICIT EDIT / DELETE ACTION BUTTONS (FOR OWNER) */}
                         <div className="pt-2 mt-2 border-t border-white/10 space-y-1.5">
-                          <div className="flex items-center justify-between text-[9px] text-white/50 font-normal">
+                          <div className="flex items-center justify-between text-[9px] text-white/50 font-normal gap-1.5">
                             <span className="inline-flex items-center gap-1 text-white/70 font-normal truncate">
                               <ShieldCheck className="w-2.5 h-2.5 flex-shrink-0 text-white" />
                               <span className="truncate">{track.genre || 'Music'}</span>
                             </span>
-                            <Play className="w-3.5 h-3.5 text-white flex-shrink-0" />
+                            {canManageTrack(track) ? (
+                              <span
+                                className="inline-flex items-center gap-1 text-rose-200/90 font-medium shrink-0"
+                                title={
+                                  isHe
+                                    ? `${myTrackFavoriteCounts[track.id] ?? 0} משתמשים שמרו במועדפים`
+                                    : `${myTrackFavoriteCounts[track.id] ?? 0} users favorited`
+                                }
+                              >
+                                <Heart className="w-2.5 h-2.5 text-rose-400 fill-rose-400 shrink-0" />
+                                <span>{myTrackFavoriteCounts[track.id] ?? 0}</span>
+                              </span>
+                            ) : (
+                              <Play className="w-3.5 h-3.5 text-white flex-shrink-0" />
+                            )}
                           </div>
 
                           {canManageTrack(track) && (
@@ -4055,6 +4098,16 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                                 <p className="text-xs text-white/60 truncate mt-0.5">
                                   {track.albumName || (isHe ? 'סינגל עצמאי' : 'Single')} · {getGenreDisplayLabel(track.genre || 'Music', isHe)}
                                 </p>
+                                {canManageTrack(track) && (
+                                  <div className="inline-flex items-center gap-1.5 mt-1 text-[11px] text-rose-200/90 font-medium">
+                                    <Heart className="w-3 h-3 text-rose-400 fill-rose-400 shrink-0" />
+                                    <span>
+                                      {isHe
+                                        ? `${myTrackFavoriteCounts[track.id] ?? 0} שמרו במועדפים`
+                                        : `${myTrackFavoriteCounts[track.id] ?? 0} favorites`}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                             </div>
 

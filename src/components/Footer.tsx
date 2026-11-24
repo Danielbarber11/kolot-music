@@ -274,6 +274,45 @@ export const Footer: React.FC<FooterProps> = ({
                   ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול פרופיל אמן בענן בהתאם לתנאי הפלטפורמה ומגבלותיה.'
                   : 'Free music streaming and creator publishing platform subject to platform terms.'}
               </p>
+
+              {/* SOCIAL MEDIA LINKS (EXTENSIBLE) */}
+              <div className="pt-2 space-y-2">
+                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-white/55">
+                  {isHe ? 'רשתות חברתיות' : 'Social Media'}
+                </h4>
+                <div className="flex flex-wrap items-center gap-2">
+                  {[
+                    {
+                      id: 'tiktok',
+                      label: 'TikTok',
+                      handle: '@kolot_music',
+                      href: 'https://www.tiktok.com/@kolot_music?is_from_webapp=1&sender_device=pc',
+                    },
+                  ].map((social) => (
+                    <a
+                      key={social.id}
+                      href={social.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`${social.label} (${social.handle})`}
+                      className="inline-flex items-center gap-2.5 px-3.5 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.1] border border-white/15 hover:border-white/30 text-xs text-white/90 transition-all group"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                        className="w-4 h-4 text-white shrink-0 group-hover:scale-110 transition-transform"
+                      >
+                        <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.87a8.28 8.28 0 0 0 4.76 1.5v-3.4a4.85 4.85 0 0 1-1-.28Z" />
+                      </svg>
+                      <span className="font-semibold">{social.label}</span>
+                      <span className="text-[11px] text-white/50 group-hover:text-white/75" dir="ltr">
+                        {social.handle}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* ACTION BUTTONS & LINKS */}
