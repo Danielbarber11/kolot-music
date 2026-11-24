@@ -973,11 +973,24 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
   }
 });
 
-// 2. List Files - 100% Pure Cloudflare R2 (Paginated)
+// 2. List Files - 100% Pure Cloudflare R2 (Paginated, private admin prefixes protected)
 app.get('/api/storage/list', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
     const prefix = String(req.query.prefix || '').replace(/^\/+/, '');
+    const lowerPrefix = prefix.toLowerCase();
+    const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/'];
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const parsedSession = extractSessionFromRequest(req, sessionSecret);
+    const isAdmin = Boolean(parsedSession?.session?.isAdmin);
+
+    if (
+      !isAdmin &&
+      PRIVATE_PREFIXES.some((p) => lowerPrefix === p.slice(0, -1) || lowerPrefix.startsWith(p))
+    ) {
+      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
+    }
+
     const { client, bucket, publicUrl } = await getR2Context(req);
     const filesList: { key: string; size: number; lastModified?: Date; url: string }[] = [];
 
@@ -992,6 +1005,10 @@ app.get('/api/storage/list', async (req, res) => {
       if (data.Contents) {
         data.Contents.forEach((item: { Key?: string; Size?: number; LastModified?: Date }) => {
           if (item.Key) {
+            const lowerKey = item.Key.toLowerCase();
+            if (!isAdmin && PRIVATE_PREFIXES.some((p) => lowerKey.startsWith(p))) {
+              return;
+            }
             filesList.push({
               key: item.Key,
               size: item.Size || 0,
@@ -3081,15 +3098,43 @@ app.post('/api/storage/report', async (req, res) => {
     }
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
-    const reporterEmail = String(
-      parsedSession?.session?.email ||
-        rep.reporterEmail ||
-        ''
-    )
+    const sess = parsedSession?.session;
+    const reporterEmail = String(sess?.email || rep.reporterEmail || '')
       .trim()
       .slice(0, 160);
 
     const { client, bucket } = await getR2Context(req);
+    const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const proto = protoHeader.split(',')[0].trim();
+    const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
+    const originUrl = `${proto}://${host}`;
+
+    let profileData: any = null;
+    if (sess?.uid) {
+      const cleanUid = String(sess.uid).replace(/[^a-zA-Z0-9_\-]/g, '');
+      const readProf = async (k: string) => {
+        try {
+          const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: k }));
+          const t = obj.Body ? await obj.Body.transformToString('utf-8') : '';
+          return t ? JSON.parse(t) : null;
+        } catch {
+          return null;
+        }
+      };
+      profileData = (await readProf(`profiles/${cleanUid}.json`)) || (await readProf(`profiles/artist_${cleanUid}.json`));
+    }
+
+    const reporterName = sess?.uid
+      ? String(profileData?.name || sess?.displayName || rep.reporterName || reporterEmail || '')
+          .trim()
+          .slice(0, 160)
+      : '';
+    const rawAvatar = sess?.uid
+      ? String(profileData?.avatarUrl || sess?.photoURL || sess?.googlePhotoUrl || rep.reporterAvatarUrl || '').trim()
+      : '';
+    const absAvatar = rawAvatar.startsWith('/') ? `${originUrl}${rawAvatar}` : rawAvatar;
+    const reporterAvatarUrl = /^https?:\/\//i.test(absAvatar) ? absAvatar.slice(0, 500) : '';
+
     const uploaderEmail = await resolveTrackUploaderEmailR2(client, bucket, {
       trackId: String(rep.trackId || ''),
       uploadedByUid: String(rep.uploadedByUid || ''),
@@ -3108,7 +3153,9 @@ app.post('/api/storage/report', async (req, res) => {
     const enrichedReport = {
       ...rep,
       ...(reporterEmail ? { reporterEmail } : {}),
-      ...(parsedSession?.session?.uid ? { reporterUid: parsedSession.session.uid } : {}),
+      ...(reporterName ? { reporterName } : {}),
+      ...(reporterAvatarUrl ? { reporterAvatarUrl } : {}),
+      ...(sess?.uid ? { reporterUid: sess.uid } : {}),
       ...(uploaderEmail ? { uploaderEmail } : {}),
       ...(legalDocKey ? { legalDocumentKey: legalDocKey } : {}),
       ...(legalDocName ? { legalDocumentName: legalDocName } : {}),
@@ -3590,25 +3637,42 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
 // 4i-3. In-App Contact & Reports Submission Endpoint (saves to R2 contact_messages/ for admin-only viewing + dispatches to kolot-music@googlegroups.com without emailing reporter)
 app.post('/api/contact', async (req, res) => {
   try {
+    const escapeHtml = (val: string) =>
+      String(val || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    const extractValidEmail = (raw: string): string => {
+      const s = String(raw || '').trim();
+      const angleMatch = s.match(/<([^>\s]+@[^>\s]+\.[^>\s]+)>/);
+      const candidate = (angleMatch ? angleMatch[1] : s).trim().slice(0, 160);
+      return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(candidate) ? candidate : '';
+    };
+    const sanitizeHeaderDisplayName = (raw: string) =>
+      String(raw || '')
+        .replace(/[\r\n"<>]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+    const toAbsoluteHttpUrl = (rawUrl: string, origin: string): string => {
+      const trimmed = String(rawUrl || '').trim();
+      if (!trimmed) return '';
+      const abs = trimmed.startsWith('/') ? `${origin}${trimmed}` : trimmed;
+      return /^https?:\/\//i.test(abs) ? abs.slice(0, 500) : '';
+    };
+
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
-    const reporterEmail = String(
-      parsedSession?.session?.email ||
-        req.body?.reporterEmail ||
-        req.body?.senderEmail ||
-        ''
-    )
-      .trim()
-      .slice(0, 160);
-    const optionalSender = String(
-      parsedSession?.session?.email ||
-        parsedSession?.session?.displayName ||
-        req.body?.senderContact ||
-        req.body?.senderEmail ||
-        ''
-    )
-      .trim()
-      .slice(0, 160);
+    const sess = parsedSession?.session;
+    const isSignedIn = Boolean(sess?.uid);
+
+    const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const proto = protoHeader.split(',')[0].trim();
+    const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
+    const originUrl = `${proto}://${host}`;
+
     const category = String(req.body?.category || 'general').trim().slice(0, 48);
     const rawSubject = String(req.body?.subject || '').trim().slice(0, 200);
     const message = String(req.body?.message || '').trim().slice(0, 5000);
@@ -3643,6 +3707,45 @@ app.post('/api/contact', async (req, res) => {
       r2Ctx = await getR2Context(req);
     } catch {}
 
+    let profileData: any = null;
+    if (r2Ctx && isSignedIn && sess?.uid) {
+      const cleanUid = String(sess.uid).replace(/[^a-zA-Z0-9_\-]/g, '');
+      const readProf = async (k: string) => {
+        try {
+          const obj = await r2Ctx!.client.send(new GetObjectCommand({ Bucket: r2Ctx!.bucket, Key: k }));
+          const txt = obj.Body ? await obj.Body.transformToString('utf-8') : '';
+          return txt ? JSON.parse(txt) : null;
+        } catch {
+          return null;
+        }
+      };
+      profileData = (await readProf(`profiles/${cleanUid}.json`)) || (await readProf(`profiles/artist_${cleanUid}.json`));
+    }
+
+    const reporterEmail = isSignedIn
+      ? extractValidEmail(String(sess?.email || '')) ||
+        extractValidEmail(String(req.body?.reporterEmail || req.body?.senderEmail || ''))
+      : extractValidEmail(
+          String(req.body?.reporterEmail || req.body?.senderEmail || req.body?.senderContact || '')
+        );
+    const resolvedSenderName = isSignedIn
+      ? String(profileData?.name || sess?.displayName || req.body?.senderName || reporterEmail || '')
+          .trim()
+          .slice(0, 160)
+      : '';
+    const resolvedAvatarUrl = isSignedIn
+      ? toAbsoluteHttpUrl(String(profileData?.avatarUrl || ''), originUrl) ||
+        toAbsoluteHttpUrl(String(sess?.photoURL || ''), originUrl) ||
+        toAbsoluteHttpUrl(String(sess?.googlePhotoUrl || ''), originUrl) ||
+        toAbsoluteHttpUrl(String(req.body?.senderAvatarUrl || ''), originUrl)
+      : '';
+
+    const optionalSender = isSignedIn
+      ? resolvedSenderName && reporterEmail && resolvedSenderName !== reporterEmail
+        ? `${resolvedSenderName} (${reporterEmail})`
+        : reporterEmail || resolvedSenderName
+      : reporterEmail || String(req.body?.senderContact || '').trim().slice(0, 160);
+
     let uploaderEmail: string | undefined;
     if (r2Ctx && (trackId || uploadedByUid || artistName)) {
       uploaderEmail = await resolveTrackUploaderEmailR2(r2Ctx.client, r2Ctx.bucket, {
@@ -3657,10 +3760,12 @@ app.post('/api/contact', async (req, res) => {
       to: targetGroupEmail,
       category,
       categoryLabel,
-      senderEmail: optionalSender || 'משתמש אנונימי מהאפליקציה',
+      isSignedIn,
+      senderEmail: optionalSender || 'מדווח ללא חשבון',
       ...(reporterEmail ? { reporterEmail } : {}),
-      senderUid: parsedSession?.session?.uid || undefined,
-      senderName: parsedSession?.session?.displayName || undefined,
+      senderUid: sess?.uid || undefined,
+      ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
+      ...(resolvedAvatarUrl ? { senderAvatarUrl: resolvedAvatarUrl } : {}),
       ...(trackId ? { trackId } : {}),
       ...(trackName ? { trackName } : {}),
       ...(artistName ? { artistName } : {}),
@@ -3688,23 +3793,62 @@ app.post('/api/contact', async (req, res) => {
       } catch {}
     }
 
-    // Dispatch silently to kolot-music@googlegroups.com (NEVER email the reporter back)
+    // Dispatch privately to kolot-music@googlegroups.com (NEVER expose publicly, NEVER email reporter back)
     let emailDispatched = false;
-    const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
-    const proto = protoHeader.split(',')[0].trim();
-    const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'kolot-music.kolot-music.workers.dev';
-    const originUrl = `${proto}://${host}`;
-    const emailSubject = `[Kolot Music - ${categoryLabel}] ${subject}`;
+    const fromBaseAddr = extractValidEmail(process.env.RESEND_FROM_EMAIL || '') || 'onboarding@resend.dev';
+    const resendFrom = isSignedIn
+      ? (() => {
+          const label =
+            resolvedSenderName && reporterEmail && resolvedSenderName !== reporterEmail
+              ? `${resolvedSenderName} (${reporterEmail})`
+              : reporterEmail || resolvedSenderName;
+          const safeLabel = sanitizeHeaderDisplayName(label);
+          return safeLabel ? `"${safeLabel}" <${fromBaseAddr}>` : fromBaseAddr;
+        })()
+      : reporterEmail
+        ? `"${sanitizeHeaderDisplayName(reporterEmail)}" <${fromBaseAddr}>`
+        : fromBaseAddr;
+
+    const emailSubject = `[${categoryLabel}] ${subject}`;
     const uploaderInfoLine = trackId
       ? `\nמייל בעל הפרופיל שהעלה את השיר: ${uploaderEmail || 'לא זמין במערכת'}`
       : uploaderEmail
         ? `\nמייל בעל הפרופיל שהעלה את השיר: ${uploaderEmail}`
         : '';
-    const reporterInfoLine = `\nמייל מפרסם הדיווח: ${reporterEmail || 'לא סופק (מדווח לא מחובר)'}`;
+    const signedInInfoLines = isSignedIn
+      ? `מצב חשבון: מחובר לחשבון\nשם השולח: ${resolvedSenderName || 'לא צוין'}\nאימייל השולח: ${reporterEmail || 'לא זמין'}${resolvedAvatarUrl ? `\nתמונת פרופיל: ${resolvedAvatarUrl}` : ''}`
+      : `מצב חשבון: ללא חשבון מחובר\nאימייל השולח: ${reporterEmail || 'לא סופק'}`;
     const legalDocInfoLine = legalDocumentName
-      ? `\nמסמך משפטי / אישור בעלות מצורף: ${legalDocumentName} (זמין להורדה בפאנל המנהל)`
+      ? `\nמסמך משפטי / אישור בעלות מצורף: ${legalDocumentName} (זמין להורדה בפאנל המנהל בלבד)`
       : '';
-    const emailBodyText = `פנייה חדשה מאפליקציית Kolot Music\n\nסוג פנייה: ${categoryLabel}\nשולח: ${record.senderEmail}${reporterInfoLine}${uploaderInfoLine}${legalDocInfoLine}\nנושא: ${subject}\n\nתוכן ההודעה:\n${messageBody}\n\nמזהה: ${msgId}`;
+    const emailBodyText = `פנייה חדשה לניהול (פרטי - לעיני המנהל בלבד)\n\nסוג פנייה: ${categoryLabel}\n${signedInInfoLines}${uploaderInfoLine}${legalDocInfoLine}\nנושא: ${subject}\n\nתוכן ההודעה:\n${messageBody}\n\nמזהה: ${msgId}`;
+
+    const senderIdentityHtml = isSignedIn
+      ? `<div style="display:flex;align-items:center;gap:12px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:16px;">
+          ${resolvedAvatarUrl ? `<img src="${escapeHtml(resolvedAvatarUrl)}" alt="${escapeHtml(resolvedSenderName || 'Avatar')}" width="56" height="56" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:1px solid #cbd5e1;flex-shrink:0;" />` : ''}
+          <div style="min-width:0;">
+            <div style="font-size:11px;color:#475569;font-weight:700;margin-bottom:2px;">פרטי השולח (חשבון מחובר — פרטי למנהל בלבד)</div>
+            <div style="font-size:15px;font-weight:800;color:#0f172a;">${escapeHtml(resolvedSenderName || reporterEmail || 'משתמש מחובר')}</div>
+            ${reporterEmail ? `<div style="font-size:13px;color:#334155;direction:ltr;text-align:right;">${escapeHtml(reporterEmail)}</div>` : ''}
+          </div>
+        </div>`
+      : `<div style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:16px;">
+          <div style="font-size:11px;color:#475569;font-weight:700;margin-bottom:2px;">פרטי השולח (ללא חשבון מחובר)</div>
+          <div style="font-size:14px;font-weight:700;color:#0f172a;direction:ltr;text-align:right;">${escapeHtml(reporterEmail || 'לא נמסרה כתובת מייל')}</div>
+        </div>`;
+
+    const emailBodyHtml = `<!doctype html><html dir="rtl" lang="he"><body style="margin:0;padding:16px;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+      <div style="max-width:600px;margin:0 auto;background:#ffffff;border:1px solid #cbd5e1;border-radius:16px;padding:20px;">
+        <div style="display:inline-block;padding:4px 10px;border-radius:999px;background:#0f172a;color:#ffffff;font-size:12px;font-weight:700;margin-bottom:14px;">${escapeHtml(categoryLabel)}</div>
+        ${senderIdentityHtml}
+        <h2 style="margin:0 0 10px 0;font-size:18px;color:#0f172a;">${escapeHtml(subject)}</h2>
+        ${trackName ? `<p style="margin:4px 0;font-size:13px;color:#334155;"><strong>שיר:</strong> ${escapeHtml(trackName)}${artistName ? ` — ${escapeHtml(artistName)}` : ''}</p>` : ''}
+        ${uploaderEmail ? `<p style="margin:4px 0;font-size:13px;color:#334155;"><strong>מייל מעלה השיר:</strong> <span dir="ltr">${escapeHtml(uploaderEmail)}</span></p>` : ''}
+        ${legalDocumentName ? `<p style="margin:4px 0;font-size:13px;color:#334155;"><strong>מסמך משפטי מצורף:</strong> ${escapeHtml(legalDocumentName)} (בפאנל המנהל בלבד)</p>` : ''}
+        <div style="margin-top:14px;padding:14px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;font-size:14px;line-height:1.65;white-space:pre-wrap;color:#0f172a;">${escapeHtml(messageBody)}</div>
+        <div style="margin-top:14px;font-size:11px;color:#64748b;">מזהה דיווח: ${escapeHtml(msgId)} • גישה פרטית למנהל בלבד</div>
+      </div>
+    </body></html>`;
 
     const resendKey = process.env.RESEND_API_KEY?.trim();
     if (resendKey && !emailDispatched) {
@@ -3716,10 +3860,12 @@ app.post('/api/contact', async (req, res) => {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            from: 'Kolot Music <onboarding@resend.dev>',
+            from: resendFrom,
             to: [targetGroupEmail],
+            ...(reporterEmail ? { reply_to: reporterEmail } : {}),
             subject: emailSubject,
             text: emailBodyText,
+            html: emailBodyHtml,
           }),
         });
         if (resendRes.ok) emailDispatched = true;
@@ -3728,6 +3874,11 @@ app.post('/api/contact', async (req, res) => {
 
     if (!emailDispatched) {
       try {
+        const formSenderDisplay = isSignedIn
+          ? resolvedSenderName && reporterEmail && resolvedSenderName !== reporterEmail
+            ? `${resolvedSenderName} (${reporterEmail})`
+            : reporterEmail || resolvedSenderName || fromBaseAddr
+          : reporterEmail || fromBaseAddr;
         const formRes = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(targetGroupEmail)}`, {
           method: 'POST',
           headers: {
@@ -3737,13 +3888,15 @@ app.post('/api/contact', async (req, res) => {
             Referer: `${originUrl}/`,
           },
           body: JSON.stringify({
-            email: 'noreply@kolot-music.app',
-            _replyto: 'noreply@kolot-music.app',
-            name: record.senderEmail,
+            email: reporterEmail || fromBaseAddr,
+            ...(reporterEmail ? { _replyto: reporterEmail } : {}),
+            name: formSenderDisplay,
             category: categoryLabel,
             _subject: emailSubject,
             subject,
-            reporter_email: reporterEmail || 'לא סופק',
+            ...(isSignedIn && resolvedSenderName ? { sender_name: resolvedSenderName } : {}),
+            reporter_email: reporterEmail || 'לא סופק (ללא חשבון)',
+            ...(resolvedAvatarUrl ? { profile_photo: resolvedAvatarUrl } : {}),
             ...(uploaderEmail ? { uploader_email: uploaderEmail } : {}),
             ...(trackName ? { track: `${trackName}${artistName ? ` - ${artistName}` : ''}` } : {}),
             ...(legalDocumentName ? { legal_document: `${legalDocumentName} (זמין בפאנל המנהל)` } : {}),
@@ -4698,7 +4851,7 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(
     express.static(path.resolve(__dirname, 'dist'), {
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('offline.html')) {
           res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
         } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');

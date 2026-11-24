@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <title>אין אינטרנט | Kolot Music</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 100dvh;
+        background-color: #000000;
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        user-select: none;
+        overflow: hidden;
+      }
+      .container {
+        width: 100%;
+        max-width: 420px;
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+      .icon-circle {
+        width: 96px;
+        height: 96px;
+        border-radius: 9999px;
+        background-color: #ffffff;
+        color: #000000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 24px;
+        box-shadow: 0 0 40px rgba(255, 255, 255, 0.22);
+      }
+      .icon-circle svg {
+        width: 44px;
+        height: 44px;
+        stroke: #000000;
+        fill: none;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      h1 {
+        margin: 0 0 12px 0;
+        font-size: 28px;
+        line-height: 1.2;
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        color: #ffffff;
+      }
+      p {
+        margin: 0 0 28px 0;
+        font-size: 15px;
+        line-height: 1.6;
+        color: rgba(255, 255, 255, 0.85);
+        max-width: 340px;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 9999px;
+        background-color: #ffffff;
+        color: #000000;
+        font-size: 14px;
+        font-weight: 700;
+        padding: 13px 28px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 10px 25px rgba(255, 255, 255, 0.14);
+        transition: transform 0.12s ease, background-color 0.15s ease;
+      }
+      button:hover {
+        background-color: #e5e5e5;
+      }
+      button:active {
+        transform: scale(0.96);
+      }
+      button svg {
+        width: 16px;
+        height: 16px;
+        stroke: #000000;
+        fill: none;
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container" role="alert" aria-live="assertive">
+      <div class="icon-circle" aria-hidden="true">
+        <!-- Wi-Fi Off Icon -->
+        <svg viewBox="0 0 24 24">
+          <path d="M12 20h.01" />
+          <path d="M8.5 16.429a5 5 0 0 1 7 0" />
+          <path d="M5 12.859a10 10 0 0 1 5.17-2.69" />
+          <path d="M19 12.859a10 10 0 0 0-2.007-1.523" />
+          <path d="M2 8.82a15 15 0 0 1 4.177-2.643" />
+          <path d="M22 8.82a15 15 0 0 0-11.288-3.764" />
+          <path d="m2 2 20 20" />
+        </svg>
+      </div>
+      <h1 id="offline-title">אין אינטרנט</h1>
+      <p id="offline-desc">
+        אין חיבור פעיל לאינטרנט כרגע. בדוק את חיבור ה-Wi-Fi או הנתונים הסלולריים במכשירך כדי להמשיך להאזין לשירים.
+      </p>
+      <button type="button" id="retry-btn" onclick="retryConnection()">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+          <path d="M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+          <path d="M8 16H3v5" />
+        </svg>
+        <span id="retry-label">נסה שוב</span>
+      </button>
+    </main>
+    <script>
+      (function () {
+        var lang = 'he';
+        try {
+          var saved = localStorage.getItem('kolot_lang') || localStorage.getItem('lang');
+          if (saved === 'en' || saved === 'he') {
+            lang = saved;
+          } else if (navigator.language && !navigator.language.toLowerCase().startsWith('he')) {
+            lang = 'en';
+          }
+        } catch (e) {}
+
+        if (lang === 'en') {
+          document.documentElement.lang = 'en';
+          document.documentElement.dir = 'ltr';
+          document.title = 'No Internet Connection | Kolot Music';
+          document.getElementById('offline-title').textContent = 'No Internet Connection';
+          document.getElementById('offline-desc').textContent =
+            'No active internet connection right now. Check your Wi-Fi or mobile data connection to continue streaming music.';
+          document.getElementById('retry-label').textContent = 'Try Again';
+        }
+
+        window.retryConnection = function () {
+          if (navigator.onLine) {
+            window.location.reload();
+            return;
+          }
+          fetch('/api/storage/status?_t=' + Date.now(), { cache: 'no-store' })
+            .then(function (res) {
+              if (res && res.ok) {
+                window.location.reload();
+              }
+            })
+            .catch(function () {});
+        };
+
+        window.addEventListener('online', function () {
+          window.location.reload();
+        });
+      })();
+    </script>
+  </body>
+</html>

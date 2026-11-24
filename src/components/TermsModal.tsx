@@ -40,7 +40,7 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
 
           <div className="space-y-3 text-xs leading-relaxed text-white/85 max-h-64 overflow-y-auto p-4 rounded-2xl bg-neutral-900 border border-white/10 custom-scrollbar">
             <h4 className="font-extrabold text-white text-sm">
-              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v4):' : 'Terms of Service, Privacy & Liability (v4):'}
+              {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות (v5):' : 'Terms of Service, Privacy & Liability (v5):'}
             </h4>
             <ul className="space-y-2 list-disc list-inside text-[11px] text-white/80">
               <li>
@@ -65,28 +65,33 @@ export const TermsModal: React.FC<TermsModalProps> = ({ isOpen, onAccept, lang }
               </li>
               <li>
                 {isHe
-                  ? 'כתוביות AI (עלולות לטעות), צריכת גלישה וציוד קצה: תמלול, תרגום וסיווגי AI מסופקים "AS IS" ועלולים לטעות, לשבש מילים או לא להיות מסונכרנים ללא עילת לשון הרע. הורדת מודלים בדפדפן והזרמת אודיו צורכות חבילת גלישה, מעבד, Cache וסוללה על חשבון המשתמש בלבד. המאזין אחראי לבטיחות עוצמת השמע, בטיחות בנהיגה, Wake Lock ומניעת נזק לרמקולים/מסך.'
-                  : 'AI Subtitles (May Contain Mistakes), Bandwidth & Safety: AI subtitles/outputs may contain transcription or sync mistakes without defamation liability. In-browser AI and audio use user cellular data, CPU, cache, and battery. Listeners bear sole risk for volume, driving laws, speaker protection, and Wake Lock.'}
+                  ? 'כתוביות AI (עלולות לטעות), צריכת גלישה וציוד קצה: תמלול, תרגום וסיווגי ז׳אנר מבוססי AI (לרבות מצעדי "השירים המובילים") מסופקים "AS IS" ועלולים לטעות ללא עילת לשון הרע. הורדת מודלים בדפדפן והזרמת אודיו צורכות חבילת גלישה, מעבד, Cache וסוללה על חשבון המשתמש בלבד. המאזין אחראי לבטיחות עוצמת השמע, בטיחות בנהיגה, Wake Lock ומניעת נזק לרמקולים/מסך.'
+                  : 'AI Subtitles (May Contain Mistakes), Charts & Bandwidth: AI subtitles, genres, and ranked charts are "AS IS" and may contain errors without liability. Browser AI and audio consume user data, CPU, cache, and battery. Listeners bear sole risk for volume, driving laws, and Wake Lock.'}
               </li>
               <li>
                 {isHe
-                  ? 'היעדר סינון גיל, קישורים שהוסרו ושיתופים: האתר אינו כולל סינון מותאם גיל והשירים ניתנים להסרה מיידית ללא התראה (גם מתוך מועדפים/קישורים משותפים). להנהלה אין שליטה על מטמון תצוגה מקדימה ב-Google/WhatsApp לאחר מחיקה.'
-                  : 'No Age-Gating, Immediate Removal & External Caches: Tracks may contain explicit language and may be removed without notice; operators do not control search/social link-preview caches after deletion.'}
+                  ? 'כרטיסים להופעות, קישורים חיצוניים ואלבומים (iOS/Safari): פרטי הופעות וקישורים לאתרי הזמנות הינם באחריות האמן המפרסם בלבד; האתר אינו צד לעסקה ואינו אחראי לביטולים או החזרים. רצף הנגינה באלבומים ותאימות במכשירי iOS/Safari תלויים בדפדפן וללא התחייבות לרצף בלתי פוסק.'
+                  : 'Concert Tickets, External Booking Links & Albums (iOS/Safari): Event details and external ticket links are solely artist-managed; platform is not a party or liable for refunds. Album auto-advance and iOS/Safari playback depend on OS/browser behavior.'}
               </li>
               <li>
                 {isHe
-                  ? 'פרטיות (תיקון 13), אנליטיקה ומחיקת חשבון: נתוני Google (UID, מייל, תמונה), לוגים, עוגיות, GA4/GTM, דיווחים ומסמכים משפטיים (יש להשחיר ת"ז/פרטים מיותרים) מעובדים בענן בינלאומי. מחיקת חשבון מסירה פרופיל ואווטאר ואינה מוחקת אוטומטית שירים קיימים (יש למחקם קודם לכן או לפנות במייל). תצוגת נגן במסך נעילה/רכב היא באחריות המשתמש.'
-                  : 'Privacy (Amendment 13) & Account Deletion: Google data, cookies, GA4/GTM, and legal docs (redact unneeded IDs) are stored on international clouds. Account deletion removes profile/avatars but not previously uploaded tracks (delete tracks first or email us). Lock-screen/Bluetooth MediaSession metadata is at user risk.'}
+                  ? 'עריכת פרופיל, שמירת מטמון Offline ורענון 48 שעות: המשתמש אחראי לשם ותמונת הפרופיל שיבחר (כולל כפתור השחזור מ-Google) ומתחייב שלא להשתמש בשמות/סמלים מטעים. הדפדפן עשוי לשמור מסך "אין אינטרנט" מקומי במטמון וליזום רענון אוטומטי בלשוניות פתוחות מעל 48 שעות.'
+                  : 'Profile Editing, Local Offline Cache & 48h Refresh: Artists are solely liable for custom names/avatars and Google restore usage. Browsers may locally cache an offline screen and auto-refresh tabs idle over 48 hours.'}
               </li>
               <li>
                 {isHe
-                  ? 'אבטחה, הודעה והסרה, כוח עליון והמחאת זכויות: השירות ניתן ללא אחריות גיבוי וללא חובת ניטור כללית (Notice & Takedown מחייב זיהוי מדויק). חסימות מניעת העתקה/DevTools, נפילות ספקי צד שלישי ומחיקת Cache ע"י הדפדפן הינן ללא פיצוי. ההנהלה רשאית להמחות זכויות בכל שינוי בעלות, ואי-אכיפה אינה ויתור.'
-                  : 'Security, Notice-and-Takedown & Assignment: No backup warranty and no general monitoring duty. Anti-copy/DevTools locks, browser cache eviction, and third-party outages carry zero liability. Operators may assign rights on transfer/merger.'}
+                  ? 'סודיות דיווחים, פרטיות (תיקון 13 / GDPR) ומחיקת חשבון: דיווחים נשמרים בתיבה פרטית למנהל בלבד ונשלחים לקבוצת הניהול מבלי לחשוף לציבור ומבלי לשלוח עותק למדווח; חשבון מחובר מצרף שם, מייל ותמונת פרופיל למנהל. מסמכים משפטיים (יש להשחיר ת"ז/בנק), לוגי אבטחה ונתוני GA4/GTM עשויים להישמר להגנה משפטית אף לאחר מחיקת חשבון (שאינה מוחקת אוטומטית שירים קיימים).'
+                  : 'Report Confidentiality & Privacy (Amendment 13 / GDPR): Reports go strictly to the private admin inbox and management group (never public or auto-emailed back); signed-in accounts attach Name, Email & Avatar for admin security. Redact unneeded IDs in legal proof. Logs/legal records may be retained for legal defense; account deletion does not auto-delete previously uploaded tracks.'}
               </li>
               <li>
                 {isHe
-                  ? 'פנייה מוקדמת, ויתור ייצוגית/צו מניעה, הפרדת סעיפים ושיפוט בישראל: אחריות ההנהלה מוגבלת ל-0 ש״ח. כל תביעה תתברר אישית בלבד (ויתור על תובענה ייצוגית וצו מניעה בכפוף לדין) לאחר פנייה מוקדמת בכתב ל-kolot-music@googlegroups.com והמתנה 7–14 ימי עסקים. דין מדינת ישראל חל בלעדית, סמכות בלעדית בתל-אביב-יפו (תביעות עד 12 חודשים), הפרדת סעיפים חלה והנוסח העברי הוא המחייב.'
-                  : 'Notice, Individual Claims, No Injunction & Jurisdiction: Liability capped at 0 NIS. Individual claims only (class action & injunctive relief waiver) after 7–14 business days written notice to kolot-music@googlegroups.com. Israeli law, Tel Aviv-Jaffa courts, 12-month limit, severability applies; Hebrew text controls.'}
+                  ? 'אבטחה, קניין רוחני של האתר, הודעה והסרה והמחאת זכויות: כל קוד האתר, העיצוב והסימנים המסחריים שייכים לבעלי האתר (למעט קוד פתוח ברישיונו). השירות ניתן ללא אחריות גיבוי וללא חובת ניטור כללית (Notice & Takedown מחייב זיהוי מדויק). חסימות מניעת העתקה/DevTools ומגבלות קבצים/דפדפנים חלות ללא פיצוי.'
+                  : 'Security, Platform IP, Notice-and-Takedown & Assignment: Site UI, code, and trademarks belong to operators (except open-source components). No backup warranty or general monitoring duty. Anti-copy/DevTools locks and format/device limits carry zero liability.'}
+              </li>
+              <li>
+                {isHe
+                  ? 'ציות לחוק, פנייה מוקדמת, ויתור ייצוגית/צו מניעה ושיפוט בישראל: אחריות ההנהלה מוגבלת ל-0 ש״ח. כל תביעה תתברר אישית בלבד (ויתור על תובענה ייצוגית וצו מניעה בכפוף לדין) לאחר פנייה מוקדמת בכתב ל-kolot-music@googlegroups.com והמתנה 7–14 ימי עסקים. הודעות באתר/למייל מחייבות, דין ישראל חל בלעדית, סמכות בלעדית בתל-אביב-יפו (תביעות עד 12 חודשים), הפרדת סעיפים חלה והנוסח העברי הוא הקובע.'
+                  : 'Legal Compliance, Pre-Suit Notice, Individual Claims & Jurisdiction: Liability capped at 0 NIS. Individual claims only (class action & injunctive relief waiver) after 7–14 business days notice to kolot-music@googlegroups.com. Electronic notices bind upon dispatch/posting. Israeli law, Tel Aviv-Jaffa courts, 12-month limit; Hebrew text controls.'}
               </li>
             </ul>
           </div>

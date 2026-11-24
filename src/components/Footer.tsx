@@ -19,7 +19,14 @@ import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Language } from '../types';
 import { Logo } from './Logo';
 import { AccessibilityIcon } from './AccessibilityPage';
-import { AuthUser, getCurrentAuthUser, onAuthUserChanged, getAuthHeaders } from '../services/authService';
+import {
+  AuthUser,
+  getCurrentAuthUser,
+  onAuthUserChanged,
+  getAuthHeaders,
+  getEffectiveUserAvatar,
+} from '../services/authService';
+import { getCachedArtistProfiles } from '../services/multiMusicService';
 import { trackEvent } from '../services/analyticsService';
 
 type ContactCategory = 'complaint' | 'request' | 'support' | 'copyright' | 'general';
@@ -86,8 +93,26 @@ export const Footer: React.FC<FooterProps> = ({
     e.preventDefault();
     setContactError(null);
 
-    const accountContact = (authUser?.email || authUser?.displayName || '').trim();
-    const senderContact = (accountContact || contactSenderEmail).trim();
+    const isSignedIn = Boolean(authUser?.uid);
+    const matchedProfile = isSignedIn
+      ? getCachedArtistProfiles().find(
+          (a) =>
+            a.uid === authUser?.uid ||
+            a.googleUid === authUser?.uid ||
+            a.id === authUser?.uid ||
+            a.id === `artist_${authUser?.uid}`
+        )
+      : undefined;
+    const resolvedEmail = (isSignedIn ? authUser?.email || '' : contactSenderEmail).trim();
+    const resolvedName = isSignedIn
+      ? (matchedProfile?.name || authUser?.displayName || resolvedEmail).trim()
+      : '';
+    const rawAvatar = isSignedIn ? getEffectiveUserAvatar(authUser, matchedProfile) || '' : '';
+    const resolvedAvatarUrl =
+      rawAvatar && rawAvatar.startsWith('/') && typeof window !== 'undefined'
+        ? `${window.location.origin}${rawAvatar}`
+        : rawAvatar;
+    const senderContact = isSignedIn ? resolvedEmail || resolvedName : resolvedEmail;
     const subject = contactSubject.trim();
     const message = contactMessage.trim();
 
@@ -146,6 +171,9 @@ export const Footer: React.FC<FooterProps> = ({
         body: JSON.stringify({
           category: contactCategory,
           senderContact,
+          senderName: resolvedName,
+          reporterEmail: resolvedEmail,
+          senderAvatarUrl: resolvedAvatarUrl,
           subject,
           message,
           legalDocumentKey,
@@ -160,6 +188,11 @@ export const Footer: React.FC<FooterProps> = ({
       // If datacenter IP dispatch to FormSubmit was skipped/blocked, also fire directly from browser
       // WITHOUT _autoresponse so the sender NEVER receives any email back
       if (!data?.emailDispatched) {
+        const displaySender = isSignedIn
+          ? resolvedName && resolvedEmail && resolvedName !== resolvedEmail
+            ? `${resolvedName} (${resolvedEmail})`
+            : resolvedEmail || resolvedName
+          : resolvedEmail || 'onboarding@resend.dev';
         void fetch(`https://formsubmit.co/ajax/${encodeURIComponent(GROUP_EMAIL)}`, {
           method: 'POST',
           headers: {
@@ -167,15 +200,18 @@ export const Footer: React.FC<FooterProps> = ({
             Accept: 'application/json',
           },
           body: JSON.stringify({
-            email: 'noreply@kolot-music.app',
-            _replyto: 'noreply@kolot-music.app',
-            name: senderContact || 'משתמש מהאפליקציה',
+            email: resolvedEmail || 'onboarding@resend.dev',
+            ...(resolvedEmail ? { _replyto: resolvedEmail } : {}),
+            name: displaySender,
+            ...(isSignedIn && resolvedName ? { sender_name: resolvedName } : {}),
+            ...(resolvedEmail ? { reporter_email: resolvedEmail } : {}),
+            ...(resolvedAvatarUrl ? { profile_photo: resolvedAvatarUrl } : {}),
             category: categoryLabel,
             subject,
             message,
             legal_document: legalDocumentName || 'ללא',
-            full_details: `סוג פנייה: ${categoryLabel}\nשולח: ${senderContact || 'אנונימי מהאפליקציה'}\nנושא: ${subject}\n\nתוכן ההודעה:\n${message}${legalDocumentName ? `\n\nמסמך משפטי מצורף: ${legalDocumentName}` : ''}`,
-            _subject: `[Kolot Music - ${categoryLabel}] ${subject}`,
+            full_details: `סוג פנייה: ${categoryLabel}\nשולח: ${displaySender}${resolvedAvatarUrl ? `\nתמונת פרופיל: ${resolvedAvatarUrl}` : ''}\nנושא: ${subject}\n\nתוכן ההודעה:\n${message}${legalDocumentName ? `\n\nמסמך משפטי מצורף: ${legalDocumentName}` : ''}`,
+            _subject: `[${categoryLabel}] ${subject}`,
             _captcha: 'false',
             _template: 'table',
           }),
@@ -547,28 +583,58 @@ export const Footer: React.FC<FooterProps> = ({
                     </div>
                   </div>
 
-                  {/* 2. OPTIONAL SENDER NAME / IDENTIFIER */}
+                  {/* 2. SENDER IDENTITY (SIGNED-IN ACCOUNT OR OPTIONAL EMAIL) */}
                   <div className="space-y-1">
                     <label className="text-xs text-white/75 block font-medium">
                       {authUser?.displayName || authUser?.email
                         ? isHe
-                          ? 'שולח (מהחשבון המחובר):'
-                          : 'Sender (Signed-in account):'
+                          ? 'שולח (מהחשבון המחובר — יוצג למנהל בלבד):'
+                          : 'Sender (Signed-in account — visible to admin only):'
                         : isHe
-                          ? 'שם / כינוי (אופציונלי):'
-                          : 'Name / Contact (Optional):'}
+                          ? 'כתובת המייל שלך (אופציונלי — מוצגת למנהל במקום שם):'
+                          : 'Your Email Address (Optional — shown to admin instead of a name):'}
                     </label>
                     {authUser?.displayName || authUser?.email ? (
-                      <div className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/25 text-sm text-white flex items-center justify-between gap-2">
-                        <span className="truncate">{authUser.displayName || authUser.email}</span>
-                        <span className="text-[10px] text-white/75 shrink-0">
-                          {isHe ? 'חשבון מחובר' : 'Signed In'}
-                        </span>
-                      </div>
+                      (() => {
+                        const matchedProf = getCachedArtistProfiles().find(
+                          (a) =>
+                            a.uid === authUser?.uid ||
+                            a.googleUid === authUser?.uid ||
+                            a.id === authUser?.uid ||
+                            a.id === `artist_${authUser?.uid}`
+                        );
+                        const previewName = matchedProf?.name || authUser.displayName || authUser.email;
+                        const previewAvatar = getEffectiveUserAvatar(authUser, matchedProf);
+                        return (
+                          <div className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/25 text-sm text-white flex items-center justify-between gap-2.5">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              {previewAvatar ? (
+                                <img
+                                  src={previewAvatar}
+                                  alt={previewName || 'Avatar'}
+                                  className="w-8 h-8 rounded-full object-cover border border-white/20 shrink-0"
+                                />
+                              ) : null}
+                              <div className="min-w-0 text-start">
+                                <div className="truncate font-semibold text-xs sm:text-sm">{previewName}</div>
+                                {authUser.email && (
+                                  <div className="truncate text-[11px] text-white/60" dir="ltr">
+                                    {authUser.email}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <span className="text-[10px] text-white/75 shrink-0">
+                              {isHe ? 'חשבון מחובר' : 'Signed In'}
+                            </span>
+                          </div>
+                        );
+                      })()
                     ) : (
                       <input
-                        type="text"
-                        placeholder={isHe ? 'שם או כינוי (אפשר להשאיר ריק)' : 'Optional name'}
+                        type="email"
+                        dir="ltr"
+                        placeholder="name@example.com"
                         value={contactSenderEmail}
                         onChange={(e) => setContactSenderEmail(e.target.value)}
                         className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35"
@@ -909,6 +975,46 @@ export const TermsReaderModal: React.FC<{
       title: '30. הפרדת סעיפים (Severability), מיצוי הסכם והסכמה אלקטרונית',
       body: 'אם ייקבע על ידי בית משפט מוסמך כי תנאי כלשהו מתנאים אלה אינו חוקי, בטל או בלתי ניתן לאכיפה, אותו סעיף יצומצם או יופרד במידה המינימלית הנדרשת ויתר הוראות ההסכם ימשיכו לעמוד בתוקפן המלא. מסמך זה ממצה את מלוא ההסכמות בין הצדדים, ולחיצה על כפתור האישור או המשך שימוש באתר מהווה הסכמה וחתימה אלקטרונית מחייבת לכל דבר ועניין.',
     },
+    {
+      title: '31. מופעים, כרטיסים להופעות וקישורים חיצוניים להזמנה',
+      body: 'האתר עשוי להציג כרטיסיות של מופעים, תאריכים וקישורים לאתרי הזמנות חיצוניים המוזנים על ידי האמן בלבד. הנהלת האתר אינה מארגנת אירועים, אינה מוכרת כרטיסים, אינה גובה תשלום ואינה צד לכל עסקה בין המשתמש לאתר הכרטיסים החיצוני. כל אחריות לקיום המופע, תקינות הקישור, מחירים, ביטולים, דחיות או החזרים לפי חוק הגנת הצרכן חלה על האמן המפרסם ועל ספק הכרטיסים החיצוני בלבד.',
+    },
+    {
+      title: '32. אלבומים, סדר ניגון רצוף ותאימות שמע במכשירים (iOS / Safari)',
+      body: 'נגינה רציפה של אלבומים, מעבר אוטומטי לשיר הבא, ניגון ברקע ותצוגה במכשירי Apple iOS, Safari, Android ודפדפנים שונים כפופים למדיניות מערכת ההפעלה, להרשאות הדפדפן ולחיבור האינטרנט. ההנהלה אינה מתחייבת לניגון אוטומטי רציף בכל מערכת או קישור אודיו, ואינה אחראית לחסימות או הפסקות שמע מצד יצרניות הדפדפן או המכשיר.',
+    },
+    {
+      title: '33. עריכת פרופיל אמן, שינוי שם/תמונה ושחזור נתוני Google',
+      body: 'בעלי פרופילים רשאים לעדכן את שם האמן ותמונת הפרופיל או להשתמש בכפתור השחזור לנתוני חשבון Google המקוריים. האמן מתחייב כי כל שם ותמונה שיבחר אינם מפרים זכויות יוצרים, סימני מסחר, פרטיות או זכות פרסום של אחר. השימוש בשחזור לנתוני Google כפוף לזמינות המידע בחשבון ועלול להחליף התאמות קודמות באופן מיידי.',
+    },
+    {
+      title: '34. סיווג ז׳אנרים אוטומטי ודירוג "השירים המובילים"',
+      body: 'רשימות קידום ודירוגים באתר (כגון "השירים המובילים"), וכן סיווג ז׳אנרים אוטומטי או בחירת ז׳אנרים חופשית, נקבעים באמצעות אלגוריתמים, מטמון טכני ומדדי האזנה/חיבוב אוטומטיים. המיקום בדירוג או סיווג הז׳אנר אינם מהווים המלצה משפטית, אישור איכות או זכות מוקנית ליוצר, והנהלת האתר רשאית לשנות את אופן הדירוג או להסיר שיר מהרשימות בכל עת.',
+    },
+    {
+      title: '35. מסך "אין אינטרנט" מקומי במטמון הדפדפן ורענון לאחר 48 שעות',
+      body: 'האתר עשוי לשמור במטמון הדפדפן המקומי (Service Worker / Cache) עמוד חלופי למצב ללא חיבור אינטרנט וכן להפעיל מנגנון רענון או התראה אוטומטי בלשוניות פתוחות שלא נטענו מחדש מעל 48 שעות כדי למנוע טעינת קוד ישן. המשתמש מאשר כי ניתוק אינטרנט או רענון יזום עשויים לעצור ניגון או לנקות נתוני טופס שטרם נשלחו, ללא כל אחריות של האתר.',
+    },
+    {
+      title: '36. סודיות דיווחים, זהות מדווח ושליחת פניות לקבוצת הניהול בלבד',
+      body: 'דיווחים על שירים, תלונות ופניות יצירת קשר הנשלחים דרך האתר נשמרים בתיבת הניהול הפרטית של מפעילי האתר בלבד ונשלחים לקבוצת הניהול (kolot-music@googlegroups.com); דיווחים אלה אינם חשופים לציבור ואינם נשלחים חזרה למייל המדווח. בעת שליחת דיווח מתוך חשבון Google מחובר, יצורפו אוטומטית שם המשתמש, כתובת המייל ותמונת הפרופיל לצורכי אימות ומניעת דיווחי סרק. מדווח שאינו מחובר רשאי להשאיר פרטי קשר ריקים או למסור כתובת מייל לבחירתו.',
+    },
+    {
+      title: '37. שימור תיעוד משפטי, לוגי אבטחה וזכויות פרטיות (תיקון 13 / GDPR)',
+      body: 'אנו עשויים לשמור דיווחים, מסמכים משפטיים, התכתבויות, חותמות זמן, מזהי העלאה ולוגים טכניים הנדרשים לצורכי אבטחת מידע, הגנה מפני תביעות, בירור הפרות זכויות וציות לחוק, גם לאחר מחיקת חשבון המשתמש, בכפוף לחוק הגנת הפרטיות (לרבות תיקון 13) ותקנות בינלאומיות ישימות.',
+    },
+    {
+      title: '38. תאימות דפדפנים, ניגודיות מכשירים ומגבלות העלאה',
+      body: 'הנהלת האתר רשאית לעדכן מעת לעת את דרישות המינימום לדפדפנים, מערכות הפעלה, פורמטי קבצים, גודל קובץ מרבי, אורך שיר ומכסות שימוש, ואינה מתחייבת לתמיכה בגרסאות דפדפן ישנות או במכשירי קצה חריגים.',
+    },
+    {
+      title: '39. קניין רוחני של הפלטפורמה ורכיבי קוד פתוח',
+      body: 'כל הזכויות בעיצוב הממשק, בקוד המקור, בלוגו, בסימני המסחר ובטקסטים של Kolot Music שמורות בלעדית למפעילי האתר, למעט יצירות משתמשים ורכיבי קוד פתוח (Open Source) הכפופים לרישיונות המקוריים שלהם. אין להעתיק, לשכפל או להפיץ חלקים מהממשק או מקוד האתר ללא אישור בכתב.',
+    },
+    {
+      title: '40. ציות לחוק, סנקציות בינלאומיות והודעות אלקטרוניות מחייבות',
+      body: 'המשתמש מתחייב שלא להשתמש באתר בניגוד לדיני מדינת ישראל, תקנות סנקציות בינלאומיות או חוקי הגנת הצרכן והקניין הרוחני. כל הודעה מטעם הנהלת האתר שתפורסם באתר או תישלח לכתובת הדוא"ל המשויכת לחשבון המשתמש תיחשב כהודעה שנמסרה כדין מרגע פרסומה או משלוחה.',
+    },
   ];
 
   const sectionsEn = [
@@ -1032,6 +1138,46 @@ export const TermsReaderModal: React.FC<{
       title: '30. Severability, Entire Agreement & Electronic Acceptance',
       body: 'If any provision is held unenforceable, it shall be severed to the minimum extent required while all other provisions remain in full force. This constitutes the entire agreement, and clicking accept or continued use serves as binding electronic acceptance.',
     },
+    {
+      title: '31. Concert Tickets, Show Cards & External Booking Links',
+      body: 'Artist concert cards, show dates, and external ticket-booking URLs are entered solely by the artist profile owner. Kolot Music does not organize events, sell tickets, collect payments, or act as a party to any transaction. Event cancellation, pricing, accuracy, and consumer-protection refund duties rest exclusively with the artist and external ticketing provider.',
+    },
+    {
+      title: '32. Albums, Continuous Playback & Device / iOS / Safari Compatibility',
+      body: 'Album auto-advance, continuous playback, background audio, and cross-browser playback (including Apple iOS and Safari constraints) depend on OS policies, browser permissions, and network stability. Uninterrupted playback across devices or third-party links is not guaranteed.',
+    },
+    {
+      title: '33. Editing Artist Profile, Name/Avatar Changes & Google Restore',
+      body: 'Artists may edit their display name and profile picture or use Google account restore. You warrant that any chosen name or image infringes no trademark, copyright, privacy, or publicity right. Using Google restore depends on account data availability and overwrites custom edits immediately.',
+    },
+    {
+      title: '34. Automated Genre Classification & "Leading Songs" Charts',
+      body: 'Genre labels, custom genres, and featured rankings such as "Leading Songs" are generated via automated technical metrics and cached counters. Chart placement or genre tagging creates no legal warranty, endorsement, or vested right and may be modified or removed at any time.',
+    },
+    {
+      title: '35. Local Offline Fallback Cache & 48-Hour Stale Tab Auto-Reload',
+      body: 'The site may cache a local "No Internet" screen in your browser Service Worker and automatically prompt or reload tabs left idle over 48 hours so fresh bundles load properly. Network loss or forced refreshes may interrupt playback or discard unsaved form input without liability.',
+    },
+    {
+      title: '36. Confidentiality of Reports, Reporter Identity & Admin-Only Dispatch',
+      body: 'Song reports and contact inquiries are stored strictly in the private admin inbox and forwarded to management (kolot-music@googlegroups.com); reports are never public and the platform does not email copies back to the reporter. Signed-in reports include your account Name, Email, and Profile Photo for security and anti-abuse verification; signed-out reporters may omit identity or supply an optional email.',
+    },
+    {
+      title: '37. Legal Record Retention, Security Logs & Privacy Rights (Amendment 13 / GDPR)',
+      body: 'Reports, legal proof documents, timestamps, and security logs necessary for fraud prevention, legal defense, and compliance may be retained as permitted by Israeli Privacy Law (including Amendment 13) and applicable international regulations even after account deletion.',
+    },
+    {
+      title: '38. Browser Compatibility, File Limits & Feature Modifications',
+      body: 'Operators may modify supported browsers, OS compatibility, upload duration/size limits, and audio format restrictions at any time without liability or prior notice.',
+    },
+    {
+      title: '39. Platform Intellectual Property & Open-Source Software',
+      body: 'All rights in the Kolot Music interface, source code, branding, and original copy belong exclusively to the operators, excluding user-uploaded media and third-party open-source packages governed by their respective licenses. Copying or cloning the UI or codebase without written consent is prohibited.',
+    },
+    {
+      title: '40. Legal Compliance, Sanctions & Binding Electronic Notices',
+      body: 'Users agree to comply with Israeli law, applicable international sanctions, and intellectual property statutes. Any legal or operational notice posted on the site or sent to the email associated with your account is deemed duly delivered upon posting or dispatch.',
+    },
   ];
 
   const sections = isHe ? sectionsHe : sectionsEn;
@@ -1049,7 +1195,7 @@ export const TermsReaderModal: React.FC<{
                 {isHe ? 'תנאי שימוש, מדיניות פרטיות והגבלת אחריות' : 'Terms of Service, Privacy & Liability'}
               </h3>
               <p className="text-[11px] text-white/50">
-                {isHe ? 'גרסה משפטית מעודכנת (v4) • Kolot Music' : 'Updated Legal Terms (v4) • Kolot Music'}
+                {isHe ? 'גרסה משפטית מעודכנת (v5) • Kolot Music' : 'Updated Legal Terms (v5) • Kolot Music'}
               </p>
             </div>
           </div>

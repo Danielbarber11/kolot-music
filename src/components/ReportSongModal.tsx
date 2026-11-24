@@ -2,7 +2,13 @@ import React, { useState } from 'react';
 import { X, ShieldAlert, Check, FileText, Upload, Paperclip, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, TrackReport, Language } from '../types';
-import { saveTrackReportToR2, getCurrentAuthUser, getAuthHeaders } from '../services/authService';
+import {
+  saveTrackReportToR2,
+  getCurrentAuthUser,
+  getAuthHeaders,
+  getEffectiveUserAvatar,
+} from '../services/authService';
+import { getCachedArtistProfiles } from '../services/multiMusicService';
 import { TrackCoverArt } from './TrackCoverArt';
 
 interface ReportSongModalProps {
@@ -59,7 +65,25 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
     setIsSubmitting(true);
 
     const authUser = getCurrentAuthUser();
+    const isSignedIn = Boolean(authUser?.uid);
+    const matchedProfile = isSignedIn
+      ? getCachedArtistProfiles().find(
+          (a) =>
+            a.uid === authUser?.uid ||
+            a.googleUid === authUser?.uid ||
+            a.id === authUser?.uid ||
+            a.id === `artist_${authUser?.uid}`
+        )
+      : undefined;
     const resolvedReporterEmail = (authUser?.email || reporterEmailInput || '').trim();
+    const resolvedReporterName = isSignedIn
+      ? (matchedProfile?.name || authUser?.displayName || resolvedReporterEmail || '').trim()
+      : '';
+    const rawAvatar = isSignedIn ? getEffectiveUserAvatar(authUser, matchedProfile) || '' : '';
+    const resolvedReporterAvatarUrl =
+      rawAvatar && rawAvatar.startsWith('/') && typeof window !== 'undefined'
+        ? `${window.location.origin}${rawAvatar}`
+        : rawAvatar;
 
     let legalDocumentKey: string | undefined;
     let legalDocumentName: string | undefined;
@@ -99,21 +123,29 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       reportedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
       status: 'pending',
       reporterUid: authUser?.uid,
+      reporterName: resolvedReporterName || undefined,
       reporterEmail: resolvedReporterEmail || undefined,
+      reporterAvatarUrl: resolvedReporterAvatarUrl || undefined,
       uploadedByUid: track.uploadedByUid,
       legalDocumentKey,
       legalDocumentName,
     };
 
-    // Save to Cloudflare R2 backend + in-app admin inbox + kolot-music@googlegroups.com (no email sent back to reporter)
-    const senderLabel = resolvedReporterEmail || authUser?.displayName || 'משתמש מהאפליקציה';
+    // Save to Cloudflare R2 backend + admin-only inbox + kolot-music@googlegroups.com (NEVER emailed back to reporter)
+    const senderLabel = isSignedIn
+      ? resolvedReporterName && resolvedReporterEmail && resolvedReporterName !== resolvedReporterEmail
+        ? `${resolvedReporterName} (${resolvedReporterEmail})`
+        : resolvedReporterEmail || resolvedReporterName
+      : resolvedReporterEmail || 'onboarding@resend.dev';
     const subjectLine = `דיווח על שיר (${reason}): ${track.name} - ${track.artistName}`;
     const bodyDetails =
       `נושא: ${subjectLine}\n` +
       `סיבת הדיווח: ${reason}\n` +
       `שיר: ${track.name} (ID: ${track.id})\n` +
       `אמן: ${track.artistName}` +
-      `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : ''}` +
+      `${isSignedIn ? `\nשם מלא (חשבון מחובר): ${resolvedReporterName || 'לא צוין'}` : ''}` +
+      `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : '\nמייל מפרסם הדיווח: לא סופק (מדווח ללא חשבון)'}` +
+      `${resolvedReporterAvatarUrl ? `\nתמונת פרופיל: ${resolvedReporterAvatarUrl}` : ''}` +
       `${legalDocumentName ? `\nמסמך משפטי להסרה: ${legalDocumentName}` : ''}` +
       `${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
 
@@ -128,8 +160,10 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         credentials: 'include',
         body: JSON.stringify({
           category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
-          senderContact: senderLabel,
+          senderContact: isSignedIn ? resolvedReporterEmail || resolvedReporterName : resolvedReporterEmail,
+          senderName: resolvedReporterName,
           reporterEmail: resolvedReporterEmail,
+          senderAvatarUrl: resolvedReporterAvatarUrl,
           trackId: track.id,
           trackName: track.name,
           artistName: track.artistName,
@@ -152,16 +186,18 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          email: 'noreply@kolot-music.app',
-          _replyto: 'noreply@kolot-music.app',
+          email: resolvedReporterEmail || 'onboarding@resend.dev',
+          ...(resolvedReporterEmail ? { _replyto: resolvedReporterEmail } : {}),
           name: senderLabel,
-          reporter_email: resolvedReporterEmail || 'לא סופק',
+          ...(isSignedIn && resolvedReporterName ? { sender_name: resolvedReporterName } : {}),
+          reporter_email: resolvedReporterEmail || 'לא סופק (ללא חשבון)',
+          ...(resolvedReporterAvatarUrl ? { profile_photo: resolvedReporterAvatarUrl } : {}),
           category: reason,
           subject: subjectLine,
           message: bodyDetails,
           legal_document: legalDocumentName || 'ללא',
           full_details: bodyDetails,
-          _subject: `[Kolot Music - דיווח שיר] ${subjectLine}`,
+          _subject: `[דיווח שיר] ${subjectLine}`,
           _captcha: 'false',
           _template: 'table',
         }),

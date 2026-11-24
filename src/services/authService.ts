@@ -490,6 +490,8 @@ export interface ContactMessageRecord {
   categoryLabel?: string;
   senderEmail: string;
   senderName?: string;
+  senderAvatarUrl?: string;
+  isSignedIn?: boolean;
   reporterEmail?: string;
   uploaderEmail?: string;
   trackId?: string;

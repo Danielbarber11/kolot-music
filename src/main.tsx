@@ -13,13 +13,15 @@ async function triggerCleanChunkRecoveryReload() {
     if (now - lastReload < 15000) return;
     sessionStorage.setItem('kolot_chunk_reload_ts', String(now));
 
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
-      await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
-    }
-    if ('caches' in window) {
-      const names = await caches.keys().catch(() => []);
-      await Promise.all(names.map((n) => caches.delete(n).catch(() => false)));
+    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+        await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+      }
+      if ('caches' in window) {
+        const names = await caches.keys().catch(() => []);
+        await Promise.all(names.map((n) => caches.delete(n).catch(() => false)));
+      }
     }
   } catch {
     // Non-fatal

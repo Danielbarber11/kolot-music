@@ -29,7 +29,6 @@ import {
   Globe,
   Key,
   CheckCircle2,
-  Cloud,
   Server,
   Captions,
   Loader2,
@@ -74,7 +73,6 @@ import {
   deleteAlbumFromCloud,
   syncArtistAvatarToTracksInR2,
   getCloudStorageConfig,
-  checkR2StorageStatus,
   getStreamingMediaUrl,
 } from '../services/cloudStorageService';
 import { TrackCoverArt } from './TrackCoverArt';
@@ -263,19 +261,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   // Cloud Storage Status
   const [cloudConfig] = useState(getCloudStorageConfig);
   const [isCloudConnected] = useState<boolean>(true);
-
-  // Cloudflare R2 Status (Checked 100% server-side)
-  const [r2Status, setR2Status] = useState<{ configured: boolean; bucket?: string; error?: string }>({
-    configured: true,
-  });
-
-  useEffect(() => {
-    if (isOpen) {
-      checkR2StorageStatus().then((status) => {
-        setR2Status(status);
-      });
-    }
-  }, [isOpen]);
 
   // Album creation extra states
   const [isSavingAlbum, setIsSavingAlbum] = useState<boolean>(false);
@@ -3482,14 +3467,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                           : 'Subject to your accepted account Terms: original songs and AI-composed music (e.g. Gemini) are welcome. Copyright infringement or impersonating/cloning a real identifiable person’s voice without consent is prohibited.'}
                       </div>
                     </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400">
-                    <div className="flex items-center gap-2">
-                      <Cloud className="w-4 h-4 text-white" />
-                      <span>{r2Status.configured ? 'אחסון הענן של האתר מחובר ומוכן' : 'אחסון ענן פעיל'}</span>
-                    </div>
-                    <Check className="w-4 h-4 text-white" />
                   </div>
                 </div>
 

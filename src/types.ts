@@ -99,7 +99,9 @@ export interface TrackReport {
   reportedAt: string;
   status: 'pending' | 'reviewed' | 'dismissed';
   reporterUid?: string;
+  reporterName?: string;
   reporterEmail?: string;
+  reporterAvatarUrl?: string;
   uploaderEmail?: string;
   uploadedByUid?: string;
   legalDocumentKey?: string;

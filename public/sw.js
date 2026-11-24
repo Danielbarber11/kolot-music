@@ -1,16 +1,23 @@
-// Kolot Music Service Worker v6 - Network-First Navigation (Prevents White Screen on Deploy)
-const CACHE_NAME = 'kolot-music-v6';
+// Kolot Music Service Worker v7 - Network-First Navigation + Local Offline Fallback
+const CACHE_NAME = 'kolot-music-v7';
+const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
-  // Activate immediately so old broken caches are purged right away
-  self.skipWaiting();
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.add(new Request(OFFLINE_URL, { cache: 'reload' })))
+      .catch(() => {})
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.map((key) => caches.delete(key)))
-    ).then(() => self.clients.claim())
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then(() => self.clients.claim())
   );
 });
 
@@ -31,10 +38,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Always fetch fresh HTML for navigation so new Cloudflare deploys never load stale hashed assets
+  // Always fetch fresh HTML when online; serve locally cached /offline.html when offline
   if (event.request.mode === 'navigate' || event.request.destination === 'document') {
     event.respondWith(
-      fetch(event.request, { cache: 'no-store' }).catch(() => caches.match('/index.html'))
+      fetch(event.request, { cache: 'no-store' }).catch(async () => {
+        const offlineFallback = await caches.match(OFFLINE_URL, { ignoreSearch: true });
+        if (offlineFallback) return offlineFallback;
+        return caches.match('/index.html');
+      })
     );
     return;
   }

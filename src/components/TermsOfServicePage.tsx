@@ -14,7 +14,7 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
       <div className="bg-white border border-slate-200 rounded-3xl p-8 sm:p-12 shadow-sm space-y-6">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 text-slate-800 text-xs font-extrabold border border-slate-200">
           <ShieldCheck className="w-4 h-4 text-indigo-600" />
-          <span>TERMS OF SERVICE, PRIVACY & LEGAL DISCLAIMER (v4)</span>
+          <span>TERMS OF SERVICE, PRIVACY & LEGAL DISCLAIMER (v5)</span>
         </div>
 
         <h1 className="text-3xl font-black text-slate-900 tracking-tight">
@@ -49,6 +49,12 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
           <p>
             8. <strong>היעדר סינון גיל, הסרה מיידית, הודעה והסרה והמחאת זכויות:</strong> האתר אינו כולל סינון גיל ומופעל באחריות הורים לקטינים. שירים שהוסרו אינם זמינים במועדפים/קישורים וההנהלה אינה שולטת במטמון תצוגה מקדימה ברשתות. האתר פטור מחובת ניטור כללית (פניות הסרה מחייבות זיהוי מדויק), רשאי להמחות זכויות בהעברת בעלות, ואי-אכיפה אינה ויתור.
           </p>
+          <p>
+            9. <strong>כרטיסים להופעות, אלבומים (iOS/Safari), פרופילי אמנים ומצעדים:</strong> פרטי מופעים וקישורים לאתרי הזמנות מוזנים באחריות האמן בלבד; האתר אינו צד לעסקה ואינו אחראי לביטולים או החזרים לפי חוק הגנת הצרכן. עריכת שם/תמונה ושחזור נתוני Google אסורים להתחזות. ניגון אלבומים רצוף במכשירים (לרבות iOS/Safari) וסיווגי ז׳אנר/דירוגי "השירים המובילים" אינם מובטחים ואינם יוצרים זכאות.
+          </p>
+          <p>
+            10. <strong>מטמון "אין אינטרנט", רענון 48 שעות, סודיות דיווחים וקניין רוחני:</strong> הדפדפן עשוי לשמור מסך "אין אינטרנט" מקומי במטמון וליזום רענון אוטומטי בלשוניות פתוחות מעל 48 שעות. דיווחים מועברים בתיבה פרטית למנהל ולקבוצת הניהול בלבד מבלי לחשוף לציבור ומבלי לשלוח עותק למדווח (בחשבון מחובר נמסרים שם, אימייל ותמונת פרופיל למנהל). הממשק, הקוד והסימנים המסחריים שייכים לבעלי האתר (למעט קוד פתוח ברישיונו), לוגים עשויים להישמר להגנה משפטית, והודעות באתר או בדוא"ל מחייבות מרגע פרסומן או משלוחן.
+          </p>
         </div>
 
         <div className="space-y-4 text-xs text-slate-600 leading-relaxed border-t border-slate-100 pt-6">
@@ -67,7 +73,7 @@ export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({ lang }) 
             <span>פניות, דיווחי זכויות ונגישות (Google Groups): <b dir="ltr">kolot-music@googlegroups.com</b></span>
           </div>
 
-          <span className="text-[11px] font-mono text-slate-400">Kolot Music Legal v4</span>
+          <span className="text-[11px] font-mono text-slate-400">Kolot Music Legal v5</span>
         </div>
       </div>
     </div>
