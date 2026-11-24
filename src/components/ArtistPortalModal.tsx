@@ -229,6 +229,11 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [uploadProgressPercent, setUploadProgressPercent] = useState<number>(0);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
 
+  // Concert Ticket / Show states
+  const [concertNameInput, setConcertNameInput] = useState('');
+  const [concertDateInput, setConcertDateInput] = useState('');
+  const [concertTicketUrlInput, setConcertTicketUrlInput] = useState('');
+
   // Cloud Storage Status
   const [cloudConfig] = useState(getCloudStorageConfig);
   const [isCloudConnected] = useState<boolean>(true);
@@ -290,6 +295,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editWriters, setEditWriters] = useState('');
   const [editGenre, setEditGenre] = useState('');
   const [editAlbum, setEditAlbum] = useState('');
+  const [editConcertName, setEditConcertName] = useState('');
+  const [editConcertDate, setEditConcertDate] = useState('');
+  const [editConcertTicketUrl, setEditConcertTicketUrl] = useState('');
   const [editIncludeSubtitles, setEditIncludeSubtitles] = useState<boolean>(true);
   const [editWhisperSegments, setEditWhisperSegments] = useState<SubtitleSegment[] | undefined>(undefined);
   const [editWhisperSegmentsHe, setEditWhisperSegmentsHe] = useState<SubtitleSegment[] | undefined>(undefined);
@@ -432,6 +440,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setEditWriters(track.writers || '');
     setEditGenre(track.genre || 'Pop');
     setEditAlbum(track.albumName || '');
+    setEditConcertName(track.concertName || '');
+    setEditConcertDate(track.concertDate || '');
+    setEditConcertTicketUrl(track.concertTicketUrl || '');
     setEditWhisperSegments(track.subtitleSegments);
     setEditWhisperSegmentsHe(track.subtitleSegmentsHe);
     setEditWhisperSegmentsEn(track.subtitleSegmentsEn);
@@ -1861,6 +1872,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       customServerUrl: customServerUrlInput.trim() || undefined,
       bgColor: cachedBgColor,
       isAiGenerated: isAiGeneratedInput,
+      concertName: concertNameInput.trim() || undefined,
+      concertDate: concertDateInput.trim() || undefined,
+      concertTicketUrl: concertTicketUrlInput.trim() || undefined,
     };
 
     const currentAudioFile = rawAudioFile;

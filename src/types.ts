@@ -180,6 +180,9 @@ export interface JamendoTrack {
   writers?: string;
   karaokeAudioUrl?: string;
   karaokeEnabled?: boolean;
+  concertName?: string;
+  concertDate?: string;
+  concertTicketUrl?: string;
 }
 
 export const CURRENT_TERMS_VERSION = 4;
