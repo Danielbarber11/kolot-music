@@ -3200,6 +3200,7 @@ export default {
           uid,
           email: verifiedEmail || undefined,
           displayName,
+          googleDisplayName: displayName,
           photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
           googlePhotoUrl: googlePhotoUrl || undefined,
           isAdmin,
@@ -3216,6 +3217,7 @@ export default {
               uid,
               email: sessionPayload.email,
               displayName,
+              googleDisplayName: displayName,
               photoURL: sessionPayload.photoURL,
               googlePhotoUrl: sessionPayload.googlePhotoUrl,
               isAdmin,
@@ -3254,6 +3256,7 @@ export default {
           uid: session.uid,
           email: session.email || undefined,
           displayName: liveName || session.displayName,
+          googleDisplayName: session.googleDisplayName || session.displayName || undefined,
           photoURL: liveAvatar || session.googlePhotoUrl || undefined,
           googlePhotoUrl: session.googlePhotoUrl || undefined,
           isAdmin: !!session.isAdmin,
@@ -3282,21 +3285,33 @@ export default {
         const { session } = parsed;
         const body: any = await request.json().catch(() => ({}));
         const googlePhotoUrl = upgradeGooglePhotoWorker(session.googlePhotoUrl);
-        if (!googlePhotoUrl) {
+        const googleDisplayName = String(session.googleDisplayName || session.displayName || '').trim() || 'אמן';
+        const restoreName = body?.restoreName !== false;
+
+        const existingProfile = (await r2ReadJson(`profiles/${session.uid}.json`)) || {};
+        let restoredAvatarUrl = '';
+        if (googlePhotoUrl) {
+          const importedUrl = await importExternalAvatarWorker(session.uid, googlePhotoUrl);
+          restoredAvatarUrl = importedUrl || googlePhotoUrl;
+        } else if (existingProfile?.avatarUrl) {
+          restoredAvatarUrl = String(existingProfile.avatarUrl);
+        }
+
+        if (!restoredAvatarUrl && !restoreName) {
           return jsonResponse({ success: false, error: 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' }, 404);
         }
-        const r2AvatarUrl = await importExternalAvatarWorker(session.uid, googlePhotoUrl);
-        if (!r2AvatarUrl) {
-          return jsonResponse({ success: false, error: 'הורדת תמונת Google אל האחסון נכשלה.' }, 502);
-        }
-        const existingProfile = (await r2ReadJson(`profiles/${session.uid}.json`)) || {};
+
         const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile;
+        const finalName = restoreName
+          ? googleDisplayName
+          : String(body?.name || '').trim() || cleanExisting.name || googleDisplayName;
+
         const updatedProfile = {
           ...cleanExisting,
           id: session.uid,
           googleUid: session.uid,
-          name: String(body?.name || '').trim() || cleanExisting.name || session.displayName || 'אמן',
-          avatarUrl: r2AvatarUrl,
+          name: finalName,
+          avatarUrl: restoredAvatarUrl,
           isConnected: true,
           hasAcceptedTerms: cleanExisting.hasAcceptedTerms ?? true,
           isPrivate: false,
@@ -3304,9 +3319,14 @@ export default {
         };
         await r2WriteJson(`profiles/${session.uid}.json`, updatedProfile);
         void r2DeleteKey(`profiles/artist_${session.uid}.json`).catch(() => {});
-        return jsonResponse({ success: true, avatarUrl: r2AvatarUrl, profile: updatedProfile });
+        return jsonResponse({
+          success: true,
+          avatarUrl: restoredAvatarUrl,
+          displayName: finalName,
+          profile: updatedProfile,
+        });
       } catch (err: any) {
-        return jsonResponse({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' }, 500);
+        return jsonResponse({ success: false, error: err?.message || 'שגיאה בשחזור פרטי Google' }, 500);
       }
     }
 

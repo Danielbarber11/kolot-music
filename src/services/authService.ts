@@ -10,6 +10,7 @@ export interface AuthUser {
   uid: string;
   email?: string | null;
   displayName?: string | null;
+  googleDisplayName?: string | null;
   photoURL?: string | null;
   googlePhotoUrl?: string | null;
   isAdmin?: boolean;
@@ -60,6 +61,7 @@ function setCurrentUserInternal(user: AuthUser | null): AuthUser | null {
         uid: user.uid,
         email: user.email || undefined,
         displayName: user.displayName || undefined,
+        googleDisplayName: user.googleDisplayName || user.displayName || undefined,
         photoURL: user.photoURL || undefined,
         googlePhotoUrl: user.googlePhotoUrl || undefined,
         isAdmin: !!user.isAdmin,
@@ -270,12 +272,23 @@ export async function deleteOwnAccountInCloud(): Promise<{ success: boolean; uid
  * Restores the user's authentic Google profile photo directly into Cloudflare R2 avatars/
  * and deletes any older avatar files for this artist.
  */
-export async function restoreGoogleAvatarInCloud(name?: string): Promise<{
+export async function restoreGoogleAvatarInCloud(
+  options?: string | { name?: string; restoreName?: boolean }
+): Promise<{
   success: boolean;
   avatarUrl?: string;
+  displayName?: string;
   profile?: ArtistProfile;
   error?: string;
 }> {
+  const payload =
+    typeof options === 'string'
+      ? { name: options, restoreName: false }
+      : {
+          restoreName: options?.restoreName ?? true,
+          ...(options?.name ? { name: options.name } : {}),
+        };
+
   const res = await fetch('/api/auth/restore-google-avatar', {
     method: 'POST',
     headers: {
@@ -283,24 +296,24 @@ export async function restoreGoogleAvatarInCloud(name?: string): Promise<{
       ...getAuthHeaders(),
     },
     credentials: 'include',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data?.success) {
     return {
       success: false,
-      error: data?.error || 'שחזור תמונת הפרופיל מחשבון Google נכשל',
+      error: data?.error || 'שחזור השם והתמונה מחשבון Google נכשל',
     };
   }
-  if (data.avatarUrl) {
-    updateCurrentAuthUserProfile({
-      photoURL: data.avatarUrl,
-      ...(data.profile?.name ? { displayName: data.profile.name } : {}),
-    });
-  }
+  const restoredName = data.profile?.name || data.displayName;
+  updateCurrentAuthUserProfile({
+    ...(data.avatarUrl !== undefined ? { photoURL: data.avatarUrl } : {}),
+    ...(restoredName ? { displayName: restoredName } : {}),
+  });
   return {
     success: true,
     avatarUrl: data.avatarUrl,
+    displayName: restoredName,
     profile: data.profile,
   };
 }

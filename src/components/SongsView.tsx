@@ -181,7 +181,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
   const [activeArtistProfile, setActiveArtistProfile] = useState<ArtistProfile | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'all' | 'favorites'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'favorites' | 'leading'>('all');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
   const mainFeedRef = useRef<HTMLElement>(null);
   const [isBulkClassifying, setIsBulkClassifying] = useState(false);
@@ -696,6 +696,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   }, [activeTab, selectedGenre, artistFilter, searchQuery]);
 
+  // Popularity heuristic (views + plays count + favorite bonus + pseudo hash)
+  const getTrackPopularity = React.useCallback(
+    (t: JamendoTrack) => {
+      const views = Number(t.viewsCount) || 0;
+      const plays = Number(t.playsCount) || 0;
+      const isLikedBonus = likedSongIds.includes(t.id) ? 60 : 0;
+      let hash = 0;
+      for (let i = 0; i < t.name.length; i++) {
+        hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
+      }
+      return views * 2 + plays + isLikedBonus + hash;
+    },
+    [likedSongIds]
+  );
+
   const displayedTracks = React.useMemo(() => {
     let list = allTracks.filter(isValidTrackWithOwner);
     if (activeTab === 'favorites') {
@@ -721,8 +736,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
           getGenreDisplayLabel(t.genre, true).toLowerCase().includes(q)
       );
     }
+    if (activeTab === 'leading') {
+      list = [...list].sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
+    }
     return list;
-  }, [allTracks, activeTab, likedSongIds, artistFilter, selectedGenre, searchQuery]);
+  }, [allTracks, activeTab, likedSongIds, artistFilter, selectedGenre, searchQuery, getTrackPopularity]);
 
   const validTracksList = React.useMemo(
     () => allTracks.filter(isValidTrackWithOwner),
@@ -824,24 +842,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
       .slice(0, 15);
   }, [publishedArtists, validTracksList]);
 
-  // Popularity heuristic (views + plays count + favorite bonus + pseudo hash)
-  const getTrackPopularity = React.useCallback(
-    (t: JamendoTrack) => {
-      const views = Number(t.viewsCount) || 0;
-      const plays = Number(t.playsCount) || 0;
-      const isLikedBonus = likedSongIds.includes(t.id) ? 60 : 0;
-      let hash = 0;
-      for (let i = 0; i < t.name.length; i++) {
-        hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
-      }
-      return views * 2 + plays + isLikedBonus + hash;
-    },
-    [likedSongIds]
-  );
-
   // Row 1: Leading tracks sorted by highest plays and popularity
   const leadingTracks = React.useMemo(() => {
-    return [...allTracks].sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
+    return [...allTracks].filter(isValidTrackWithOwner).sort((a, b) => getTrackPopularity(b) - getTrackPopularity(a));
   }, [allTracks, getTrackPopularity]);
 
   // Row 2: Recommended albums synthesized purely from R2 cloud albums and cloud tracks
@@ -1014,7 +1017,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
   };
 
   const isFilteredOrSearching =
-    searchQuery.trim().length > 0 || !!artistFilter || !!selectedGenre || activeTab === 'favorites';
+    searchQuery.trim().length > 0 ||
+    !!artistFilter ||
+    !!selectedGenre ||
+    activeTab === 'favorites' ||
+    activeTab === 'leading';
 
   return (
     <div
@@ -1420,15 +1427,19 @@ export const SongsView: React.FC<SongsViewProps> = ({
             </div>
           )}
 
-          {/* Active Filter or Search Banner if filtering */}
+          {/* Active Filter, Leading Songs, or Search Banner */}
           {isFilteredOrSearching && (
-            <div className="p-4 sm:p-6 pb-3 border-b border-white/10 bg-black flex items-center justify-between">
-              <div>
-                <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+            <div className="p-4 sm:p-6 pb-4 border-b border-white/10 bg-black flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight truncate">
                   {searchQuery.trim()
                     ? isHe
                       ? `תוצאות חיפוש עבור "${searchQuery}"`
                       : `Search results for "${searchQuery}"`
+                    : activeTab === 'leading'
+                    ? isHe
+                      ? 'השירים המובילים'
+                      : 'Top Songs'
                     : activeTab === 'favorites'
                     ? isHe
                       ? 'השירים שאהבת'
@@ -1446,19 +1457,26 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     : 'All Songs'}
                 </h1>
                 <p className="text-xs text-[#b3b3b3] mt-1">
-                  {displayedTracks.length} {isHe ? 'שירים נמצאו' : 'songs found'}
+                  {activeTab === 'leading' && !searchQuery.trim() && !selectedGenre && !artistFilter
+                    ? isHe
+                      ? `${displayedTracks.length} שירים מדורגים לפי האזנות ופופולריות`
+                      : `${displayedTracks.length} songs ranked by plays & popularity`
+                    : `${displayedTracks.length} ${isHe ? 'שירים נמצאו' : 'songs found'}`}
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setSearchQuery('');
                   setArtistFilter(null);
                   setSelectedGenre(null);
                   setActiveTab('all');
                 }}
-                className="px-3 py-1.5 rounded-[9999px] bg-white/10 hover:bg-white/20 text-xs font-medium text-white transition-colors cursor-pointer border border-white/10"
+                className="min-h-[40px] px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-xs font-medium text-white transition-colors cursor-pointer border border-white/15 shrink-0 whitespace-nowrap"
               >
-                {isHe ? 'איפוס סינון' : 'Clear Filter'}
+                {activeTab === 'leading'
+                  ? (isHe ? 'חזרה לדף הבית' : 'Back Home')
+                  : (isHe ? 'איפוס סינון' : 'Clear Filter')}
               </button>
             </div>
           )}
@@ -1675,10 +1693,18 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           </p>
                         </div>
 
-                        {/* Metadata indicator with favorite button */}
-                        <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                          <span className="text-[10px] text-white/50 font-medium truncate">
-                            {getGenreDisplayLabel(track.genre, isHe)}
+                        {/* Metadata indicator with rank/genre + favorite button */}
+                        <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60 gap-2">
+                          <span className="text-[10px] text-white/55 font-medium truncate">
+                            {activeTab === 'leading' && !searchQuery.trim() && !selectedGenre && !artistFilter ? (
+                              <>
+                                <span className="font-mono tabular-nums text-white/85 font-bold">#{idx + 1}</span>
+                                {' · '}
+                                {getGenreDisplayLabel(track.genre, isHe)}
+                              </>
+                            ) : (
+                              getGenreDisplayLabel(track.genre, isHe)
+                            )}
                           </span>
                           <button
                             onClick={(e) => {
@@ -1893,42 +1919,60 @@ export const SongsView: React.FC<SongsViewProps> = ({
                     {
                       title: isHe ? 'השירים המובילים' : 'Top Hits',
                       action: () => {
-                        setActiveTab('all');
                         setSelectedGenre(null);
                         setArtistFilter(null);
+                        setSearchQuery('');
+                        setActiveTab('leading');
                       },
                       icon: Play,
                       cover: leadingTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                     },
                     {
                       title: isHe ? 'מזרחית וים-תיכוני' : 'Mizrahi Vibes',
-                      action: () => setSelectedGenre('Mizrahi'),
+                      action: () => {
+                        setActiveTab('all');
+                        setSelectedGenre('Mizrahi');
+                      },
                       icon: Sparkles,
                       cover: mizrahiTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                     },
                     {
                       title: isHe ? 'היפ הופ וראפ' : 'Hip Hop & Rap',
-                      action: () => setSelectedGenre('Hip Hop'),
+                      action: () => {
+                        setActiveTab('all');
+                        setSelectedGenre('Hip Hop');
+                      },
                       icon: Disc,
                       cover: hipHopTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                       mobileHide: true,
                     },
                     {
                       title: isHe ? 'צ׳יל ורגיעה' : 'Chill Vibes',
-                      action: () => setSelectedGenre('Chill'),
+                      action: () => {
+                        setActiveTab('all');
+                        setSelectedGenre('Chill');
+                      },
                       icon: Disc,
                       cover: strictChillTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                       mobileHide: true,
                     },
                     {
                       title: isHe ? 'להיטי פופ' : 'Pop Bangers',
-                      action: () => setSelectedGenre('Pop'),
+                      action: () => {
+                        setActiveTab('all');
+                        setSelectedGenre('Pop');
+                      },
                       icon: Play,
                       cover: popTracks.find((t) => isAuthenticCover(t.coverUrl))?.coverUrl || null,
                     },
                     {
                       title: isHe ? 'השירים שאהבת' : 'Liked Songs',
-                      action: () => setActiveTab('favorites'),
+                      action: () => {
+                        setSelectedGenre(null);
+                        setArtistFilter(null);
+                        setSearchQuery('');
+                        setActiveTab('favorites');
+                      },
                       icon: Heart,
                       cover: likedCoverTrack?.coverUrl || null,
                       count: likedSongIds.length,
@@ -2051,22 +2095,33 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
               {/* ROW 1: השירים המובילים (Leading Songs by Popularity / Plays) */}
               <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedGenre(null);
+                      setArtistFilter(null);
+                      setSearchQuery('');
+                      setActiveTab('leading');
+                    }}
+                    className="text-start group cursor-pointer"
+                  >
+                    <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight group-hover:underline">
                       {isHe ? 'השירים המובילים' : 'Leading songs'}
                     </h2>
                     <p className="text-xs text-white/60 mt-0.5 font-normal">
                       {isHe ? 'השירים המושמעים והמבוקשים ביותר באתר' : 'Most played and popular tracks'}
                     </p>
-                  </div>
+                  </button>
                   <button
+                    type="button"
                     onClick={() => {
-                      setActiveTab('all');
                       setSelectedGenre(null);
                       setArtistFilter(null);
+                      setSearchQuery('');
+                      setActiveTab('leading');
                     }}
-                    className="text-xs font-normal text-white/60 hover:underline hover:text-white transition-colors cursor-pointer"
+                    className="min-h-[40px] px-3 py-1.5 text-xs font-medium text-white/75 hover:underline hover:text-white transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                   >
                     {isHe ? 'הצג הכל' : 'Show all'}
                   </button>

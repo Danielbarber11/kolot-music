@@ -117,6 +117,9 @@ export default function App() {
   );
   const [removedSongNotice, setRemovedSongNotice] = useState(false);
   const pendingDeepLinkRef = React.useRef<string | null>(getSongIdFromUrl());
+  const sessionBootTimeRef = React.useRef<number>(Date.now());
+  const [showStaleReloadNotice, setShowStaleReloadNotice] = useState(false);
+  const dismissedStaleNoticeRef = React.useRef<boolean>(false);
 
   const [a11ySettings, setA11ySettings] = useState<AccessibilitySettings>(() => {
     const loaded = loadAccessibilitySettings();
@@ -446,6 +449,55 @@ export default function App() {
     };
   }, [refreshCloudTracksInBackground]);
 
+  // 2-day (48h) stale content monitor:
+  // - Alerts continuously open sessions after 48h to reload for fresh content
+  // - Automatically reloads when returning/entering the app or PWA after 48h+
+  useEffect(() => {
+    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const GUARD_KEY = 'kolot_stale_autoreload_guard';
+
+    const performSafeAutoReload = () => {
+      try {
+        if (!navigator.onLine) return;
+        if (document.querySelector('[data-kolot-uploading="true"]')) return;
+        const now = Date.now();
+        const lastGuard = Number(sessionStorage.getItem(GUARD_KEY) || '0');
+        if (lastGuard && now - lastGuard < 60000) return;
+        sessionStorage.setItem(GUARD_KEY, String(now));
+        window.location.reload();
+      } catch {}
+    };
+
+    const checkOpenDuration = () => {
+      const elapsed = Date.now() - sessionBootTimeRef.current;
+      if (elapsed >= TWO_DAYS_MS && !dismissedStaleNoticeRef.current) {
+        setShowStaleReloadNotice(true);
+      }
+    };
+
+    const handleResumeOrEntry = (ev?: Event) => {
+      const isVisible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
+      if (!isVisible) return;
+      const elapsed = Date.now() - sessionBootTimeRef.current;
+      const isPersistedRestore = ev && 'persisted' in ev && Boolean((ev as PageTransitionEvent).persisted);
+      if (elapsed >= TWO_DAYS_MS || (isPersistedRestore && elapsed >= TWO_DAYS_MS)) {
+        performSafeAutoReload();
+      }
+    };
+
+    const intervalId = window.setInterval(checkOpenDuration, 60000);
+    document.addEventListener('visibilitychange', handleResumeOrEntry);
+    window.addEventListener('focus', handleResumeOrEntry);
+    window.addEventListener('pageshow', handleResumeOrEntry);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleResumeOrEntry);
+      window.removeEventListener('focus', handleResumeOrEntry);
+      window.removeEventListener('pageshow', handleResumeOrEntry);
+    };
+  }, []);
+
   const handleToggleLikeSong = (id: string) => {
     if (!authUser?.uid) {
       loginWithGoogle().catch(() => {});
@@ -571,6 +623,51 @@ export default function App() {
               >
                 {lang === 'he' ? 'חזור לאתר' : 'Back to Site'}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* 48-HOUR STALE APP RELOAD NOTICE (For continuously open tabs/PWA > 2 days) */}
+        {showStaleReloadNotice && isOnline && (
+          <div
+            role="status"
+            aria-live="polite"
+            dir={lang === 'he' ? 'rtl' : 'ltr'}
+            className="fixed bottom-4 inset-x-4 sm:inset-x-auto sm:end-6 sm:bottom-6 sm:max-w-md z-[99993]"
+          >
+            <div className="rounded-2xl bg-[#111318]/95 backdrop-blur-2xl border border-white/25 shadow-[0_18px_50px_rgba(0,0,0,0.85)] p-4 flex items-center justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="text-xs sm:text-sm font-bold text-white leading-snug">
+                  {lang === 'he'
+                    ? 'זמין תוכן מעודכן יותר'
+                    : 'Updated content available'}
+                </p>
+                <p className="text-[11px] text-white/75 leading-relaxed">
+                  {lang === 'he'
+                    ? 'האפליקציה פתוחה מעל יומיים ללא טעינה מחדש. מומלץ לרענן עכשיו.'
+                    : 'The app has been open for over 2 days. Reload now for fresh content.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="min-h-[40px] px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs cursor-pointer transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-black" />
+                  <span>{lang === 'he' ? 'טען מחדש' : 'Reload'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismissedStaleNoticeRef.current = true;
+                    setShowStaleReloadNotice(false);
+                  }}
+                  className="min-h-[40px] px-2.5 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white text-xs cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  {lang === 'he' ? 'אחר כך' : 'Later'}
+                </button>
+              </div>
             </div>
           </div>
         )}

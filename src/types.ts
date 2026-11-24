@@ -187,6 +187,15 @@ export interface JamendoTrack {
 
 export const CURRENT_TERMS_VERSION = 4;
 
+export interface ConcertShow {
+  id: string;
+  title: string;
+  date: string;
+  ticketUrl: string;
+  venue?: string;
+  createdAt?: string;
+}
+
 export interface ArtistProfile {
   id: string;
   name: string;
@@ -212,6 +221,7 @@ export interface ArtistProfile {
   totalPlays?: number;
   followersCount?: number;
   customServerUrl?: string;
+  concertShows?: ConcertShow[];
   tracks?: JamendoTrack[];
   albums?: Album[];
 }

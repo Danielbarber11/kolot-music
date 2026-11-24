@@ -35,9 +35,24 @@ import {
   Loader2,
   Wand2,
   Mail,
+  Ticket,
+  Calendar,
+  ExternalLink,
+  Camera,
+  RotateCcw,
+  MapPin,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { JamendoTrack, Language, ArtistProfile, Album, SubtitleSegment, CURRENT_TERMS_VERSION } from '../types';
+import {
+  JamendoTrack,
+  Language,
+  ArtistProfile,
+  Album,
+  SubtitleSegment,
+  ConcertShow,
+  CURRENT_TERMS_VERSION,
+} from '../types';
+import { sanitizeTicketUrl, formatConcertDate } from '../utils/concertUtils';
 import {
   AuthUser,
   getCurrentAuthUser,
@@ -106,7 +121,7 @@ interface ArtistPortalModalProps {
   allTracks: JamendoTrack[];
   allAlbums?: Album[];
   onAlbumsSync?: (albums: Album[]) => void;
-  initialTab?: 'profile' | 'manual_upload' | 'account_settings' | 'albums';
+  initialTab?: 'profile' | 'manual_upload' | 'account_settings' | 'albums' | 'shows';
   onPlayTrack?: (track: JamendoTrack, albumContext?: Album | null) => void;
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
@@ -134,7 +149,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 }) => {
   const isHe = lang === 'he';
 
-  const [activeTab, setActiveTab] = useState<'profile' | 'manual_upload' | 'account_settings' | 'albums'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'profile' | 'manual_upload' | 'account_settings' | 'albums' | 'shows'>(initialTab);
   const portalScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -229,10 +244,21 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [uploadProgressPercent, setUploadProgressPercent] = useState<number>(0);
   const [publishErrorMessage, setPublishErrorMessage] = useState<string | null>(null);
 
-  // Concert Ticket / Show states
-  const [concertNameInput, setConcertNameInput] = useState('');
-  const [concertDateInput, setConcertDateInput] = useState('');
-  const [concertTicketUrlInput, setConcertTicketUrlInput] = useState('');
+  // Settings feedback & photo picker ref
+  const avatarSettingsInputRef = useRef<HTMLInputElement>(null);
+  const [settingsSuccessMsg, setSettingsSuccessMsg] = useState<string | null>(null);
+  const [settingsErrorMsg, setSettingsErrorMsg] = useState<string | null>(null);
+
+  // Artist-level Concert Shows state
+  const [showTitleInput, setShowTitleInput] = useState('');
+  const [showDateInput, setShowDateInput] = useState('');
+  const [showTicketUrlInput, setShowTicketUrlInput] = useState('');
+  const [showVenueInput, setShowVenueInput] = useState('');
+  const [editingShowId, setEditingShowId] = useState<string | null>(null);
+  const [isSavingShow, setIsSavingShow] = useState(false);
+  const [confirmDeleteShowId, setConfirmDeleteShowId] = useState<string | null>(null);
+  const [showFormError, setShowFormError] = useState<string | null>(null);
+  const [showFormSuccess, setShowFormSuccess] = useState<string | null>(null);
 
   // Cloud Storage Status
   const [cloudConfig] = useState(getCloudStorageConfig);
@@ -295,9 +321,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   const [editWriters, setEditWriters] = useState('');
   const [editGenre, setEditGenre] = useState('');
   const [editAlbum, setEditAlbum] = useState('');
-  const [editConcertName, setEditConcertName] = useState('');
-  const [editConcertDate, setEditConcertDate] = useState('');
-  const [editConcertTicketUrl, setEditConcertTicketUrl] = useState('');
   const [editIncludeSubtitles, setEditIncludeSubtitles] = useState<boolean>(true);
   const [editWhisperSegments, setEditWhisperSegments] = useState<SubtitleSegment[] | undefined>(undefined);
   const [editWhisperSegmentsHe, setEditWhisperSegmentsHe] = useState<SubtitleSegment[] | undefined>(undefined);
@@ -440,9 +463,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     setEditWriters(track.writers || '');
     setEditGenre(track.genre || 'Pop');
     setEditAlbum(track.albumName || '');
-    setEditConcertName(track.concertName || '');
-    setEditConcertDate(track.concertDate || '');
-    setEditConcertTicketUrl(track.concertTicketUrl || '');
     setEditWhisperSegments(track.subtitleSegments);
     setEditWhisperSegmentsHe(track.subtitleSegmentsHe);
     setEditWhisperSegmentsEn(track.subtitleSegmentsEn);
@@ -941,6 +961,21 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    if (activeTab === 'account_settings') {
+      setArtistNameInput((prev) => currentArtist.name || currentUser?.displayName || prev || '');
+      setArtistAvatarPreview(getEffectiveUserAvatar(currentUser, currentArtist) || null);
+      setSettingsErrorMsg(null);
+      setSettingsSuccessMsg(null);
+      setAuthError(null);
+    }
+    if (activeTab === 'shows') {
+      setShowFormError(null);
+      setShowFormSuccess(null);
+    }
+  }, [activeTab, isOpen]);
+
   const handleGoogleLogin = async () => {
     setAuthError(null);
     setIsAuthLoading(true);
@@ -1387,26 +1422,37 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
     setIsRestoringGoogleAvatar(true);
     setAuthError(null);
+    setSettingsErrorMsg(null);
+    setSettingsSuccessMsg(null);
 
     try {
-      const desiredName =
-        artistNameInput.trim() || currentArtist.name || currentUser.displayName || (isHe ? 'אמן' : 'Artist');
-      const restoreRes = await restoreGoogleAvatarInCloud(desiredName);
-      if (!restoreRes.success || !restoreRes.avatarUrl) {
-        setAuthError(
-          restoreRes.error || (isHe ? 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' : 'No Google profile photo found.')
-        );
+      const restoreRes = await restoreGoogleAvatarInCloud({ restoreName: true });
+      if (!restoreRes.success) {
+        const msg =
+          restoreRes.error ||
+          (isHe ? 'שחזור השם והתמונה מחשבון Google נכשל.' : 'Could not restore Google name and photo.');
+        setAuthError(msg);
+        setSettingsErrorMsg(msg);
         return;
       }
 
       const uid = currentUser.uid;
-      const canonicalAvatar = restoreRes.avatarUrl;
-      const savedProfile: ArtistProfile = restoreRes.profile || {
-        ...currentArtist,
+      const restoredName =
+        restoreRes.displayName ||
+        restoreRes.profile?.name ||
+        currentUser.googleDisplayName ||
+        currentUser.displayName ||
+        currentArtist.name ||
+        (isHe ? 'אמן' : 'Artist');
+      const canonicalAvatar = restoreRes.avatarUrl ?? restoreRes.profile?.avatarUrl ?? undefined;
+
+      const savedProfile: ArtistProfile = {
+        ...(restoreRes.profile || currentArtist),
         id: uid,
         googleUid: uid,
-        name: desiredName,
+        name: restoredName,
         avatarUrl: canonicalAvatar,
+        concertShows: restoreRes.profile?.concertShows ?? currentArtist.concertShows,
         hasAcceptedTerms: currentArtist.hasAcceptedTerms ?? true,
         termsVersionAccepted: currentArtist.termsVersionAccepted ?? CURRENT_TERMS_VERSION,
         acceptedTermsAt: currentArtist.acceptedTermsAt || new Date().toISOString(),
@@ -1416,22 +1462,32 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       };
 
       setArtistAvatarFile(null);
+      setArtistNameInput(savedProfile.name);
       setCurrentArtist(savedProfile);
-      setArtistAvatarPreview(canonicalAvatar);
-      updateCurrentAuthUserProfile({ displayName: savedProfile.name, photoURL: canonicalAvatar });
+      setArtistAvatarPreview(canonicalAvatar || null);
+      updateCurrentAuthUserProfile({
+        displayName: savedProfile.name,
+        photoURL: canonicalAvatar || null,
+      });
       upsertMemoryArtistProfile(savedProfile);
       updateMemoryTracksArtistAvatar(uid, canonicalAvatar, savedProfile.name);
       onArtistUpdated?.(savedProfile);
 
       void Promise.allSettled([
-        syncArtistAvatarToTracksInR2(uid, canonicalAvatar, allTracks, savedProfile.name),
+        syncArtistAvatarToTracksInR2(uid, canonicalAvatar || '', allTracks, savedProfile.name),
         fetchAllArtistProfiles(),
       ]);
 
-      setPublishSuccess(true);
-      setTimeout(() => setPublishSuccess(false), 2000);
+      setSettingsSuccessMsg(
+        isHe
+          ? 'השם והתמונה שוחזרו בהצלחה מחשבון Google'
+          : 'Original Google name and photo restored successfully'
+      );
+      setTimeout(() => setSettingsSuccessMsg(null), 4000);
     } catch (err: any) {
-      setAuthError(err?.message || (isHe ? 'שחזור תמונת Google נכשל. נסה שוב.' : 'Failed to restore Google photo.'));
+      const msg = err?.message || (isHe ? 'שחזור הפרטים מ-Google נכשל. נסה שוב.' : 'Failed to restore Google details.');
+      setAuthError(msg);
+      setSettingsErrorMsg(msg);
     } finally {
       setIsRestoringGoogleAvatar(false);
     }
@@ -1439,11 +1495,17 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
   const handleSaveArtistAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    const finalName = currentArtist.name || currentUser?.displayName || artistNameInput.trim() || 'אמן מוזיקלי';
-    if (!finalName) return;
+    setSettingsErrorMsg(null);
+    setSettingsSuccessMsg(null);
+    setAuthError(null);
+
+    const finalName = artistNameInput.trim();
+    if (!finalName) {
+      setSettingsErrorMsg(isHe ? 'יש להזין שם תצוגה לפני השמירה.' : 'Please enter a display name before saving.');
+      return;
+    }
 
     setIsPairing(true);
-    setAuthError(null);
 
     try {
       const freshUser = getCurrentAuthUser() || currentUser;
@@ -1463,6 +1525,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         bio: currentArtist.bio || (isHe ? 'אמן עצמאי בפלטפורמה' : 'Independent artist'),
         avatarUrl: previewOrCurrent,
         genre: currentArtist.genre || 'Pop',
+        concertShows: currentArtist.concertShows,
         googleUid: currentUser?.uid || currentArtist.googleUid || artistIdForUpload,
         isConnected: true,
         hasAcceptedTerms: true,
@@ -1478,11 +1541,18 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         { purgeOldAvatars: !!avatarBlobToUpload }
       );
       if (!saveRes.success) {
-        setAuthError(saveRes.error || (isHe ? 'שמירת הפרופיל באחסון הענן נכשלה.' : 'Failed to save profile to cloud storage.'));
+        const errMsg =
+          saveRes.error || (isHe ? 'שמירת הפרופיל באחסון הענן נכשלה.' : 'Failed to save profile to cloud storage.');
+        setAuthError(errMsg);
+        setSettingsErrorMsg(errMsg);
         return;
       }
 
-      const savedProfile: ArtistProfile = saveRes.profile || updatedArtistDraft;
+      const savedProfile: ArtistProfile = {
+        ...(saveRes.profile || updatedArtistDraft),
+        name: saveRes.profile?.name || finalName,
+        concertShows: saveRes.profile?.concertShows ?? currentArtist.concertShows,
+      };
       const finalAvatarUrl = savedProfile.avatarUrl || previewOrCurrent;
 
       if (finalAvatarUrl) {
@@ -1490,6 +1560,7 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       }
 
       setCurrentArtist(savedProfile);
+      setArtistNameInput(savedProfile.name);
       setArtistAvatarFile(null);
       setArtistAvatarPreview(finalAvatarUrl || null);
       updateCurrentAuthUserProfile({
@@ -1501,18 +1572,192 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       onArtistUpdated?.(savedProfile);
 
       void Promise.allSettled([
-        syncArtistAvatarToTracksInR2(currentUser?.uid || artistIdForUpload, finalAvatarUrl, allTracks, savedProfile.name),
+        syncArtistAvatarToTracksInR2(
+          currentUser?.uid || artistIdForUpload,
+          finalAvatarUrl || '',
+          allTracks,
+          savedProfile.name
+        ),
         fetchAllArtistProfiles(),
       ]);
 
-      setPublishSuccess(true);
-      setTimeout(() => setPublishSuccess(false), 2500);
-      setActiveTab('profile');
+      setSettingsSuccessMsg(
+        isHe ? 'השם ותמונת הפרופיל נשמרו בהצלחה' : 'Profile name and photo saved successfully'
+      );
+      setTimeout(() => setSettingsSuccessMsg(null), 4000);
     } catch (err: any) {
       console.error(err);
-      setAuthError(err?.message || (isHe ? 'שמירת ההגדרות נכשלה. נסה שוב.' : 'Failed to save settings.'));
+      const errMsg = err?.message || (isHe ? 'שמירת ההגדרות נכשלה. נסה שוב.' : 'Failed to save settings.');
+      setAuthError(errMsg);
+      setSettingsErrorMsg(errMsg);
     } finally {
       setIsPairing(false);
+    }
+  };
+
+  const myConcertShows: ConcertShow[] = Array.isArray(currentArtist.concertShows) ? currentArtist.concertShows : [];
+
+  const handleResetShowForm = () => {
+    setShowTitleInput('');
+    setShowDateInput('');
+    setShowTicketUrlInput('');
+    setShowVenueInput('');
+    setEditingShowId(null);
+    setShowFormError(null);
+  };
+
+  const handleStartEditShow = (show: ConcertShow) => {
+    setEditingShowId(show.id);
+    setShowTitleInput(show.title || '');
+    setShowDateInput(show.date || '');
+    setShowTicketUrlInput(show.ticketUrl || '');
+    setShowVenueInput(show.venue || '');
+    setShowFormError(null);
+    setShowFormSuccess(null);
+    if (portalScrollRef.current) {
+      portalScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleSaveConcertShow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingShow) return;
+    setShowFormError(null);
+    setShowFormSuccess(null);
+
+    const title = showTitleInput.trim();
+    const date = showDateInput.trim();
+    const safeUrl = sanitizeTicketUrl(showTicketUrlInput);
+    const venue = showVenueInput.trim() || undefined;
+
+    if (!title) {
+      setShowFormError(isHe ? 'יש להזין שם למופע.' : 'Please enter a show name.');
+      return;
+    }
+    if (!date) {
+      setShowFormError(isHe ? 'יש לבחור את תאריך המופע.' : 'Please select the show date.');
+      return;
+    }
+    if (!safeUrl) {
+      setShowFormError(
+        isHe
+          ? 'יש להזין קישור תקין לאתר ההזמנות (לדוגמה https://tickets.example.com).'
+          : 'Please enter a valid ticket website URL (e.g. https://tickets.example.com).'
+      );
+      return;
+    }
+
+    setIsSavingShow(true);
+    try {
+      const existingShows = Array.isArray(currentArtist.concertShows) ? currentArtist.concertShows : [];
+      const showEntry: ConcertShow = {
+        id: editingShowId || `show_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        title,
+        date,
+        ticketUrl: safeUrl,
+        ...(venue ? { venue } : {}),
+        createdAt:
+          (editingShowId ? existingShows.find((s) => s.id === editingShowId)?.createdAt : undefined) ||
+          new Date().toISOString(),
+      };
+
+      const nextShows = editingShowId
+        ? existingShows.map((s) => (s.id === editingShowId ? showEntry : s))
+        : [showEntry, ...existingShows];
+
+      const artistId = currentUser?.uid || currentArtist.id;
+      const updatedArtist: ArtistProfile = {
+        ...currentArtist,
+        id: artistId,
+        googleUid: currentUser?.uid || currentArtist.googleUid || artistId,
+        name: currentArtist.name || currentUser?.displayName || artistNameInput.trim() || (isHe ? 'אמן' : 'Artist'),
+        concertShows: nextShows,
+        isConnected: true,
+        isPrivate: false,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const saveRes = await saveArtistAccountToR2(updatedArtist);
+      if (!saveRes.success) {
+        setShowFormError(saveRes.error || (isHe ? 'שמירת המופע נכשלה. נסה שוב.' : 'Failed to save show.'));
+        return;
+      }
+
+      const savedProfile: ArtistProfile = {
+        ...(saveRes.profile || updatedArtist),
+        concertShows: saveRes.profile?.concertShows ?? nextShows,
+      };
+      setCurrentArtist(savedProfile);
+      upsertMemoryArtistProfile(savedProfile);
+      onArtistUpdated?.(savedProfile);
+      void fetchAllArtistProfiles().catch(() => {});
+
+      const wasEditing = !!editingShowId;
+      handleResetShowForm();
+      setShowFormSuccess(
+        wasEditing
+          ? isHe
+            ? 'פרטי המופע עודכנו ומוצגים כעת בכל השירים שלך'
+            : 'Show updated across all your songs'
+          : isHe
+            ? 'המופע נוסף בהצלחה ויופיע בתחתית כל השירים שלך'
+            : 'Show added and will appear at the bottom of all your songs'
+      );
+      setTimeout(() => setShowFormSuccess(null), 4000);
+    } catch (err: any) {
+      setShowFormError(err?.message || (isHe ? 'שגיאה בשמירת המופע.' : 'Error saving show.'));
+    } finally {
+      setIsSavingShow(false);
+    }
+  };
+
+  const handleDeleteConcertShow = async (showId: string) => {
+    if (isSavingShow) return;
+    if (confirmDeleteShowId !== showId) {
+      setConfirmDeleteShowId(showId);
+      setTimeout(() => {
+        setConfirmDeleteShowId((cur) => (cur === showId ? null : cur));
+      }, 4000);
+      return;
+    }
+
+    setConfirmDeleteShowId(null);
+    setIsSavingShow(true);
+    setShowFormError(null);
+    try {
+      const nextShows = (Array.isArray(currentArtist.concertShows) ? currentArtist.concertShows : []).filter(
+        (s) => s.id !== showId
+      );
+      const artistId = currentUser?.uid || currentArtist.id;
+      const updatedArtist: ArtistProfile = {
+        ...currentArtist,
+        id: artistId,
+        googleUid: currentUser?.uid || currentArtist.googleUid || artistId,
+        concertShows: nextShows,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const saveRes = await saveArtistAccountToR2(updatedArtist);
+      if (!saveRes.success) {
+        setShowFormError(saveRes.error || (isHe ? 'מחיקת המופע נכשלה.' : 'Failed to delete show.'));
+        return;
+      }
+
+      const savedProfile: ArtistProfile = {
+        ...(saveRes.profile || updatedArtist),
+        concertShows: saveRes.profile?.concertShows ?? nextShows,
+      };
+      if (editingShowId === showId) {
+        handleResetShowForm();
+      }
+      setCurrentArtist(savedProfile);
+      upsertMemoryArtistProfile(savedProfile);
+      onArtistUpdated?.(savedProfile);
+      void fetchAllArtistProfiles().catch(() => {});
+    } catch (err: any) {
+      setShowFormError(err?.message || (isHe ? 'שגיאה במחיקת המופע.' : 'Error deleting show.'));
+    } finally {
+      setIsSavingShow(false);
     }
   };
 
@@ -1872,9 +2117,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       customServerUrl: customServerUrlInput.trim() || undefined,
       bgColor: cachedBgColor,
       isAiGenerated: isAiGeneratedInput,
-      concertName: concertNameInput.trim() || undefined,
-      concertDate: concertDateInput.trim() || undefined,
-      concertTicketUrl: concertTicketUrlInput.trim() || undefined,
     };
 
     const currentAudioFile = rawAudioFile;
@@ -2072,12 +2314,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     <AnimatePresence>
       <motion.div
         ref={portalScrollRef}
+        data-kolot-uploading={isPublishing || isSavingEdit || isSavingAlbum ? 'true' : undefined}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
         className={`fixed inset-0 z-[140] w-full h-[100dvh] ${
-          activeTab === 'manual_upload' || activeTab === 'albums' ? 'bg-black' : 'bg-[#070b14]'
+          activeTab === 'manual_upload' || activeTab === 'albums' || activeTab === 'account_settings' || activeTab === 'shows'
+            ? 'bg-black'
+            : 'bg-[#070b14]'
         } overflow-y-auto text-white custom-scrollbar flex flex-col`}
         dir={isHe ? 'rtl' : 'ltr'}
       >
@@ -2167,14 +2412,15 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                   <p className="text-xs sm:text-sm text-white/80 font-normal">
                     {myUploadedTracks.length} {isHe ? 'שירים' : 'tracks'}
                     {` • ${myAlbums.length} ${isHe ? 'אלבומים' : 'albums'}`}
+                    {myConcertShows.length > 0 ? ` • ${myConcertShows.length} ${isHe ? 'הופעות' : 'shows'}` : ''}
                   </p>
 
-                  {/* Add Song & Add Album buttons right underneath artist name and counts */}
+                  {/* Add Song, Add Album & Concert Tickets buttons right underneath artist name and counts */}
                   <div className="pt-2.5 flex flex-wrap items-center justify-center sm:justify-start gap-2.5">
                     <button
                       type="button"
                       onClick={() => setActiveTab('manual_upload')}
-                      className="px-4 py-2 rounded-full text-xs sm:text-sm font-medium transition-all flex items-center gap-2 cursor-pointer shadow-lg bg-white text-black hover:bg-neutral-200 active:scale-95"
+                      className="min-h-[40px] px-4 py-2 rounded-full text-xs sm:text-sm font-medium transition-all flex items-center gap-2 cursor-pointer shadow-lg bg-white text-black hover:bg-neutral-200 active:scale-95"
                     >
                       <Plus className="w-4 h-4 text-black" />
                       <span>{isHe ? 'הוסף שיר' : 'Add Song'}</span>
@@ -2183,10 +2429,22 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setActiveTab('albums')}
-                      className="px-4 py-2 rounded-full text-xs sm:text-sm font-medium transition-all flex items-center gap-2 cursor-pointer shadow-lg bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-md active:scale-95"
+                      className="min-h-[40px] px-4 py-2 rounded-full text-xs sm:text-sm font-medium transition-all flex items-center gap-2 cursor-pointer shadow-lg bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-md active:scale-95"
                     >
                       <Disc className="w-4 h-4 text-white" />
                       <span>{isHe ? 'הוסף אלבום' : 'Add Album'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('shows')}
+                      className="min-h-[40px] px-4 py-2 rounded-full text-xs sm:text-sm font-medium transition-all flex items-center gap-2 cursor-pointer shadow-lg bg-white/15 hover:bg-white/25 text-white border border-white/25 backdrop-blur-md active:scale-95"
+                    >
+                      <Ticket className="w-4 h-4 text-white" />
+                      <span>
+                        {isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}
+                        {myConcertShows.length > 0 ? ` (${myConcertShows.length})` : ''}
+                      </span>
                     </button>
                   </div>
 
@@ -3732,167 +3990,550 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           </div>
         )}
 
-        {/* 4. SIMPLIFIED ACCOUNT SETTINGS VIEW (Photo, Terms Confirmed, Sign Out, Delete Account — No Google text, No Bio/Style/Handle/Server) */}
-        {activeTab === 'account_settings' && (
-          <div key="portal-tab-settings" className="w-full min-h-screen bg-[#070b14]">
-            <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
-            {/* Editorial Header */}
-            <div className="border-b border-white/10 pb-5 space-y-1.5">
-              <p className="text-[11px] font-semibold tracking-widest uppercase text-neutral-400">
-                {isHe ? 'KOLOT STUDIO · הגדרות' : 'KOLOT STUDIO · SETTINGS'}
-              </p>
-              <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                {isHe ? 'הגדרות חשבון' : 'Account Settings'}
-              </h2>
-              <p className="text-xs sm:text-sm text-neutral-400">
-                {isHe
-                  ? 'תמונת פרופיל, אישור תנאי שימוש וניהול החשבון.'
-                  : 'Profile photo, terms confirmation, and account management.'}
-              </p>
-            </div>
-
-            {/* Unified Elevated Container */}
-            <form
-              onSubmit={handleSaveArtistAccount}
-              className="rounded-2xl bg-[#09090b] border border-white/12 divide-y divide-white/8 overflow-hidden shadow-2xl"
-            >
-              {/* Row 1: Connected Account & Sign Out (Zero "Google" branding) */}
-              <div className="p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-3.5 min-w-0">
-                  {activeAvatar ? (
-                    <img
-                      src={activeAvatar}
-                      alt={resolvedArtistName}
-                      referrerPolicy="no-referrer"
-                      loading="eager"
-                      decoding="async"
-                      className="w-11 h-11 rounded-full object-cover border border-white/20 shrink-0"
-                    />
-                  ) : (
-                    <div className="w-11 h-11 rounded-full bg-neutral-900 border border-white/15 flex items-center justify-center text-white shrink-0">
-                      <User className="w-5 h-5 text-neutral-300" />
-                    </div>
-                  )}
-
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-white truncate">
-                        {resolvedArtistName}
-                      </span>
-                      {currentUser && (
-                        <span className="text-[11px] font-medium text-neutral-400">
-                          · {isHe ? 'מאומת' : 'Verified'}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-neutral-400 truncate mt-0.5">
-                      {currentUser
-                        ? (isHe ? 'חשבון מחובר · השירים והפרופיל מסונכרנים בענן' : 'Account connected · Synced to cloud')
-                        : (isHe ? 'התחבר כדי לשמור שירים ולנהל את החשבון' : 'Sign in to publish tracks and manage account')}
-                    </p>
+        {/* 4. CONCERT SHOWS & TICKETS MANAGEMENT TAB */}
+        {activeTab === 'shows' && (
+          <div key="portal-tab-shows" className="w-full flex-1 flex flex-col bg-black text-white min-h-screen pt-20 pb-28 px-4 sm:px-8">
+            <div className="max-w-3xl mx-auto w-full space-y-6">
+              {/* Top Header */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-5">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2.5">
+                    <Ticket className="w-5 h-5 text-white shrink-0" />
+                    <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                      {isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}
+                    </h2>
                   </div>
+                  <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
+                    {isHe
+                      ? 'הוסף הופעה עם תאריך וקישור לאתר ההזמנות. הכרטיסייה תופיע אוטומטית בתחתית כל השירים שלך עם לחצן «להזמנה ופרטים נוספים».'
+                      : 'Add your upcoming shows with date and ticket URL. They appear automatically at the bottom of all your tracks.'}
+                  </p>
                 </div>
 
-                <div className="shrink-0">
-                  {currentUser ? (
-                    <button
-                      type="button"
-                      onClick={handleLogout}
-                      className="w-full sm:w-auto px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] text-neutral-200 border border-white/15 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>{isHe ? 'התנתק מהחשבון' : 'Sign Out'}</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleGoogleLogin}
-                      disabled={isAuthLoading}
-                      className="w-full sm:w-auto px-5 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-semibold text-xs transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <span>{isHe ? 'התחבר לחשבון' : 'Sign In'}</span>
-                    </button>
-                  )}
-                </div>
+                {editingShowId && (
+                  <button
+                    type="button"
+                    onClick={handleResetShowForm}
+                    className="min-h-[40px] px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold border border-white/20 cursor-pointer transition-colors"
+                  >
+                    {isHe ? 'ביטול עריכה' : 'Cancel Edit'}
+                  </button>
+                )}
               </div>
 
-              {/* Row 2: Profile Photo Change Only */}
-              <div className="p-5 sm:p-7">
-                <div className="flex flex-col sm:flex-row items-center gap-5">
-                  <div className="relative group shrink-0">
-                    <div
-                      className="p-1.5 rounded-full bg-white/[0.1] backdrop-blur-2xl border border-white/30 group-hover:border-white/55 transition-all cursor-pointer"
-                      style={{
-                        boxShadow: `0 8px 28px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.4)`,
-                      }}
-                    >
-                      <div className="relative w-20 h-20 sm:w-22 sm:h-22 rounded-full border border-white/20 overflow-hidden flex items-center justify-center bg-black">
-                        {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
-                          <img
-                            src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
-                            referrerPolicy="no-referrer"
-                            loading="eager"
-                            decoding="async"
-                            className="w-full h-full object-cover"
-                            alt="Avatar"
-                          />
-                        ) : (
-                          <User className="w-8 h-8 text-white/50" />
-                        )}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="absolute inset-0 opacity-0 cursor-pointer"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              setArtistAvatarFile(file);
-                              const reader = new FileReader();
-                              reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
-                              reader.readAsDataURL(file);
-                            }
-                          }}
-                        />
+              {/* Add / Edit Concert Form */}
+              <form
+                onSubmit={handleSaveConcertShow}
+                className="p-5 sm:p-7 rounded-2xl bg-[#09090b] border border-white/15 space-y-5 shadow-2xl"
+              >
+                <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-white/80" />
+                    <span>
+                      {editingShowId
+                        ? isHe
+                          ? 'עריכת פרטי מופע'
+                          : 'Edit Concert Show'
+                        : isHe
+                          ? 'הוספת מופע חדש'
+                          : 'Add New Show'}
+                    </span>
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label htmlFor="concertShowTitleInput" className="block text-xs sm:text-sm font-semibold text-neutral-200 mb-1.5">
+                      {isHe ? 'שם המופע *' : 'Show Name *'}
+                    </label>
+                    <input
+                      id="concertShowTitleInput"
+                      type="text"
+                      required
+                      maxLength={100}
+                      value={showTitleInput}
+                      onChange={(e) => setShowTitleInput(e.target.value)}
+                      placeholder={isHe ? 'לדוגמה: סיבוב הופעות קיץ 2026 - זאפה תל אביב' : 'e.g. Summer Tour 2026 - Live'}
+                      className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-black border border-white/20 text-white text-sm placeholder-neutral-500 focus:outline-none focus:border-white transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="concertShowDateInput" className="block text-xs sm:text-sm font-semibold text-neutral-200 mb-1.5">
+                      {isHe ? 'תאריך המופע *' : 'Show Date *'}
+                    </label>
+                    <input
+                      id="concertShowDateInput"
+                      type="date"
+                      required
+                      value={showDateInput}
+                      onChange={(e) => setShowDateInput(e.target.value)}
+                      style={{ colorScheme: 'dark' }}
+                      className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-black border border-white/20 text-white text-sm focus:outline-none focus:border-white transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="concertShowVenueInput" className="block text-xs sm:text-sm font-semibold text-neutral-200 mb-1.5">
+                      {isHe ? 'אולם / מיקום (אופציונלי)' : 'Venue / City (Optional)'}
+                    </label>
+                    <input
+                      id="concertShowVenueInput"
+                      type="text"
+                      maxLength={80}
+                      value={showVenueInput}
+                      onChange={(e) => setShowVenueInput(e.target.value)}
+                      placeholder={isHe ? 'לדוגמה: תל אביב' : 'e.g. Tel Aviv'}
+                      className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-black border border-white/20 text-white text-sm placeholder-neutral-500 focus:outline-none focus:border-white transition-colors"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label htmlFor="concertShowUrlInput" className="block text-xs sm:text-sm font-semibold text-neutral-200 mb-1.5">
+                      {isHe ? 'קישור לאתר הזמנות *' : 'Booking Website Link *'}
+                    </label>
+                    <input
+                      id="concertShowUrlInput"
+                      type="url"
+                      required
+                      dir="ltr"
+                      value={showTicketUrlInput}
+                      onChange={(e) => setShowTicketUrlInput(e.target.value)}
+                      placeholder="https://tickets.example.com/your-show"
+                      className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-black border border-white/20 text-white text-sm placeholder-neutral-500 focus:outline-none focus:border-white transition-colors text-left"
+                    />
+                  </div>
+                </div>
+
+                {showFormError && (
+                  <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-200 text-xs font-medium flex items-center gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{showFormError}</span>
+                  </div>
+                )}
+
+                {showFormSuccess && (
+                  <div className="p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 text-xs font-medium flex items-center gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>{showFormSuccess}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    type="submit"
+                    disabled={isSavingShow}
+                    className="flex-1 min-h-[48px] px-6 py-3 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {isSavingShow ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-black" />
+                        <span>{isHe ? 'שומר מופע...' : 'Saving Show...'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Ticket className="w-4 h-4 text-black" />
+                        <span>
+                          {editingShowId
+                            ? isHe
+                              ? 'עדכן פרטי מופע'
+                              : 'Update Show'
+                            : isHe
+                              ? 'הוסף מופע לכל השירים'
+                              : 'Add Show to All Songs'}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+
+              {/* Existing Shows List */}
+              <div className="p-5 sm:p-7 rounded-2xl bg-[#09090b] border border-white/15 space-y-4 shadow-xl">
+                <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                  <h3 className="text-sm font-bold text-white">
+                    {isHe ? `המופעים שלך (${myConcertShows.length})` : `Your Shows (${myConcertShows.length})`}
+                  </h3>
+                  <span className="text-xs text-neutral-400">
+                    {isHe ? 'מוצג בתחתית מסך הנגן' : 'Shown at bottom of track player'}
+                  </span>
+                </div>
+
+                {myConcertShows.length === 0 ? (
+                  <div className="py-10 text-center space-y-2">
+                    <Ticket className="w-8 h-8 text-white/25 mx-auto" />
+                    <p className="text-sm font-medium text-white/75">
+                      {isHe ? 'עדיין לא הוספת כרטיסים להופעות' : 'No concert shows added yet'}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {isHe
+                        ? 'הוסף מופע למעלה כדי שמאזינים יוכלו להזמין כרטיסים ישירות מכל שיר שלך.'
+                        : 'Add a show above so listeners can book tickets directly from your songs.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/10">
+                    {myConcertShows.map((show, idx) => (
+                      <div
+                        key={show.id}
+                        className={`${idx === 0 ? 'pt-0.5' : 'pt-4'} ${idx === myConcertShows.length - 1 ? 'pb-0.5' : 'pb-4'} flex flex-col sm:flex-row sm:items-center justify-between gap-4`}
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <h4 className="text-sm sm:text-base font-bold text-white truncate">{show.title}</h4>
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-400">
+                            {show.date && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <Calendar className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                <span>{formatConcertDate(show.date, isHe)}</span>
+                              </span>
+                            )}
+                            {show.venue && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <MapPin className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                <span>{show.venue}</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <a
+                            href={show.ticketUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[40px] px-4 py-2 rounded-full bg-white text-black hover:bg-neutral-200 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                          >
+                            <span>{isHe ? 'להזמנה ופרטים נוספים' : 'Tickets & Details'}</span>
+                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                          </a>
+
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditShow(show)}
+                            className="min-h-[40px] px-3.5 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/15 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            <span>{isHe ? 'ערוך' : 'Edit'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isSavingShow}
+                            onClick={() => handleDeleteConcertShow(show.id)}
+                            className={`min-h-[40px] px-3.5 py-2 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors border ${
+                              confirmDeleteShowId === show.id
+                                ? 'bg-rose-600 border-rose-400 text-white'
+                                : 'bg-rose-500/15 hover:bg-rose-500/30 border-rose-500/30 text-rose-200'
+                            }`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>
+                              {confirmDeleteShowId === show.id
+                                ? isHe
+                                  ? 'אשר מחיקה'
+                                  : 'Confirm'
+                                : isHe
+                                  ? 'מחק'
+                                  : 'Delete'}
+                            </span>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div className="absolute -bottom-0.5 -right-0.5 bg-white text-black p-1.5 rounded-full shadow-lg border-2 border-[#09090b] pointer-events-none">
-                      <Pencil className="w-3 h-3" />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 5. OVERHAULED ACCOUNT & PROFILE SETTINGS VIEW (Editable Name, Photo, 1-Click Google Restore, Concert Shortcut, Terms, Sign Out & Delete Account) */}
+        {activeTab === 'account_settings' && (
+          <div key="portal-tab-settings" className="w-full min-h-screen bg-black text-white">
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-20 pb-28 w-full space-y-6 animate-fadeIn">
+              {/* Header */}
+              <div className="border-b border-white/10 pb-5 space-y-1.5">
+                <p className="text-[11px] font-semibold tracking-widest uppercase text-neutral-400">
+                  {isHe ? 'KOLOT STUDIO · הגדרות' : 'KOLOT STUDIO · SETTINGS'}
+                </p>
+                <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                  {isHe ? 'הגדרות פרופיל וחשבון' : 'Profile & Account Settings'}
+                </h2>
+                <p className="text-xs sm:text-sm text-neutral-400">
+                  {isHe
+                    ? 'ערוך את שם הפרופיל והתמונה שלך, שחזר את השם והתמונה המקוריים מ-Google בלחיצה אחת, או נהל הופעות.'
+                    : 'Edit your display name and profile photo, restore your original Google name & photo in one click, or manage shows.'}
+                </p>
+              </div>
+
+              {/* Card 1: Profile Name, Photo & Google Restore */}
+              <form
+                onSubmit={handleSaveArtistAccount}
+                className="rounded-2xl bg-[#09090b] border border-white/15 divide-y divide-white/10 overflow-hidden shadow-2xl"
+              >
+                {/* Row 1: Connected Account & Session Control */}
+                <div className="p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    {activeAvatar ? (
+                      <img
+                        src={activeAvatar}
+                        alt={resolvedArtistName}
+                        referrerPolicy="no-referrer"
+                        loading="eager"
+                        decoding="async"
+                        className="w-12 h-12 rounded-full object-cover border border-white/20 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-neutral-900 border border-white/15 flex items-center justify-center text-white shrink-0">
+                        <User className="w-5 h-5 text-neutral-300" />
+                      </div>
+                    )}
+
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm sm:text-base font-bold text-white truncate">
+                          {resolvedArtistName}
+                        </span>
+                        {currentUser && (
+                          <span className="text-[11px] font-medium text-neutral-400 shrink-0">
+                            · {isHe ? 'מחובר עם Google' : 'Google Connected'}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-neutral-400 truncate mt-0.5">
+                        {currentUser
+                          ? isHe
+                            ? 'הפרופיל, השירים והמופעים מסונכרנים בענן'
+                            : 'Profile, songs and shows synced to cloud'
+                          : isHe
+                            ? 'התחבר כדי לשמור פרופיל ולפרסם מוזיקה'
+                            : 'Sign in to publish and manage your profile'}
+                      </p>
                     </div>
                   </div>
 
-                  <div className="flex-1 text-center sm:text-start space-y-1.5 min-w-0">
-                    <h3 className="text-sm font-semibold text-white">{isHe ? 'שינוי תמונת פרופיל' : 'Change Profile Photo'}</h3>
-                    <p className="text-xs text-neutral-400 leading-relaxed">
-                      {isHe
-                        ? 'לחץ על התמונה כדי לבחור תמונת פרופיל חדשה, ולחץ שמור שינויים לעדכון בענן.'
-                        : 'Click the frame to pick a new photo and click Save to update.'}
-                    </p>
-                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1">
-                      {(() => {
-                        const freshUser = getCurrentAuthUser() || currentUser;
-                        const accountPhoto = getGoogleAccountPhotoUrl(freshUser);
-                        if (!accountPhoto) return null;
-                        return (
+                  <div className="shrink-0">
+                    {currentUser ? (
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.14] text-neutral-200 border border-white/15 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>{isHe ? 'התנתק' : 'Sign Out'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleGoogleLogin}
+                        disabled={isAuthLoading}
+                        className="w-full sm:w-auto min-h-[44px] px-5 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        <span>{isHe ? 'התחבר לחשבון' : 'Sign In'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Row 2: Photo Editor + Explicit Change & Google Restore Buttons */}
+                <div className="p-5 sm:p-7 space-y-5">
+                  <div className="flex flex-col sm:flex-row items-center gap-5">
+                    <div className="relative shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => avatarSettingsInputRef.current?.click()}
+                        className="group relative block p-1.5 rounded-full bg-white/[0.08] border border-white/25 hover:border-white/60 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-white/40"
+                        style={{
+                          boxShadow: `0 8px 28px rgba(${profileThemeColor.r}, ${profileThemeColor.g}, ${profileThemeColor.b}, 0.3)`,
+                        }}
+                        aria-label={isHe ? 'בחר תמונת פרופיל חדשה' : 'Choose new profile photo'}
+                      >
+                        <div className="w-24 h-24 rounded-full border border-white/20 overflow-hidden flex items-center justify-center bg-black">
+                          {artistAvatarPreview || currentArtist.avatarUrl || currentUser?.photoURL ? (
+                            <img
+                              src={artistAvatarPreview || currentArtist.avatarUrl || upgradeGooglePhotoQuality(currentUser?.photoURL) || ''}
+                              referrerPolicy="no-referrer"
+                              loading="eager"
+                              decoding="async"
+                              className="w-full h-full object-cover"
+                              alt={resolvedArtistName}
+                            />
+                          ) : (
+                            <User className="w-9 h-9 text-white/50" />
+                          )}
+                        </div>
+                        <span className="absolute bottom-0.5 right-0.5 w-8 h-8 rounded-full bg-white text-black flex items-center justify-center shadow-lg border-2 border-[#09090b] group-hover:scale-105 transition-transform">
+                          <Camera className="w-4 h-4" />
+                        </span>
+                      </button>
+
+                      <input
+                        ref={avatarSettingsInputRef}
+                        type="file"
+                        accept="image/*,.jpg,.jpeg,.png,.webp"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            setArtistAvatarFile(file);
+                            setSettingsErrorMsg(null);
+                            setSettingsSuccessMsg(null);
+                            const reader = new FileReader();
+                            reader.onload = (ev) => setArtistAvatarPreview(ev.target?.result as string);
+                            reader.readAsDataURL(file);
+                          }
+                          e.target.value = '';
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex-1 text-center sm:text-start space-y-3 min-w-0">
+                      <div>
+                        <h3 className="text-sm sm:text-base font-bold text-white">
+                          {isHe ? 'תמונת פרופיל' : 'Profile Photo'}
+                        </h3>
+                        <p className="text-xs text-neutral-400 leading-relaxed mt-0.5">
+                          {artistAvatarFile
+                            ? isHe
+                              ? 'נבחרה תמונה חדשה מהמכשיר — לחץ «שמור שינויים» כדי לעדכן בענן.'
+                              : 'New photo selected — click "Save Changes" to update.'
+                            : isHe
+                              ? 'העלה תמונה חדשה מהמכשיר או שחזר ישירות את השם והתמונה המקוריים מחשבון Google.'
+                              : 'Upload a new photo from your device or restore your original Google name and photo.'}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => avatarSettingsInputRef.current?.click()}
+                          className="min-h-[44px] px-4 py-2 rounded-full bg-white text-black hover:bg-neutral-200 text-xs font-bold inline-flex items-center gap-2 cursor-pointer transition-colors"
+                        >
+                          <Camera className="w-4 h-4 shrink-0" />
+                          <span>{isHe ? 'שנה תמונה' : 'Change Photo'}</span>
+                        </button>
+
+                        {currentUser && (
                           <button
                             type="button"
                             onClick={handleRestoreGoogleAvatar}
-                            disabled={isRestoringGoogleAvatar}
-                            className="px-3 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.15] text-white text-[11px] font-medium border border-white/15 cursor-pointer transition-colors disabled:opacity-50"
+                            disabled={isRestoringGoogleAvatar || isPairing}
+                            className="min-h-[44px] px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.16] text-white text-xs font-semibold border border-white/20 inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
                           >
-                            {isRestoringGoogleAvatar
-                              ? (isHe ? 'משחזר...' : 'Restoring...')
-                              : (isHe ? 'שחזר תמונת חשבון' : 'Restore Account Photo')}
+                            {isRestoringGoogleAvatar ? (
+                              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                            ) : (
+                              <RotateCcw className="w-4 h-4 shrink-0" />
+                            )}
+                            <span>
+                              {isRestoringGoogleAvatar
+                                ? isHe
+                                  ? 'משחזר מ-Google...'
+                                  : 'Restoring...'
+                                : isHe
+                                  ? 'שחזר שם ותמונה מ-Google'
+                                  : 'Restore Google Name & Photo'}
+                            </span>
                           </button>
-                        );
-                      })()}
+                        )}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Editable Artist Display Name Input */}
+                  <div className="pt-4 border-t border-white/10 space-y-2">
+                    <label htmlFor="artistSettingsNameInput" className="block text-xs sm:text-sm font-bold text-white">
+                      {isHe ? 'שם אמן / שם פרופיל *' : 'Artist / Display Name *'}
+                    </label>
+                    <input
+                      id="artistSettingsNameInput"
+                      type="text"
+                      required
+                      maxLength={60}
+                      value={artistNameInput}
+                      onChange={(e) => {
+                        setArtistNameInput(e.target.value);
+                        if (settingsErrorMsg) setSettingsErrorMsg(null);
+                      }}
+                      placeholder={isHe ? 'הזן שם פרופיל...' : 'Enter display name...'}
+                      className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-black border border-white/25 text-white text-sm sm:text-base font-medium placeholder-neutral-500 focus:outline-none focus:border-white transition-colors"
+                    />
+                    <p className="text-[11px] text-neutral-400">
+                      {isHe
+                        ? 'השם שיופיע בפרופיל שלך, בראש כל השירים שהעלית ובדף הבית.'
+                        : 'Displayed on your public profile and across all songs you upload.'}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Inline Status Messages & Save Bar */}
+                <div className="p-5 sm:p-7 bg-white/[0.02] space-y-4">
+                  {(settingsErrorMsg || authError) && (
+                    <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-200 text-xs font-medium flex items-center gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>{settingsErrorMsg || authError}</span>
+                    </div>
+                  )}
+
+                  {settingsSuccessMsg && (
+                    <div className="p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-200 text-xs font-medium flex items-center gap-2.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{settingsSuccessMsg}</span>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-end gap-3">
+                    <button
+                      type="submit"
+                      disabled={isPairing || isRestoringGoogleAvatar || !artistNameInput.trim()}
+                      className="w-full sm:w-auto min-h-[48px] px-7 py-3 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-sm transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
+                    >
+                      {isPairing ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <span>{isHe ? 'שומר שינויים...' : 'Saving changes...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-black" />
+                          <span>{isHe ? 'שמור שינויים' : 'Save Changes'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </form>
+
+              {/* Card 2: Concert Shows Management Shortcut */}
+              <div className="rounded-2xl bg-[#09090b] border border-white/15 p-5 sm:p-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xl">
+                <div className="space-y-1 min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                    <Ticket className="w-4 h-4 text-white shrink-0" />
+                    <span>
+                      {isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}
+                      {myConcertShows.length > 0 ? ` (${myConcertShows.length})` : ''}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-neutral-400 leading-relaxed">
+                    {isHe
+                      ? 'הוסף מופע עם שם, תאריך וקישור להזמנות שיוצג אוטומטית בתחתית כל השירים שלך.'
+                      : 'Add upcoming shows and ticket links shown at the bottom of all your tracks.'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('shows')}
+                  className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-colors shrink-0"
+                >
+                  <Ticket className="w-4 h-4" />
+                  <span>{isHe ? 'נהל הופעות וכרטיסים' : 'Manage Shows'}</span>
+                </button>
               </div>
 
-              {/* Row 3: Locked Terms Accepted Indicator (Cannot be cancelled) */}
-              <div className="p-5 sm:p-7 space-y-4 text-xs">
-                <div className="flex items-start gap-3 select-none opacity-95">
+              {/* Card 3: Permanent Terms Accepted Status */}
+              <div className="rounded-2xl bg-[#09090b] border border-white/15 p-5 sm:p-7">
+                <div className="flex items-start gap-3 select-none">
                   <input
                     type="checkbox"
                     id="termsSettingsCheckPortal"
@@ -3912,119 +4553,91 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                     </span>
                   </div>
                 </div>
-
-                {authError && (
-                  <p className="text-xs text-rose-300 font-medium bg-rose-500/10 border border-rose-500/25 px-3.5 py-2.5 rounded-xl">
-                    {authError}
-                  </p>
-                )}
               </div>
 
-              {/* Row 4: Footer Submit Bar */}
-              <div className="px-5 sm:px-7 py-4 bg-white/[0.02] flex items-center justify-end gap-3">
-                <button
-                  type="submit"
-                  disabled={isPairing}
-                  className="px-7 py-2.5 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs sm:text-sm transition-colors shadow-lg cursor-pointer flex items-center justify-center gap-2 disabled:opacity-40"
-                >
-                  {isPairing ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin text-black" />
-                      <span>{isHe ? 'שומר...' : 'Saving...'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4 text-black" />
-                      <span>{isHe ? 'שמור שינויים' : 'Save Changes'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
+              {/* Card 4: Danger Zone — Self-Service Account Deletion */}
+              {currentUser && (
+                <div className="rounded-2xl bg-[#120b0d] border border-rose-500/25 p-5 sm:p-7 space-y-4 shadow-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <h3 className="text-sm sm:text-base font-bold text-rose-200 flex items-center gap-2">
+                        <Trash2 className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
+                      </h3>
+                      <p className="text-xs text-neutral-400 leading-relaxed max-w-xl">
+                        {isHe
+                          ? 'מחיקת החשבון תסיר את פרופיל המשתמש והאמן שלך ותנתק אותך מהאתר לצמיתות. שירים שכבר העלית יישארו זמינים בנגן.'
+                          : 'Deleting your account permanently removes your profile and avatar and signs you out. Published tracks remain available.'}
+                      </p>
+                    </div>
 
-            {/* Danger Zone: Self-Service Account Deletion */}
-            {currentUser && (
-              <div className="rounded-2xl bg-[#120b0d] border border-rose-500/25 p-5 sm:p-7 space-y-4 shadow-xl">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <h3 className="text-sm sm:text-base font-bold text-rose-200 flex items-center gap-2">
-                      <Trash2 className="w-4 h-4 text-rose-400 shrink-0" />
-                      <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 leading-relaxed max-w-xl">
-                      {isHe
-                        ? 'מחיקת החשבון תסיר את פרופיל המשתמש והאמן שלך ותנתק אותך מהאתר לצמיתות. שירים שכבר העלית יישארו זמינים בנגן.'
-                        : 'Deleting your account permanently removes your profile and avatar and signs you out. Published tracks remain available.'}
-                    </p>
+                    {!confirmDeleteAccount && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteAccountError(null);
+                          setConfirmDeleteAccount(true);
+                        }}
+                        className="self-start sm:self-auto min-h-[44px] px-5 py-2.5 rounded-full bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-200 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-2"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
+                      </button>
+                    )}
                   </div>
 
-                  {!confirmDeleteAccount && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDeleteAccountError(null);
-                        setConfirmDeleteAccount(true);
-                      }}
-                      className="self-start sm:self-auto px-5 py-2.5 rounded-full bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-200 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-2"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>{isHe ? 'מחיקת חשבון' : 'Delete Account'}</span>
-                    </button>
+                  {deleteAccountError && (
+                    <p className="text-xs text-rose-300 bg-rose-950/60 border border-rose-500/35 px-3.5 py-2.5 rounded-xl">
+                      {deleteAccountError}
+                    </p>
+                  )}
+
+                  {confirmDeleteAccount && (
+                    <div className="rounded-xl bg-black/70 border border-rose-500/35 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="text-xs text-rose-100 leading-relaxed">
+                        <span className="font-bold block">
+                          {isHe ? 'האם אתה בטוח שברצונך למחוק את החשבון?' : 'Are you sure you want to delete your account?'}
+                        </span>
+                        <span className="text-neutral-400">
+                          {isHe ? 'פעולה זו אינה הפיכה ותסיים את ההתחברות שלך מיידית.' : 'This action cannot be undone and signs you out immediately.'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          disabled={isDeletingAccount}
+                          onClick={() => {
+                            setConfirmDeleteAccount(false);
+                            setDeleteAccountError(null);
+                          }}
+                          className="min-h-[44px] px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-white text-xs font-medium cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          {isHe ? 'ביטול' : 'Cancel'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isDeletingAccount}
+                          onClick={handleDeleteOwnAccount}
+                          className="min-h-[44px] px-5 py-2 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {isDeletingAccount ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>{isHe ? 'מוחק חשבון...' : 'Deleting...'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{isHe ? 'אשר מחיקת חשבון' : 'Confirm Delete'}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
-
-                {deleteAccountError && (
-                  <p className="text-xs text-rose-300 bg-rose-950/60 border border-rose-500/35 px-3.5 py-2.5 rounded-xl">
-                    {deleteAccountError}
-                  </p>
-                )}
-
-                {confirmDeleteAccount && (
-                  <div className="rounded-xl bg-black/70 border border-rose-500/35 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="text-xs text-rose-100 leading-relaxed">
-                      <span className="font-bold block">
-                        {isHe ? 'האם אתה בטוח שברצונך למחוק את החשבון?' : 'Are you sure you want to delete your account?'}
-                      </span>
-                      <span className="text-neutral-400">
-                        {isHe ? 'פעולה זו אינה הפיכה ותסיים את ההתחברות שלך מיידית.' : 'This action cannot be undone and signs you out immediately.'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        disabled={isDeletingAccount}
-                        onClick={() => {
-                          setConfirmDeleteAccount(false);
-                          setDeleteAccountError(null);
-                        }}
-                        className="px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.15] border border-white/15 text-white text-xs font-medium cursor-pointer transition-colors disabled:opacity-50"
-                      >
-                        {isHe ? 'ביטול' : 'Cancel'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isDeletingAccount}
-                        onClick={handleDeleteOwnAccount}
-                        className="px-5 py-2 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer transition-colors flex items-center gap-2 disabled:opacity-50"
-                      >
-                        {isDeletingAccount ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>{isHe ? 'מוחק חשבון...' : 'Deleting...'}</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>{isHe ? 'אשר מחיקת חשבון' : 'Confirm Delete'}</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+              )}
             </div>
           </div>
         )}

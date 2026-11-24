@@ -4447,6 +4447,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
       uid,
       email: verifiedEmail || undefined,
       displayName,
+      googleDisplayName: displayName,
       photoURL: canonicalAvatarUrl || googlePhotoUrl || undefined,
       googlePhotoUrl: googlePhotoUrl || undefined,
       isAdmin,
@@ -4469,6 +4470,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
         uid,
         email: sessionPayload.email,
         displayName,
+        googleDisplayName: displayName,
         photoURL: sessionPayload.photoURL,
         googlePhotoUrl: sessionPayload.googlePhotoUrl,
         isAdmin,
@@ -4509,6 +4511,7 @@ app.get('/api/auth/me', async (req, res) => {
       uid: session.uid,
       email: session.email || undefined,
       displayName: liveName || session.displayName,
+      googleDisplayName: session.googleDisplayName || session.displayName || undefined,
       photoURL: liveAvatar || session.googlePhotoUrl || undefined,
       googlePhotoUrl: session.googlePhotoUrl || undefined,
       isAdmin: !!session.isAdmin,
@@ -4538,29 +4541,43 @@ app.post('/api/auth/restore-google-avatar', async (req, res) => {
 
     const { session } = parsed;
     const googlePhotoUrl = upgradeGooglePhotoQualityServer(session.googlePhotoUrl);
-    if (!googlePhotoUrl) {
-      return res.status(404).json({ success: false, error: 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' });
-    }
+    const googleDisplayName = String(session.googleDisplayName || session.displayName || '').trim() || 'אמן';
+    const restoreName = req.body?.restoreName !== false;
 
     const { client, bucket } = await getR2Context(req);
-    const r2AvatarUrl = await importExternalAvatarToR2(client, bucket, session.uid, googlePhotoUrl);
-    if (!r2AvatarUrl) {
-      return res.status(502).json({ success: false, error: 'הורדת תמונת Google אל האחסון נכשלה.' });
-    }
-
     let existingProfile: any = {};
     try {
       const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `profiles/${session.uid}.json` }));
       if (obj.Body) existingProfile = JSON.parse(await obj.Body.transformToString('utf-8'));
     } catch {}
 
+    let restoredAvatarUrl = '';
+    if (googlePhotoUrl) {
+      const imported = await importExternalAvatarToR2(client, bucket, session.uid, googlePhotoUrl);
+      if (imported) {
+        restoredAvatarUrl = imported;
+      } else {
+        restoredAvatarUrl = googlePhotoUrl;
+      }
+    } else if (existingProfile?.avatarUrl) {
+      restoredAvatarUrl = String(existingProfile.avatarUrl);
+    }
+
+    if (!restoredAvatarUrl && !restoreName) {
+      return res.status(404).json({ success: false, error: 'לא נמצאה תמונת פרופיל בחשבון Google שלך.' });
+    }
+
     const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};
+    const finalName = restoreName
+      ? googleDisplayName
+      : String(req.body?.name || '').trim() || cleanExisting.name || googleDisplayName;
+
     const updatedProfile = {
       ...cleanExisting,
       id: session.uid,
       googleUid: session.uid,
-      name: String(req.body?.name || '').trim() || cleanExisting.name || session.displayName || 'אמן',
-      avatarUrl: r2AvatarUrl,
+      name: finalName,
+      avatarUrl: restoredAvatarUrl,
       isConnected: true,
       hasAcceptedTerms: cleanExisting.hasAcceptedTerms ?? true,
       isPrivate: false,
@@ -4581,11 +4598,12 @@ app.post('/api/auth/restore-google-avatar', async (req, res) => {
 
     return res.json({
       success: true,
-      avatarUrl: r2AvatarUrl,
+      avatarUrl: restoredAvatarUrl,
+      displayName: finalName,
       profile: updatedProfile,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'שגיאה בשחזור תמונת Google' });
+    return res.status(500).json({ success: false, error: err?.message || 'שגיאה בשחזור פרטי Google' });
   }
 });
 

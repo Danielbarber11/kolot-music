@@ -9,9 +9,13 @@ import {
   User,
   Trash2,
   Disc,
+  Ticket,
+  Calendar,
+  ExternalLink,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, Album, ArtistProfile } from '../types';
+import { getArtistConcertShows, formatConcertDate } from '../utils/concertUtils';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { getArtistStableTheme, getTrackInstantColor, useExtractedColor } from '../services/colorService';
 import { getInstantSongPool, deduplicateTracks, isValidTrackWithOwner, getCachedAlbums, fetchRealAlbums, ALBUMS_UPDATED_EVENT, getCachedArtistProfiles, fetchAllArtistProfiles } from '../services/multiMusicService';
@@ -436,6 +440,51 @@ export const ArtistProfileModal: React.FC<ArtistProfileModalProps> = ({
             </div>
           </div>
         </div>
+
+        {/* UPCOMING CONCERT TICKETS FOR ARTIST (IF SET) */}
+        {(() => {
+          const shows = getArtistConcertShows(artistInfo, sampleTrack);
+          if (shows.length === 0) return null;
+          return (
+            <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-8 pt-6 w-full space-y-3">
+              <h3 className="text-sm font-normal text-white flex items-center gap-2">
+                <Ticket className="w-4 h-4 text-white" />
+                <span>{isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}</span>
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {shows.map((show) => (
+                  <div
+                    key={show.id}
+                    className="rounded-2xl bg-white/[0.06] border border-white/15 p-4 flex items-center justify-between gap-4 shadow-xl"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <h4 className="font-bold text-sm text-white truncate">{show.title}</h4>
+                      {(show.date || show.venue) && (
+                        <p className="text-xs text-white/70 flex items-center gap-1.5 tabular-nums truncate">
+                          <Calendar className="w-3.5 h-3.5 text-white/60 shrink-0" />
+                          <span className="truncate">
+                            {show.date ? formatConcertDate(show.date, isHe) : ''}
+                            {show.date && show.venue ? ' · ' : ''}
+                            {show.venue || ''}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                    <a
+                      href={show.ticketUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[42px] px-4 py-2 rounded-full bg-white hover:bg-neutral-200 text-black font-bold text-xs flex items-center gap-1.5 shrink-0 whitespace-nowrap transition-colors"
+                    >
+                      <span>{isHe ? 'להזמנה ופרטים נוספים' : 'Tickets & Details'}</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-black shrink-0" />
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ALBUMS ROW IF CREATED */}
         {artistAlbums.length > 0 && (

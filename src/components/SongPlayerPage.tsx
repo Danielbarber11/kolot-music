@@ -16,9 +16,13 @@ import {
   Check,
   Copy,
   Disc,
+  Ticket,
+  Calendar,
+  ExternalLink,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment, Album } from '../types';
+import { findArtistForTrack, getArtistConcertShows, formatConcertDate } from '../utils/concertUtils';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
 import { ArtistProfileModal } from './ArtistProfileModal';
 import { ArtistPortalModal } from './ArtistPortalModal';
@@ -43,6 +47,7 @@ import {
 import { trackEvent } from '../services/analyticsService';
 import {
   getCachedArtistProfiles,
+  getArtistAccountByUid,
   fetchAllArtistProfiles,
   upsertMemoryArtistProfile,
   removeMemoryArtistProfile,
@@ -240,7 +245,58 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
-  const effectiveArtists = allArtists.length > 0 ? allArtists : loadedArtists;
+  const effectiveArtists = React.useMemo(() => {
+    const map = new Map<string, ArtistProfile>();
+    allArtists.forEach((a) => {
+      const k = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() || a.name;
+      if (k) map.set(k, a);
+    });
+    loadedArtists.forEach((a) => {
+      const k = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() || a.name;
+      if (k) map.set(k, { ...(map.get(k) || {}), ...a });
+    });
+    return Array.from(map.values());
+  }, [allArtists, loadedArtists]);
+
+  useEffect(() => {
+    let active = true;
+    const ownerUid = (track.uploadedByUid || '').replace(/^artist_/, '').trim();
+    if (ownerUid) {
+      getArtistAccountByUid(ownerUid)
+        .then((freshArtist) => {
+          if (!active || !freshArtist) return;
+          setLoadedArtists((prev) => {
+            const k = (freshArtist.googleUid || freshArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+            const exists = prev.some((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() === k);
+            return exists
+              ? prev.map((a) => ((a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() === k ? { ...a, ...freshArtist } : a))
+              : [freshArtist, ...prev];
+          });
+        })
+        .catch(() => {});
+    } else if (loadedArtists.length === 0) {
+      fetchAllArtistProfiles()
+        .then((profiles) => {
+          if (active && Array.isArray(profiles) && profiles.length > 0) {
+            setLoadedArtists(profiles);
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      active = false;
+    };
+  }, [track.id, track.uploadedByUid]);
+
+  const matchedTrackArtist = React.useMemo(
+    () => findArtistForTrack(track, effectiveArtists),
+    [track, effectiveArtists]
+  );
+
+  const artistConcertShows = React.useMemo(
+    () => getArtistConcertShows(matchedTrackArtist, track),
+    [matchedTrackArtist, track]
+  );
 
   // Show album "הבא בתור" queue ONLY when the user explicitly entered the song through an album
   const albumQueueData = React.useMemo(() => {
@@ -2204,6 +2260,66 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
               </div>
             )}
           </div>
+        )}
+
+        {/* CONCERT TICKETS CARD AT BOTTOM OF ALL ARTIST SONGS */}
+        {artistConcertShows.length > 0 && (
+          <section
+            aria-label={isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}
+            className="p-5 sm:p-6 rounded-3xl bg-white/[0.08] backdrop-blur-2xl border border-white/20 space-y-4 shadow-2xl transform-gpu isolate"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-white/15 pb-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-full bg-white/15 border border-white/25 flex items-center justify-center shrink-0">
+                  <Ticket className="w-4 h-4 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-extrabold text-white truncate">
+                    {isHe ? 'כרטיסים להופעות' : 'Concert Tickets'}
+                  </h3>
+                  <p className="text-[11px] text-white/65 truncate">
+                    {matchedTrackArtist?.name || track.artistName}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="divide-y divide-white/10">
+              {artistConcertShows.map((show, idx) => (
+                <div
+                  key={show.id}
+                  className={`${idx === 0 ? 'pt-0.5' : 'pt-4'} ${idx === artistConcertShows.length - 1 ? 'pb-0.5' : 'pb-4'} flex flex-col sm:flex-row sm:items-center justify-between gap-3.5`}
+                >
+                  <div className="min-w-0 space-y-1">
+                    <h4 className="text-base font-bold text-white leading-snug">
+                      {show.title}
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-white/75">
+                      {show.date && (
+                        <span className="inline-flex items-center gap-1.5 tabular-nums">
+                          <Calendar className="w-3.5 h-3.5 text-white/65 shrink-0" />
+                          <span>{formatConcertDate(show.date, isHe)}</span>
+                        </span>
+                      )}
+                      {show.venue && (
+                        <span className="text-white/65 truncate">· {show.venue}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <a
+                    href={show.ticketUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[44px] px-5 py-2.5 rounded-full bg-white hover:bg-neutral-200 active:scale-[0.98] text-black font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shrink-0 whitespace-nowrap"
+                  >
+                    <span>{isHe ? 'להזמנה ופרטים נוספים' : 'Tickets & Details'}</span>
+                    <ExternalLink className="w-4 h-4 text-black shrink-0" />
+                  </a>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
 
       </div>

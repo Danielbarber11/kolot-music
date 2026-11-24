@@ -750,7 +750,7 @@ export async function syncArtistAvatarToTracksInR2(
   tracks: JamendoTrack[],
   artistNameHint?: string
 ): Promise<JamendoTrack[]> {
-  if (!avatarUrl || (!artistUid && !artistNameHint)) return tracks;
+  if ((!avatarUrl && !artistNameHint) || (!artistUid && !artistNameHint)) return tracks;
   const cleanUid = artistUid.replace(/^artist_/, '').toLowerCase().trim();
   const cleanName = (artistNameHint || '').toLowerCase().trim();
 
@@ -764,7 +764,7 @@ export async function syncArtistAvatarToTracksInR2(
     const { uploadedByEmail: _omit, ...safeTrack } = t as any;
     return {
       ...safeTrack,
-      artistAvatarUrl: avatarUrl,
+      ...(avatarUrl !== undefined ? { artistAvatarUrl: avatarUrl } : {}),
       ...(artistNameHint ? { artistName: artistNameHint } : {}),
     } as JamendoTrack;
   });
@@ -798,7 +798,7 @@ export async function syncArtistAvatarToTracksInR2(
           if (ownedIds.has(cleanItem?.id)) {
             return {
               ...cleanItem,
-              artistAvatarUrl: avatarUrl,
+              ...(avatarUrl !== undefined ? { artistAvatarUrl: avatarUrl } : {}),
               ...(artistNameHint ? { artistName: artistNameHint } : {}),
             };
           }
