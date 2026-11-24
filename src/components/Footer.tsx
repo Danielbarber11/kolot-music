@@ -103,7 +103,8 @@ export const Footer: React.FC<FooterProps> = ({
             a.id === `artist_${authUser?.uid}`
         )
       : undefined;
-    const resolvedEmail = (isSignedIn ? authUser?.email || '' : contactSenderEmail).trim();
+    const resolvedEmail = (authUser?.email || contactSenderEmail || '').trim();
+    const isValidEmail = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(resolvedEmail);
     const resolvedName = isSignedIn
       ? (matchedProfile?.name || authUser?.displayName || resolvedEmail).trim()
       : '';
@@ -112,9 +113,18 @@ export const Footer: React.FC<FooterProps> = ({
       rawAvatar && rawAvatar.startsWith('/') && typeof window !== 'undefined'
         ? `${window.location.origin}${rawAvatar}`
         : rawAvatar;
-    const senderContact = isSignedIn ? resolvedEmail || resolvedName : resolvedEmail;
+    const senderContact = resolvedEmail || resolvedName;
     const subject = contactSubject.trim();
     const message = contactMessage.trim();
+
+    if (!resolvedEmail || !isValidEmail) {
+      setContactError(
+        isHe
+          ? 'חובה להזין כתובת מייל תקינה כדי לשלוח דיווח או פנייה.'
+          : 'Please enter a valid email address to submit a report or inquiry.'
+      );
+      return;
+    }
 
     if (!subject || !message) {
       setContactError(
@@ -583,18 +593,18 @@ export const Footer: React.FC<FooterProps> = ({
                     </div>
                   </div>
 
-                  {/* 2. SENDER IDENTITY (SIGNED-IN ACCOUNT OR OPTIONAL EMAIL) */}
+                  {/* 2. SENDER IDENTITY (SIGNED-IN ACCOUNT EMAIL OR REQUIRED EMAIL INPUT) */}
                   <div className="space-y-1">
                     <label className="text-xs text-white/75 block font-medium">
-                      {authUser?.displayName || authUser?.email
+                      {authUser?.email
                         ? isHe
                           ? 'שולח (מהחשבון המחובר — יוצג למנהל בלבד):'
                           : 'Sender (Signed-in account — visible to admin only):'
                         : isHe
-                          ? 'כתובת המייל שלך (אופציונלי — מוצגת למנהל במקום שם):'
-                          : 'Your Email Address (Optional — shown to admin instead of a name):'}
+                          ? 'כתובת המייל שלך * (חובה לצורך שליחת הדיווח):'
+                          : 'Your Email Address * (Required to submit report):'}
                     </label>
-                    {authUser?.displayName || authUser?.email ? (
+                    {authUser?.email ? (
                       (() => {
                         const matchedProf = getCachedArtistProfiles().find(
                           (a) =>
@@ -617,11 +627,9 @@ export const Footer: React.FC<FooterProps> = ({
                               ) : null}
                               <div className="min-w-0 text-start">
                                 <div className="truncate font-semibold text-xs sm:text-sm">{previewName}</div>
-                                {authUser.email && (
-                                  <div className="truncate text-[11px] text-white/60" dir="ltr">
-                                    {authUser.email}
-                                  </div>
-                                )}
+                                <div className="truncate text-[11px] text-white/60" dir="ltr">
+                                  {authUser.email}
+                                </div>
                               </div>
                             </div>
                             <span className="text-[10px] text-white/75 shrink-0">
@@ -633,10 +641,14 @@ export const Footer: React.FC<FooterProps> = ({
                     ) : (
                       <input
                         type="email"
+                        required
                         dir="ltr"
                         placeholder="name@example.com"
                         value={contactSenderEmail}
-                        onChange={(e) => setContactSenderEmail(e.target.value)}
+                        onChange={(e) => {
+                          setContactSenderEmail(e.target.value);
+                          if (contactError) setContactError(null);
+                        }}
                         className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.06] border border-white/15 focus:border-white/60 focus:outline-none text-sm text-white placeholder-white/35"
                       />
                     )}
@@ -997,7 +1009,7 @@ export const TermsReaderModal: React.FC<{
     },
     {
       title: '36. סודיות דיווחים, זהות מדווח ושליחת פניות לקבוצת הניהול בלבד',
-      body: 'דיווחים על שירים, תלונות ופניות יצירת קשר הנשלחים דרך האתר נשמרים בתיבת הניהול הפרטית של מפעילי האתר בלבד ונשלחים לקבוצת הניהול (kolot-music@googlegroups.com); דיווחים אלה אינם חשופים לציבור ואינם נשלחים חזרה למייל המדווח. בעת שליחת דיווח מתוך חשבון Google מחובר, יצורפו אוטומטית שם המשתמש, כתובת המייל ותמונת הפרופיל לצורכי אימות ומניעת דיווחי סרק. מדווח שאינו מחובר רשאי להשאיר פרטי קשר ריקים או למסור כתובת מייל לבחירתו.',
+      body: 'דיווחים על שירים, תלונות ופניות יצירת קשר הנשלחים דרך האתר נשמרים בתיבת הניהול הפרטית של מפעילי האתר בלבד ונשלחים לקבוצת הניהול (kolot-music@googlegroups.com); דיווחים אלה אינם חשופים לציבור ואינם נשלחים חזרה למייל המדווח. בעת שליחת דיווח מתוך חשבון Google מחובר, יצורפו אוטומטית שם המשתמש, כתובת המייל ותמונת הפרופיל לצורכי אימות ומניעת דיווחי סרק. מדווח שאינו מחובר לחשבון המספק כתובת מייל חייב להזין כתובת מייל תקינה לצורך שליחת הדיווח.',
     },
     {
       title: '37. שימור תיעוד משפטי, לוגי אבטחה וזכויות פרטיות (תיקון 13 / GDPR)',
@@ -1160,7 +1172,7 @@ export const TermsReaderModal: React.FC<{
     },
     {
       title: '36. Confidentiality of Reports, Reporter Identity & Admin-Only Dispatch',
-      body: 'Song reports and contact inquiries are stored strictly in the private admin inbox and forwarded to management (kolot-music@googlegroups.com); reports are never public and the platform does not email copies back to the reporter. Signed-in reports include your account Name, Email, and Profile Photo for security and anti-abuse verification; signed-out reporters may omit identity or supply an optional email.',
+      body: 'Song reports and contact inquiries are stored strictly in the private admin inbox and forwarded to management (kolot-music@googlegroups.com); reports are never public and the platform does not email copies back to the reporter. Signed-in reports include your account Name, Email, and Profile Photo for security and anti-abuse verification; signed-out reporters (or accounts without an email) must provide a valid email address to submit a report.',
     },
     {
       title: '37. Legal Record Retention, Security Logs & Privacy Rights (Amendment 13 / GDPR)',

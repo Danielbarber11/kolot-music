@@ -62,7 +62,6 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
-    setIsSubmitting(true);
 
     const authUser = getCurrentAuthUser();
     const isSignedIn = Boolean(authUser?.uid);
@@ -76,6 +75,17 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         )
       : undefined;
     const resolvedReporterEmail = (authUser?.email || reporterEmailInput || '').trim();
+    const isValidEmail = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(resolvedReporterEmail);
+    if (!resolvedReporterEmail || !isValidEmail) {
+      setSubmitError(
+        isHe
+          ? 'חובה להזין כתובת מייל תקינה כדי לשלוח דיווח.'
+          : 'Please enter a valid email address to submit a report.'
+      );
+      return;
+    }
+
+    setIsSubmitting(true);
     const resolvedReporterName = isSignedIn
       ? (matchedProfile?.name || authUser?.displayName || resolvedReporterEmail || '').trim()
       : '';
@@ -144,7 +154,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
       `שיר: ${track.name} (ID: ${track.id})\n` +
       `אמן: ${track.artistName}` +
       `${isSignedIn ? `\nשם מלא (חשבון מחובר): ${resolvedReporterName || 'לא צוין'}` : ''}` +
-      `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : '\nמייל מפרסם הדיווח: לא סופק (מדווח ללא חשבון)'}` +
+      `${resolvedReporterEmail ? `\nמייל מפרסם הדיווח: ${resolvedReporterEmail}` : ''}` +
       `${resolvedReporterAvatarUrl ? `\nתמונת פרופיל: ${resolvedReporterAvatarUrl}` : ''}` +
       `${legalDocumentName ? `\nמסמך משפטי להסרה: ${legalDocumentName}` : ''}` +
       `${details.trim() ? `\nפירוט: ${details.trim()}` : ''}`;
@@ -160,7 +170,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
         credentials: 'include',
         body: JSON.stringify({
           category: reason === 'הפרת זכויות יוצרים' ? 'copyright' : 'complaint',
-          senderContact: isSignedIn ? resolvedReporterEmail || resolvedReporterName : resolvedReporterEmail,
+          senderContact: resolvedReporterEmail,
           senderName: resolvedReporterName,
           reporterEmail: resolvedReporterEmail,
           senderAvatarUrl: resolvedReporterAvatarUrl,
@@ -173,11 +183,24 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           legalDocumentKey,
           legalDocumentName,
         }),
-      }).then((r) => r.json().catch(() => null)),
+      }).then(async (r) => {
+        const data = await r.json().catch(() => null);
+        return { ok: r.ok, data };
+      }),
     ]);
 
+    if (
+      contactResult.status === 'fulfilled' &&
+      !contactResult.value?.ok &&
+      contactResult.value?.data?.error
+    ) {
+      setSubmitError(contactResult.value.data.error);
+      setIsSubmitting(false);
+      return;
+    }
+
     const dispatchedByServer =
-      contactResult.status === 'fulfilled' && Boolean(contactResult.value?.emailDispatched);
+      contactResult.status === 'fulfilled' && Boolean(contactResult.value?.data?.emailDispatched);
     if (!dispatchedByServer) {
       void fetch(`https://formsubmit.co/ajax/${encodeURIComponent('kolot-music@googlegroups.com')}`, {
         method: 'POST',
@@ -186,11 +209,11 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          email: resolvedReporterEmail || 'onboarding@resend.dev',
-          ...(resolvedReporterEmail ? { _replyto: resolvedReporterEmail } : {}),
+          email: resolvedReporterEmail,
+          _replyto: resolvedReporterEmail,
           name: senderLabel,
           ...(isSignedIn && resolvedReporterName ? { sender_name: resolvedReporterName } : {}),
-          reporter_email: resolvedReporterEmail || 'לא סופק (ללא חשבון)',
+          reporter_email: resolvedReporterEmail,
           ...(resolvedReporterAvatarUrl ? { profile_photo: resolvedReporterAvatarUrl } : {}),
           category: reason,
           subject: subjectLine,
@@ -319,16 +342,32 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
                 </div>
               </div>
 
-              {!currentUser?.email && (
+              {currentUser?.email ? (
                 <div className="space-y-2">
                   <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
-                    {isHe ? '2. כתובת המייל שלך (אופציונלי — מוצגת למנהל בדיווח)' : '2. Your Email (Optional — visible to admin in report)'}
+                    {isHe ? '2. פרטי המדווח (מהחשבון המחובר — למנהל בלבד)' : '2. Reporter Account (Signed In — Admin Only)'}
+                  </label>
+                  <div className="w-full px-4 py-3 rounded-2xl bg-neutral-100 border border-neutral-300 text-xs font-semibold text-neutral-900 flex items-center justify-between gap-2">
+                    <span className="truncate" dir="ltr">{currentUser.email}</span>
+                    <span className="text-[11px] text-neutral-600 shrink-0">
+                      {isHe ? 'מצורף מהחשבון' : 'From account'}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
+                    {isHe ? '2. כתובת המייל שלך * (חובה לצורך שליחת הדיווח)' : '2. Your Email Address * (Required to submit report)'}
                   </label>
                   <input
                     type="email"
+                    required
                     dir="ltr"
                     value={reporterEmailInput}
-                    onChange={(e) => setReporterEmailInput(e.target.value)}
+                    onChange={(e) => {
+                      setReporterEmailInput(e.target.value);
+                      if (submitError) setSubmitError(null);
+                    }}
                     placeholder="name@example.com"
                     className="w-full px-4 py-3 rounded-2xl bg-neutral-50 border border-neutral-300 text-black placeholder-neutral-400 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-black focus:bg-white transition-all"
                   />
@@ -393,9 +432,7 @@ export const ReportSongModal: React.FC<ReportSongModalProps> = ({
               {/* DETAILS TEXTAREA */}
               <div className="space-y-2">
                 <label className="block text-xs font-extrabold text-neutral-800 uppercase tracking-wider">
-                  {!currentUser?.email
-                    ? (isHe ? '3. פירוט נוסף (אופציונלי)' : '3. Additional Details (Optional)')
-                    : (isHe ? '2. פירוט נוסף (אופציונלי)' : '2. Additional Details (Optional)')}
+                  {isHe ? '3. פירוט נוסף (אופציונלי)' : '3. Additional Details (Optional)'}
                 </label>
                 <textarea
                   rows={3}

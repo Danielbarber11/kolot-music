@@ -1993,7 +1993,19 @@ export default {
           return jsonResponse({ success: false, error: 'Missing report fields' }, 400);
         }
         const sess = await extractSessionTop();
-        const reporterEmail = String(sess?.email || rep.reporterEmail || '').trim().slice(0, 160);
+        const rawReporterEmail = String(sess?.email || rep.reporterEmail || '').trim().slice(0, 160);
+        const reporterEmail = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(rawReporterEmail)
+          ? rawReporterEmail
+          : '';
+        if (!reporterEmail) {
+          return jsonResponse(
+            {
+              success: false,
+              error: 'חובה להזין כתובת מייל תקינה או להתחבר לחשבון עם כתובת מייל כדי לשלוח דיווח.',
+            },
+            400
+          );
+        }
         let profileData: any = null;
         if (sess?.uid) {
           const cleanUid = String(sess.uid).replace(/[^a-zA-Z0-9_\-]/g, '');
@@ -2557,6 +2569,15 @@ export default {
           : extractValidEmail(
               String(body?.reporterEmail || body?.senderEmail || body?.senderContact || '')
             );
+        if (!reporterEmail) {
+          return jsonResponse(
+            {
+              success: false,
+              error: 'חובה להזין כתובת מייל תקינה או להתחבר לחשבון עם כתובת מייל כדי לשלוח דיווח.',
+            },
+            400
+          );
+        }
         const resolvedSenderName = isSignedIn
           ? String(profileData?.name || sess?.displayName || body?.senderName || reporterEmail || '')
               .trim()

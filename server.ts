@@ -3099,9 +3099,18 @@ app.post('/api/storage/report', async (req, res) => {
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
     const sess = parsedSession?.session;
-    const reporterEmail = String(sess?.email || rep.reporterEmail || '')
+    const rawReporterEmail = String(sess?.email || rep.reporterEmail || '')
       .trim()
       .slice(0, 160);
+    const reporterEmail = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(rawReporterEmail)
+      ? rawReporterEmail
+      : '';
+    if (!reporterEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'חובה להזין כתובת מייל תקינה או להתחבר לחשבון עם כתובת מייל כדי לשלוח דיווח.',
+      });
+    }
 
     const { client, bucket } = await getR2Context(req);
     const protoHeader = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
@@ -3728,6 +3737,12 @@ app.post('/api/contact', async (req, res) => {
       : extractValidEmail(
           String(req.body?.reporterEmail || req.body?.senderEmail || req.body?.senderContact || '')
         );
+    if (!reporterEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'חובה להזין כתובת מייל תקינה או להתחבר לחשבון עם כתובת מייל כדי לשלוח דיווח.',
+      });
+    }
     const resolvedSenderName = isSignedIn
       ? String(profileData?.name || sess?.displayName || req.body?.senderName || reporterEmail || '')
           .trim()
