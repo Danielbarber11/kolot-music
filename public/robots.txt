@@ -2,5 +2,6 @@ User-agent: *
 Allow: /
 Disallow: /api/
 Disallow: /auth/
+Disallow: /offline.html
 
 Sitemap: https://kolot-music.kolot-music.workers.dev/sitemap.xml

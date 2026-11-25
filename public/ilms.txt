@@ -1,0 +1,23 @@
+# Kolot Music (קולות מוזיקה)
+
+> Free independent music streaming, album creation, and AI subtitle platform in Hebrew and English.
+
+Kolot Music is a cloud music platform where listeners stream songs and albums for free, and independent artists upload tracks, manage profiles, create albums, and generate synchronized trilingual AI subtitles.
+
+- Official URL: https://kolot-music.kolot-music.workers.dev/
+- Contact: kolot-music@googlegroups.com
+- TikTok: https://www.tiktok.com/@kolot_music
+
+## Key Pages
+
+- [Home & Music Catalog](https://kolot-music.kolot-music.workers.dev/): Browse featured songs, albums, and artists
+- [Search Songs & Artists](https://kolot-music.kolot-music.workers.dev/?q={query}): Search the music catalog by song title, artist, lyrics, or genre
+- [Direct Song Player](https://kolot-music.kolot-music.workers.dev/?song={trackId}): Open and stream a specific song with synchronized subtitles
+- [XML Sitemap](https://kolot-music.kolot-music.workers.dev/sitemap.xml): Dynamic sitemap of all public tracks
+
+## Public Read-Only Data Feeds
+
+- [Bootstrap Catalog Feed](https://kolot-music.kolot-music.workers.dev/api/bootstrap): Combined tracks, artist profiles, and albums JSON
+- [Tracks Feed](https://kolot-music.kolot-music.workers.dev/api/storage/tracks-feed): All published tracks metadata JSON
+- [Artists Feed](https://kolot-music.kolot-music.workers.dev/api/storage/profiles-feed): Public artist profiles JSON
+- [Albums Feed](https://kolot-music.kolot-music.workers.dev/api/storage/albums-feed): Published albums JSON

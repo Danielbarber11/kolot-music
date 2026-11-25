@@ -4286,12 +4286,12 @@ export default {
       }
     }
 
-    // 18. Dynamic SEO & Agent Discovery Files (robots.txt, sitemap.xml, llms.txt)
+    // 18. Dynamic SEO & Agent Discovery Files (robots.txt, sitemap.xml, llms.txt / ilms.txt)
     if (pathname === '/robots.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
       const canonicalOrigin = url.origin.includes('kolot-music.workers.dev')
         ? url.origin
         : 'https://kolot-music.kolot-music.workers.dev';
-      const bodyTxt = `User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /auth/\n\nSitemap: ${canonicalOrigin}/sitemap.xml\n`;
+      const bodyTxt = `User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /auth/\nDisallow: /offline.html\n\nSitemap: ${canonicalOrigin}/sitemap.xml\n`;
       return new Response(request.method === 'HEAD' ? null : bodyTxt, {
         status: 200,
         headers: {
@@ -4302,26 +4302,31 @@ export default {
       });
     }
 
-    if (pathname === '/llms.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
+    if ((pathname === '/llms.txt' || pathname === '/ilms.txt') && (request.method === 'GET' || request.method === 'HEAD')) {
       const bodyTxt = [
         '# Kolot Music (קולות מוזיקה)',
         '',
-        '> Free independent music streaming, album creation, and AI subtitle platform.',
-        '> Official URL: https://kolot-music.kolot-music.workers.dev/',
-        '> Contact: kolot-music@googlegroups.com',
-        '> Social: https://www.tiktok.com/@kolot_music',
+        '> Free independent music streaming, album creation, and AI subtitle platform in Hebrew and English.',
         '',
-        '## Key Pages & Endpoints',
-        '- Home & Catalog: https://kolot-music.kolot-music.workers.dev/',
-        '- Search Songs/Artists: https://kolot-music.kolot-music.workers.dev/?q={query}',
-        '- Direct Song Player: https://kolot-music.kolot-music.workers.dev/?song={trackId}',
-        '- XML Sitemap: https://kolot-music.kolot-music.workers.dev/sitemap.xml',
+        'Kolot Music is a cloud music platform where listeners stream songs and albums for free, and independent artists upload tracks, manage profiles, create albums, and generate synchronized trilingual AI subtitles.',
         '',
-        '## Public Data Feeds (Read-Only JSON)',
-        '- Bootstrap Feed: /api/bootstrap',
-        '- Tracks Feed: /api/storage/tracks-feed',
-        '- Artists Feed: /api/storage/profiles-feed',
-        '- Albums Feed: /api/storage/albums-feed',
+        '- Official URL: https://kolot-music.kolot-music.workers.dev/',
+        '- Contact: kolot-music@googlegroups.com',
+        '- TikTok: https://www.tiktok.com/@kolot_music',
+        '',
+        '## Key Pages',
+        '',
+        '- [Home & Music Catalog](https://kolot-music.kolot-music.workers.dev/): Browse featured songs, albums, and artists',
+        '- [Search Songs & Artists](https://kolot-music.kolot-music.workers.dev/?q={query}): Search the music catalog by song title, artist, lyrics, or genre',
+        '- [Direct Song Player](https://kolot-music.kolot-music.workers.dev/?song={trackId}): Open and stream a specific song with synchronized subtitles',
+        '- [XML Sitemap](https://kolot-music.kolot-music.workers.dev/sitemap.xml): Dynamic sitemap of all public tracks',
+        '',
+        '## Public Read-Only Data Feeds',
+        '',
+        '- [Bootstrap Catalog Feed](https://kolot-music.kolot-music.workers.dev/api/bootstrap): Combined tracks, artist profiles, and albums JSON',
+        '- [Tracks Feed](https://kolot-music.kolot-music.workers.dev/api/storage/tracks-feed): All published tracks metadata JSON',
+        '- [Artists Feed](https://kolot-music.kolot-music.workers.dev/api/storage/profiles-feed): Public artist profiles JSON',
+        '- [Albums Feed](https://kolot-music.kolot-music.workers.dev/api/storage/albums-feed): Published albums JSON',
       ].join('\n');
       return new Response(request.method === 'HEAD' ? null : bodyTxt, {
         status: 200,
@@ -4365,7 +4370,7 @@ export default {
       const isDocumentRequest = pathname === '/' || pathname === '/index.html';
       const isStaticAssetPath =
         pathname.startsWith('/assets/') ||
-        /\.(?:js|mjs|css|wasm|map|json|svg|png|jpg|jpeg|webp|ico|woff2?)$/i.test(pathname);
+        /\.(?:js|mjs|css|wasm|map|json|txt|xml|svg|png|jpg|jpeg|webp|ico|woff2?)$/i.test(pathname);
 
       if (isDocumentRequest) {
         const docRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
