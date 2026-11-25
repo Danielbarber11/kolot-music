@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import {
   Search,
   X,
@@ -53,18 +53,12 @@ import {
   TRACK_DELETED_EVENT,
   ALBUMS_UPDATED_EVENT,
 } from '../services/multiMusicService';
-import { SongPlayerPage } from './SongPlayerPage';
 import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
-import { ArtistPortalModal } from './ArtistPortalModal';
-import { ArtistProfileModal } from './ArtistProfileModal';
-import { AlbumModal } from './AlbumModal';
 import { Logo } from './Logo';
-import { TermsModal } from './TermsModal';
 import { Footer, TermsReaderModal } from './Footer';
 import { CookieBanner } from './CookieBanner';
 import { DevToolsProtection } from './DevToolsProtection';
-import { AuthModal } from './AuthModal';
 import { AccessibilityIcon } from './AccessibilityPage';
 import {
   AuthUser,
@@ -83,9 +77,27 @@ import {
   normalizeGenreId,
   getGenreDisplayLabel,
   isUntaggedGenre,
-  classifyTrackAudio,
-} from '../services/audioClassificationService';
+} from '../utils/genreUtils';
 import { saveCachedCloudTracks } from '../services/multiMusicService';
+
+const SongPlayerPage = React.lazy(() =>
+  import('./SongPlayerPage').then((m) => ({ default: m.SongPlayerPage }))
+);
+const ArtistPortalModal = React.lazy(() =>
+  import('./ArtistPortalModal').then((m) => ({ default: m.ArtistPortalModal }))
+);
+const ArtistProfileModal = React.lazy(() =>
+  import('./ArtistProfileModal').then((m) => ({ default: m.ArtistProfileModal }))
+);
+const AlbumModal = React.lazy(() =>
+  import('./AlbumModal').then((m) => ({ default: m.AlbumModal }))
+);
+const TermsModal = React.lazy(() =>
+  import('./TermsModal').then((m) => ({ default: m.TermsModal }))
+);
+const AuthModal = React.lazy(() =>
+  import('./AuthModal').then((m) => ({ default: m.AuthModal }))
+);
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { useNetworkHealth } from '../services/networkHealthService';
 import {
@@ -127,13 +139,13 @@ const ArtistCircleImage: React.FC<{
   alt: string;
   className?: string;
   fallbackIconClassName?: string;
-}> = ({ src, alt, className = 'w-full h-full object-cover', fallbackIconClassName = 'w-12 h-12 text-white/40' }) => {
+}> = ({ src, alt, className = 'w-full h-full object-cover', fallbackIconClassName = 'w-12 h-12 text-white/60' }) => {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const showFallback = !src || failedSrc === src;
 
   if (showFallback) {
     return (
-      <div className="w-full h-full flex items-center justify-center text-white/40 bg-neutral-900">
+      <div className="w-full h-full flex items-center justify-center text-white/60 bg-neutral-900">
         <User className={fallbackIconClassName} />
       </div>
     );
@@ -143,9 +155,11 @@ const ArtistCircleImage: React.FC<{
     <img
       src={src}
       alt={alt}
+      width={240}
+      height={240}
       referrerPolicy="no-referrer"
-      loading="eager"
-      decoding="sync"
+      loading="lazy"
+      decoding="async"
       onError={() => setFailedSrc(src)}
       className={className}
     />
@@ -1008,21 +1022,24 @@ export const SongsView: React.FC<SongsViewProps> = ({
     let updatedCount = 0;
     const targets = untaggedTracks.slice(0, 12);
 
-    for (const track of targets) {
-      try {
-        const res = await classifyTrackAudio({ track });
-        if (res.success && res.genre) {
-          updatedCount += 1;
-          const updatedTrack: JamendoTrack = { ...track, genre: res.genre };
-          setAllTracks((prev) => {
-            const next = prev.map((item) => (item.id === track.id ? updatedTrack : item));
-            saveCachedCloudTracks(next);
-            return next;
-          });
-          await saveTrackGenreInCloud(updatedTrack, res.genre);
-        }
-      } catch {}
-    }
+    try {
+      const { classifyTrackAudio } = await import('../services/audioClassificationService');
+      for (const track of targets) {
+        try {
+          const res = await classifyTrackAudio({ track });
+          if (res.success && res.genre) {
+            updatedCount += 1;
+            const updatedTrack: JamendoTrack = { ...track, genre: res.genre };
+            setAllTracks((prev) => {
+              const next = prev.map((item) => (item.id === track.id ? updatedTrack : item));
+              saveCachedCloudTracks(next);
+              return next;
+            });
+            await saveTrackGenreInCloud(updatedTrack, res.genre);
+          }
+        } catch {}
+      }
+    } catch {}
 
     setIsBulkClassifying(false);
     setBulkClassifyNotice(
@@ -1049,7 +1066,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
       <DevToolsProtection />
 
       {/* MANDATORY TERMS OVERLAY */}
-      <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
+      {showTermsModal && (
+        <Suspense fallback={null}>
+          <TermsModal isOpen={showTermsModal} onAccept={handleAcceptTerms} lang={lang} />
+        </Suspense>
+      )}
 
       {/* READ-ONLY TERMS OF SERVICE VIEWER */}
       <TermsReaderModal isOpen={showLegalTermsModal} onClose={handleCloseLegalTerms} lang={lang} />
@@ -1095,8 +1116,10 @@ export const SongsView: React.FC<SongsViewProps> = ({
               />
               {searchQuery && (
                 <button
+                  type="button"
                   onClick={() => setSearchQuery('')}
-                  className="absolute inset-y-0 end-3 flex items-center text-white/60 hover:text-white cursor-pointer"
+                  aria-label={isHe ? 'נקה חיפוש' : 'Clear search'}
+                  className="absolute inset-y-0 end-3 flex items-center text-white/75 hover:text-white cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1167,9 +1190,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
             ) : (
               <div className="flex items-center gap-2 shrink-0">
                 <button
+                  type="button"
                   onClick={handleProfileClick}
                   className="w-10 h-10 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-[0_4px_18px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.35)] shrink-0"
                   title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
+                  aria-label={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
                 >
                   <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
                     {(() => {
@@ -1199,6 +1224,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
       >
         <button
           type="button"
+          tabIndex={isMobileSearchOpen ? -1 : 0}
           onClick={() => {
             setSearchQuery('');
             setArtistFilter(null);
@@ -1216,6 +1242,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
         {onOpenAccessibility ? (
           <button
             type="button"
+            tabIndex={isMobileSearchOpen ? -1 : 0}
             onClick={onOpenAccessibility}
             className={`pointer-events-auto w-11 h-11 aspect-square rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border shadow-[0_6px_20px_rgba(0,0,0,0.85)] ${
               activeAccessibilityCount > 0
@@ -1342,9 +1369,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
           </button>
         ) : (
           <button
+            type="button"
             onClick={handleProfileClick}
             className="w-10 h-10 aspect-square rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-xl border border-white/40 ring-1 ring-white/25 p-1 text-white flex items-center justify-center overflow-hidden cursor-pointer transition-all shadow-[0_4px_18px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.35)] shrink-0"
             title={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
+            aria-label={authUser.displayName || (isHe ? 'פרופיל' : 'Profile')}
           >
             <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
               {(() => {
@@ -1420,6 +1449,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
           ref={mainFeedRef}
           className="flex-1 min-h-0 bg-black border-none overflow-y-auto overscroll-y-contain custom-scrollbar flex flex-col pt-14 md:pt-0 pb-24 md:pb-0"
         >
+          {!isFilteredOrSearching && (
+            <h1 className="sr-only">
+              {isHe ? 'Kolot Music – קולות מוזיקה | פלטפורמת מוזיקה חינמית' : 'Kolot Music – Free Music Streaming Platform'}
+            </h1>
+          )}
           {/* WEAK / OFFLINE INTERNET HEALTH PILL NOTICE */}
           {(networkHealth.status === 'offline' || (networkHealth.status === 'weak' && !dismissedWeakNetBanner)) && (
             <div className="px-4 pt-3 flex justify-center">
@@ -1568,7 +1602,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             <img
                               src={getStreamingMediaUrl(coverToUse)}
                               alt={album.title}
-                              loading="eager"
+                              width={400}
+                              height={400}
+                              loading="lazy"
                               decoding="async"
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             />
@@ -1584,14 +1620,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             e.stopPropagation();
                             openArtistProfile(album.artistName, album.uploadedByUid || album.artistId);
                           }}
-                          className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                          className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                         >
                           {album.artistName}
                         </p>
                       </div>
-                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/70">
                         <span>{albumTracks.length} {isHe ? 'שירים' : 'tracks'}</span>
-                        <span className="text-[10px] text-white/40 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
+                        <span className="text-[10px] text-white/65 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
                       </div>
                     </div>
                   );
@@ -1675,7 +1711,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 artistName={track.artistName}
                                 trackName={track.name}
                                 genre={track.genre}
-                                priority={idx < 12}
+                                priority={idx < 3}
                               />
                             </div>
                             {track.isAiGenerated && (
@@ -1711,8 +1747,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         </div>
 
                         {/* Metadata indicator with rank/genre + favorite button */}
-                        <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60 gap-2">
-                          <span className="text-[10px] text-white/55 font-medium truncate">
+                        <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/70 gap-2">
+                          <span className="text-[10px] text-white/70 font-medium truncate">
                             {activeTab === 'leading' && !searchQuery.trim() && !selectedGenre && !artistFilter ? (
                               <>
                                 <span className="font-mono tabular-nums text-white/85 font-bold">#{idx + 1}</span>
@@ -1730,6 +1766,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               toggleFavorite(track.id);
                             }}
                             className="hover:scale-110 transition-transform p-1 cursor-pointer"
+                            aria-pressed={likedSongIds.includes(track.id)}
+                            aria-label={
+                              likedSongIds.includes(track.id)
+                                ? isHe
+                                  ? `הסר את ${track.name} ממועדפים`
+                                  : `Remove ${track.name} from favorites`
+                                : isHe
+                                ? `הוסף את ${track.name} למועדפים`
+                                : `Add ${track.name} to favorites`
+                            }
                             title={
                               likedSongIds.includes(track.id)
                                 ? isHe
@@ -1744,7 +1790,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               className={`w-3.5 h-3.5 ${
                                 likedSongIds.includes(track.id)
                                   ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
-                                  : 'text-white/40 hover:text-white'
+                                  : 'text-white/65 hover:text-white'
                               }`}
                             />
                           </button>
@@ -1783,12 +1829,12 @@ export const SongsView: React.FC<SongsViewProps> = ({
                       </div>
 
                       <div className="space-y-1 max-w-xs w-full px-1">
-                        <span className="text-[11px] font-semibold text-white/70 block">
+                        <span className="text-[11px] font-semibold text-white/75 block">
                           {isHe ? 'מומלץ' : 'Featured'}
                         </span>
-                        <h1 className="text-xl font-black text-white tracking-tight leading-tight line-clamp-1">
+                        <h2 className="text-xl font-black text-white tracking-tight leading-tight line-clamp-1">
                           {featuredTrack.name}
-                        </h1>
+                        </h2>
                       </div>
 
                       <div className="flex items-center justify-center gap-2.5 pt-1">
@@ -1801,7 +1847,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         >
                           <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-black/30">
                             {artistAvatarImg ? (
-                              <img src={artistAvatarImg} alt="" referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
+                              <img src={artistAvatarImg} alt="" width={42} height={42} referrerPolicy="no-referrer" loading="eager" decoding="async" className="w-full h-full object-cover rounded-full" />
                             ) : (
                               <User className="w-4 h-4 text-white" />
                             )}
@@ -1820,6 +1866,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => toggleFavorite(featuredTrack.id)}
+                          aria-pressed={likedSongIds.includes(featuredTrack.id)}
                           className={`w-10 h-10 aspect-square rounded-full border flex items-center justify-center shrink-0 transition-all cursor-pointer active:scale-95 ${
                             likedSongIds.includes(featuredTrack.id)
                               ? 'bg-white/25 border-white/50 text-white shadow-[0_0_15px_rgba(255,255,255,0.2)]'
@@ -1846,22 +1893,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           <span>{isHe ? 'מומלץ' : 'Featured'}</span>
                         </div>
 
-                        <h1 className="text-4xl lg:text-5xl font-black text-white tracking-tight leading-tight">
+                        <h2 className="text-4xl lg:text-5xl font-black text-white tracking-tight leading-tight">
                           {featuredTrack.name}
-                        </h1>
+                        </h2>
 
-                        <div className="flex flex-wrap items-center justify-start gap-3 text-sm text-white/70">
+                        <div className="flex flex-wrap items-center justify-start gap-3 text-sm text-white/75">
                           <span>{getGenreDisplayLabel(featuredTrack.genre, isHe)}</span>
                           {featuredTrack.albumName && (
                             <>
                               <span className="w-1.5 h-1.5 rounded-full bg-white/40" />
-                              <span className="text-white/60">{featuredTrack.albumName}</span>
+                              <span className="text-white/70">{featuredTrack.albumName}</span>
                             </>
                           )}
                         </div>
 
                         <div className="pt-2 flex flex-wrap items-center justify-start gap-3">
                           <button
+                            type="button"
                             onClick={() => openSongPlayer(featuredTrack)}
                             className="px-7 py-3 rounded-full bg-white text-black font-bold text-sm hover:scale-105 active:scale-95 transition-all shadow-[0_8px_25px_rgba(255,255,255,0.25)] flex items-center gap-2.5 cursor-pointer"
                           >
@@ -1872,6 +1920,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                           <button
                             type="button"
                             onClick={() => toggleFavorite(featuredTrack.id)}
+                            aria-pressed={likedSongIds.includes(featuredTrack.id)}
+                            aria-label={isHe ? 'הוסף למועדפים' : 'Favorite'}
                             className={`p-3 rounded-full border transition-all cursor-pointer active:scale-95 ${
                               likedSongIds.includes(featuredTrack.id)
                                 ? 'bg-white/25 border-white/50 text-white shadow-[0_0_15px_rgba(255,255,255,0.2)]'
@@ -2002,7 +2052,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                   >
                     <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-neutral-900 flex items-center justify-center shrink-0 overflow-hidden border border-white/15">
                       {item.cover && isAuthenticCover(item.cover) ? (
-                        <img src={getStreamingMediaUrl(item.cover)} alt="" loading="eager" decoding="async" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                        <img src={getStreamingMediaUrl(item.cover)} alt="" width={80} height={80} loading={i < 2 ? 'eager' : 'lazy'} decoding="async" className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
                       ) : (
                         <item.icon className="w-4 h-4 text-white fill-white/20" />
                       )}
@@ -2160,7 +2210,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               artistName={track.artistName}
                               trackName={track.name}
                               genre={track.genre}
-                              priority={idx < 7}
+                              priority={idx < 3}
                             />
                           </div>
                           {track.isAiGenerated && (
@@ -2188,14 +2238,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             e.stopPropagation();
                             openArtistProfile(track.artistName, track.uploadedByUid);
                           }}
-                          className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                          className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                         >
                           {track.artistName}
                         </p>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                        <span className="text-[10px] text-white/50 font-medium truncate">
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/70">
+                        <span className="text-[10px] text-white/70 font-medium truncate">
                           {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
@@ -2205,6 +2255,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             toggleFavorite(track.id);
                           }}
                           className="hover:scale-110 transition-transform p-1 cursor-pointer"
+                          aria-pressed={likedSongIds.includes(track.id)}
+                          aria-label={
+                            likedSongIds.includes(track.id)
+                              ? isHe
+                                ? `הסר את ${track.name} ממועדפים`
+                                : `Remove ${track.name} from favorites`
+                              : isHe
+                              ? `הוסף את ${track.name} למועדפים`
+                              : `Add ${track.name} to favorites`
+                          }
                           title={
                             likedSongIds.includes(track.id)
                               ? isHe
@@ -2219,7 +2279,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             className={`w-3.5 h-3.5 ${
                               likedSongIds.includes(track.id)
                                 ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
-                                : 'text-white/40 hover:text-white'
+                                : 'text-white/65 hover:text-white'
                             }`}
                           />
                         </button>
@@ -2262,7 +2322,9 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 <img
                                   src={getStreamingMediaUrl(coverToUse)}
                                   alt={album.title}
-                                  loading="eager"
+                                  width={400}
+                                  height={400}
+                                  loading="lazy"
                                   decoding="async"
                                   onError={(e) => {
                                     (e.currentTarget as HTMLImageElement).style.display = 'none';
@@ -2284,17 +2346,17 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 e.stopPropagation();
                                 openArtistProfile(album.artistName, album.uploadedByUid || album.artistId);
                               }}
-                              className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                              className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                             >
                               {album.artistName}
                             </p>
                           </div>
 
-                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
+                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/70">
                             <span>
                               {albumTracks.length || album.trackIds?.length || 0} {isHe ? 'שירים' : 'tracks'}
                             </span>
-                            <span className="text-[10px] text-white/40 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
+                            <span className="text-[10px] text-white/65 font-medium">{isHe ? 'אלבום' : 'Album'}</span>
                           </div>
                         </div>
                       );
@@ -2390,7 +2452,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               artistName={track.artistName}
                               trackName={track.name}
                               genre={track.genre}
-                              priority={idx < 5}
+                              priority={false}
                             />
                           </div>
                           {track.isAiGenerated && (
@@ -2424,8 +2486,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
                         </p>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/60">
-                        <span className="text-white/60 text-[10px] font-medium truncate">
+                      <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-white/70">
+                        <span className="text-white/70 text-[10px] font-medium truncate">
                           {getGenreDisplayLabel(track.genre, isHe)}
                         </span>
                         <button
@@ -2435,6 +2497,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             toggleFavorite(track.id);
                           }}
                           className="hover:scale-110 transition-transform p-1 cursor-pointer"
+                          aria-pressed={likedSongIds.includes(track.id)}
+                          aria-label={
+                            likedSongIds.includes(track.id)
+                              ? isHe
+                                ? `הסר את ${track.name} ממועדפים`
+                                : `Remove ${track.name} from favorites`
+                              : isHe
+                              ? `הוסף את ${track.name} למועדפים`
+                              : `Add ${track.name} to favorites`
+                          }
                           title={
                             likedSongIds.includes(track.id)
                               ? isHe
@@ -2449,7 +2521,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             className={`w-3.5 h-3.5 ${
                               likedSongIds.includes(track.id)
                                 ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
-                                : 'text-white/40 hover:text-white'
+                                : 'text-white/65 hover:text-white'
                             }`}
                           />
                         </button>
@@ -2547,7 +2619,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                   artistName={track.artistName}
                                   trackName={track.name}
                                   genre={track.genre}
-                                  priority={idx < 4}
+                                  priority={false}
                                 />
                               </div>
                               {track.isAiGenerated && (
@@ -2570,7 +2642,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 e.stopPropagation();
                                 openArtistProfile(track.artistName, track.uploadedByUid);
                               }}
-                              className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                              className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                             >
                               {track.artistName}
                             </p>
@@ -2588,6 +2660,16 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 toggleFavorite(track.id);
                               }}
                               className="hover:scale-110 transition-transform p-1 cursor-pointer"
+                              aria-pressed={likedSongIds.includes(track.id)}
+                              aria-label={
+                                likedSongIds.includes(track.id)
+                                  ? isHe
+                                    ? `הסר את ${track.name} ממועדפים`
+                                    : `Remove ${track.name} from favorites`
+                                  : isHe
+                                  ? `הוסף את ${track.name} למועדפים`
+                                  : `Add ${track.name} to favorites`
+                              }
                               title={
                                 likedSongIds.includes(track.id)
                                   ? isHe
@@ -2602,7 +2684,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 className={`w-3.5 h-3.5 ${
                                   likedSongIds.includes(track.id)
                                     ? 'fill-white text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.45)]'
-                                    : 'text-white/40 hover:text-white'
+                                    : 'text-white/65 hover:text-white'
                                 }`}
                               />
                             </button>
@@ -2629,58 +2711,164 @@ export const SongsView: React.FC<SongsViewProps> = ({
       {/* FULL-PAGE SONG PLAYER OVERLAY (ONLY IF DIRECTLY INLINE, THOUGH APP.TSX MANAGES IT NORMALLY) */}
       <AnimatePresence>
         {playerTrack && (
-          <SongPlayerPage
-            track={playerTrack}
-            activeAlbumContext={playerAlbumContext}
-            onBack={closeSongPlayer}
-            onFilterByArtist={(artist) => {
-              setArtistFilter(artist);
-              closeSongPlayer();
-            }}
-            isLiked={likedSongIds.includes(playerTrack.id)}
-            onToggleLike={toggleFavorite}
-            onRequireAuth={() => openLoginModal()}
-            lang={lang}
-            allTracks={allTracks}
-            allArtists={allArtists}
-            allAlbums={popularAlbums}
-            onPlayTrack={(track, albCtx) => {
-              setPlayerAlbumContext(albCtx ?? null);
-              setPlayerTrack(track);
-            }}
-            onRemoveTrack={async (trackId) => {
-              markSongAsDeleted(trackId);
-              setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
-              if (playerTrack?.id === trackId) {
+          <Suspense fallback={null}>
+            <SongPlayerPage
+              track={playerTrack}
+              activeAlbumContext={playerAlbumContext}
+              onBack={closeSongPlayer}
+              onFilterByArtist={(artist) => {
+                setArtistFilter(artist);
                 closeSongPlayer();
-              }
-              await Promise.allSettled([
-                removeTrackFromStorage(trackId),
-                deleteTrackFromCloud(trackId),
-              ]);
-            }}
-          />
+              }}
+              isLiked={likedSongIds.includes(playerTrack.id)}
+              onToggleLike={toggleFavorite}
+              onRequireAuth={() => openLoginModal()}
+              lang={lang}
+              allTracks={allTracks}
+              allArtists={allArtists}
+              allAlbums={popularAlbums}
+              onPlayTrack={(track, albCtx) => {
+                setPlayerAlbumContext(albCtx ?? null);
+                setPlayerTrack(track);
+              }}
+              onRemoveTrack={async (trackId) => {
+                markSongAsDeleted(trackId);
+                setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+                if (playerTrack?.id === trackId) {
+                  closeSongPlayer();
+                }
+                await Promise.allSettled([
+                  removeTrackFromStorage(trackId),
+                  deleteTrackFromCloud(trackId),
+                ]);
+              }}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
       {/* PUBLIC ARTIST PROFILE MODAL */}
       <AnimatePresence>
         {profileArtistName && (
-          <ArtistProfileModal
-            artistName={profileArtistName}
-            artistUid={profileArtistUid}
-            isOpen={!!profileArtistName}
-            onClose={closeArtistProfile}
-            allTracks={Array.isArray(allTracks) ? allTracks : []}
-            allArtists={allArtists}
-            allAlbums={popularAlbums}
-            onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
+          <Suspense fallback={null}>
+            <ArtistProfileModal
+              artistName={profileArtistName}
+              artistUid={profileArtistUid}
+              isOpen={!!profileArtistName}
+              onClose={closeArtistProfile}
+              allTracks={Array.isArray(allTracks) ? allTracks : []}
+              allArtists={allArtists}
+              allAlbums={popularAlbums}
+              onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
+              lang={lang}
+              onToggleLike={toggleFavorite}
+              likedSongIds={likedSongIds}
+              onOpenPortal={() => {
+                closeArtistProfile();
+                setIsArtistPortalOpen(true);
+              }}
+              onRemoveTrack={async (trackId) => {
+                markSongAsDeleted(trackId);
+                setAllTracks((prev) => {
+                  const next = prev.filter((t) => t.id !== trackId);
+                  saveCachedCloudTracks(next);
+                  onTracksSync?.(next);
+                  return next;
+                });
+                await Promise.allSettled([
+                  removeTrackFromStorage(trackId),
+                  deleteTrackFromCloud(trackId),
+                ]);
+              }}
+            />
+          </Suspense>
+        )}
+      </AnimatePresence>
+
+      {/* ARTIST PORTAL MODAL */}
+      {isArtistPortalOpen && (
+        <Suspense fallback={null}>
+          <ArtistPortalModal
+            isOpen={isArtistPortalOpen}
+            onClose={() => {
+              setIsArtistPortalOpen(false);
+            }}
             lang={lang}
-            onToggleLike={toggleFavorite}
-            likedSongIds={likedSongIds}
-            onOpenPortal={() => {
-              closeArtistProfile();
-              setIsArtistPortalOpen(true);
+            allAlbums={popularAlbums}
+            onAlbumsSync={(albums) => {
+              setRemoteAlbums(albums);
+              onAlbumsSync?.(albums);
+            }}
+            onTrackPublished={async (newTrack) => {
+              setAllTracks((prev) => {
+                const replaced = prev.some((t) => t.id === newTrack.id)
+                  ? prev.map((t) => (t.id === newTrack.id ? { ...t, ...newTrack } : t))
+                  : [newTrack, ...prev];
+                const next = deduplicateTracks([newTrack, ...replaced]);
+                saveCachedCloudTracks(next);
+                onTracksSync?.(next);
+                return next;
+              });
+              setPlayerTrack((cur) => (cur && cur.id === newTrack.id ? { ...cur, ...newTrack } : cur));
+            }}
+            onArtistUpdated={(updatedArtist) => {
+              setActiveArtistProfile(updatedArtist);
+              upsertMemoryArtistProfile(updatedArtist);
+              updateCurrentAuthUserProfile({
+                displayName: updatedArtist.name,
+                photoURL: updatedArtist.avatarUrl || '',
+              });
+              const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+              const cleanUpdatedName = (updatedArtist.name || '').toLowerCase().trim();
+              updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
+              setAllArtists((prev) => {
+                const idx = prev.findIndex((a) => {
+                  const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+                  return cleanUpdatedUid && aUid === cleanUpdatedUid;
+                });
+                let next: ArtistProfile[];
+                if (idx >= 0) {
+                  next = [...prev];
+                  next[idx] = { ...next[idx], ...updatedArtist };
+                } else {
+                  next = [updatedArtist, ...prev];
+                }
+                onArtistsSync?.(next);
+                return next;
+              });
+              setAllTracks((prev) => {
+                const next = prev.map((t) => {
+                  const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
+                  const tName = (t.artistName || '').toLowerCase().trim();
+                  if ((cleanUpdatedUid && tUid === cleanUpdatedUid) || (!tUid && cleanUpdatedName && tName === cleanUpdatedName)) {
+                    return {
+                      ...t,
+                      artistAvatarUrl: updatedArtist.avatarUrl || '',
+                      artistName: updatedArtist.name || t.artistName,
+                    };
+                  }
+                  return t;
+                });
+                saveCachedCloudTracks(next);
+                onTracksSync?.(next);
+                return next;
+              });
+            }}
+            allTracks={allTracks}
+            onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
+            onAccountDeleted={(deletedUid) => {
+              const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
+              removeMemoryArtistProfile(deletedUid);
+              setAuthUser(null);
+              setActiveArtistProfile(null);
+              setAllArtists((prev) => {
+                const next = prev.filter((a) => {
+                  const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
+                  return aUid !== cleanDeleted;
+                });
+                onArtistsSync?.(next);
+                return next;
+              });
             }}
             onRemoveTrack={async (trackId) => {
               markSongAsDeleted(trackId);
@@ -2696,136 +2884,46 @@ export const SongsView: React.FC<SongsViewProps> = ({
               ]);
             }}
           />
-        )}
-      </AnimatePresence>
-
-      {/* ARTIST PORTAL MODAL */}
-      <ArtistPortalModal
-        isOpen={isArtistPortalOpen}
-        onClose={() => {
-          setIsArtistPortalOpen(false);
-        }}
-        lang={lang}
-        allAlbums={popularAlbums}
-        onAlbumsSync={(albums) => {
-          setRemoteAlbums(albums);
-          onAlbumsSync?.(albums);
-        }}
-        onTrackPublished={async (newTrack) => {
-          setAllTracks((prev) => {
-            const replaced = prev.some((t) => t.id === newTrack.id)
-              ? prev.map((t) => (t.id === newTrack.id ? { ...t, ...newTrack } : t))
-              : [newTrack, ...prev];
-            const next = deduplicateTracks([newTrack, ...replaced]);
-            saveCachedCloudTracks(next);
-            onTracksSync?.(next);
-            return next;
-          });
-          setPlayerTrack((cur) => (cur && cur.id === newTrack.id ? { ...cur, ...newTrack } : cur));
-        }}
-        onArtistUpdated={(updatedArtist) => {
-          setActiveArtistProfile(updatedArtist);
-          upsertMemoryArtistProfile(updatedArtist);
-          updateCurrentAuthUserProfile({
-            displayName: updatedArtist.name,
-            photoURL: updatedArtist.avatarUrl || '',
-          });
-          const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
-          const cleanUpdatedName = (updatedArtist.name || '').toLowerCase().trim();
-          updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
-          setAllArtists((prev) => {
-            const idx = prev.findIndex((a) => {
-              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
-              return cleanUpdatedUid && aUid === cleanUpdatedUid;
-            });
-            let next: ArtistProfile[];
-            if (idx >= 0) {
-              next = [...prev];
-              next[idx] = { ...next[idx], ...updatedArtist };
-            } else {
-              next = [updatedArtist, ...prev];
-            }
-            onArtistsSync?.(next);
-            return next;
-          });
-          setAllTracks((prev) => {
-            const next = prev.map((t) => {
-              const tUid = (t.uploadedByUid || '').replace(/^artist_/, '').toLowerCase().trim();
-              const tName = (t.artistName || '').toLowerCase().trim();
-              if ((cleanUpdatedUid && tUid === cleanUpdatedUid) || (!tUid && cleanUpdatedName && tName === cleanUpdatedName)) {
-                return {
-                  ...t,
-                  artistAvatarUrl: updatedArtist.avatarUrl || '',
-                  artistName: updatedArtist.name || t.artistName,
-                };
-              }
-              return t;
-            });
-            saveCachedCloudTracks(next);
-            onTracksSync?.(next);
-            return next;
-          });
-        }}
-        allTracks={allTracks}
-        onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx)}
-        onAccountDeleted={(deletedUid) => {
-          const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
-          removeMemoryArtistProfile(deletedUid);
-          setAuthUser(null);
-          setActiveArtistProfile(null);
-          setAllArtists((prev) => {
-            const next = prev.filter((a) => {
-              const aUid = (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim();
-              return aUid !== cleanDeleted;
-            });
-            onArtistsSync?.(next);
-            return next;
-          });
-        }}
-        onRemoveTrack={async (trackId) => {
-          markSongAsDeleted(trackId);
-          setAllTracks((prev) => {
-            const next = prev.filter((t) => t.id !== trackId);
-            saveCachedCloudTracks(next);
-            onTracksSync?.(next);
-            return next;
-          });
-          await Promise.allSettled([
-            removeTrackFromStorage(trackId),
-            deleteTrackFromCloud(trackId),
-          ]);
-        }}
-      />
+        </Suspense>
+      )}
 
       {/* DEDICATED ALBUM VIEW MODAL */}
-      <AlbumModal
-        isOpen={!!selectedAlbum}
-        onClose={() => setSelectedAlbum(null)}
-        album={selectedAlbum}
-        allTracks={allTracks}
-        onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx ?? selectedAlbum)}
-        lang={lang}
-        onToggleLike={toggleFavorite}
-        likedSongIds={likedSongIds}
-        onOpenArtistProfile={(artistName, artistUid) => openArtistProfile(artistName, artistUid || selectedAlbum?.uploadedByUid)}
-      />
+      {selectedAlbum && (
+        <Suspense fallback={null}>
+          <AlbumModal
+            isOpen={!!selectedAlbum}
+            onClose={() => setSelectedAlbum(null)}
+            album={selectedAlbum}
+            allTracks={allTracks}
+            onPlayTrack={(track, albCtx) => openSongPlayer(track, albCtx ?? selectedAlbum)}
+            lang={lang}
+            onToggleLike={toggleFavorite}
+            likedSongIds={likedSongIds}
+            onOpenArtistProfile={(artistName, artistUid) => openArtistProfile(artistName, artistUid || selectedAlbum?.uploadedByUid)}
+          />
+        </Suspense>
+      )}
 
       {/* GOOGLE OAUTH AUTH MODAL */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => {
-          setIsAuthModalOpen(false);
-          setAuthModalError(null);
-        }}
-        lang={lang}
-        initialMode={authModalMode}
-        initialError={authModalError}
-        onSuccess={(user) => {
-          setAuthUser(user);
-          setAuthModalError(null);
-          setIsArtistPortalOpen(true);
-        }}
-      />
+      {isAuthModalOpen && (
+        <Suspense fallback={null}>
+          <AuthModal
+            isOpen={isAuthModalOpen}
+            onClose={() => {
+              setIsAuthModalOpen(false);
+              setAuthModalError(null);
+            }}
+            lang={lang}
+            initialMode={authModalMode}
+            initialError={authModalError}
+            onSuccess={(user) => {
+              setAuthUser(user);
+              setAuthModalError(null);
+              setIsArtistPortalOpen(true);
+            }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

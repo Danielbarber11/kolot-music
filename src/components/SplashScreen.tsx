@@ -64,7 +64,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-[0.2em] uppercase select-none">
             KOLOT
           </h1>
-          <p className="text-white/40 text-xs sm:text-sm font-medium tracking-[0.3em] uppercase select-none" dir="rtl">
+          <p className="text-white/75 text-xs sm:text-sm font-medium tracking-[0.3em] uppercase select-none" dir="rtl">
             מוזיקה ללא גבולות
           </p>
         </motion.div>
@@ -86,7 +86,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ isLoading }) => {
       </div>
 
       {/* Version Tag */}
-      <div className="absolute bottom-10 text-[10px] text-white/20 font-mono tracking-widest uppercase">
+      <div className="absolute bottom-10 text-[10px] text-white/65 font-mono tracking-widest uppercase">
         Cloud Storage Engine v4.0
       </div>
     </motion.div>

@@ -505,14 +505,7 @@ export async function fetchSingleTrackFromCloud(trackId: string): Promise<Jamend
 
 export async function deleteTrackFromCloudStorage(trackId: string): Promise<boolean> {
   try {
-    // Delete track metadata JSON
-    await fetch(`/api/storage/delete?path=${encodeURIComponent(`tracks/${trackId}.json`)}`, {
-      method: 'DELETE',
-      headers: getR2AuthHeaders(),
-      credentials: 'include',
-    });
-
-    // Clean up associated audio & cover objects in R2
+    // Clean up associated audio & cover objects in R2 BEFORE deleting tracks/<id>.json so server ownership checks verify against track metadata
     try {
       const [audioListRes, coverListRes] = await Promise.all([
         fetch(`/api/storage/list?prefix=${encodeURIComponent(`audio/${trackId}`)}`, { cache: 'no-store' }),
@@ -533,6 +526,13 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
       }
       await Promise.allSettled(deletions);
     } catch {}
+
+    // Delete track metadata JSON
+    await fetch(`/api/storage/delete?path=${encodeURIComponent(`tracks/${trackId}.json`)}`, {
+      method: 'DELETE',
+      headers: getR2AuthHeaders(),
+      credentials: 'include',
+    });
 
     // Update index
     const tracks = await fetchTracksFromCloudStorage();
@@ -820,18 +820,20 @@ export async function syncArtistAvatarToTracksInR2(
   return updatedTracks;
 }
 
-export async function updateTrackColorInCloud(trackId: string, bgColor: string, fullTrack: JamendoTrack): Promise<boolean> {
-  const updatedTrack = { ...fullTrack, bgColor };
-  await fetch('/api/storage/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
-    credentials: 'include',
-    body: JSON.stringify({
-      path: `tracks/${trackId}.json`,
-      content: JSON.stringify(updatedTrack, null, 2)
-    })
-  });
-  return true;
+export async function updateTrackColorInCloud(trackId: string, bgColor: string, _fullTrack: JamendoTrack): Promise<boolean> {
+  try {
+    const cleanId = (trackId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanId || !bgColor) return false;
+    const res = await fetch('/api/storage/track-enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
+      credentials: 'include',
+      body: JSON.stringify({ trackId: cleanId, bgColor }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function saveTrackSubtitlesInCloud(
@@ -942,18 +944,13 @@ export async function saveTrackGenreInCloud(
   genre: string
 ): Promise<boolean> {
   try {
-    const updatedTrack: JamendoTrack = {
-      ...track,
-      genre,
-    };
-    const res = await fetch('/api/storage/upload', {
+    const cleanId = (track?.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanId || !genre) return false;
+    const res = await fetch('/api/storage/track-enrich', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
       credentials: 'include',
-      body: JSON.stringify({
-        path: `tracks/${track.id}.json`,
-        content: JSON.stringify(updatedTrack, null, 2),
-      }),
+      body: JSON.stringify({ trackId: cleanId, genre }),
     });
     return res.ok;
   } catch {

@@ -1,0 +1,18 @@
+# Kolot Music (קולות מוזיקה)
+
+> Free independent music streaming, album creation, and AI subtitle platform.
+> Official URL: https://kolot-music.kolot-music.workers.dev/
+> Contact: kolot-music@googlegroups.com
+> Social: https://www.tiktok.com/@kolot_music
+
+## Key Pages & Endpoints
+- Home & Catalog: https://kolot-music.kolot-music.workers.dev/
+- Search Songs/Artists: https://kolot-music.kolot-music.workers.dev/?q={query}
+- Direct Song Player: https://kolot-music.kolot-music.workers.dev/?song={trackId}
+- XML Sitemap: https://kolot-music.kolot-music.workers.dev/sitemap.xml
+
+## Public Data Feeds (Read-Only JSON)
+- Bootstrap Feed: /api/bootstrap
+- Tracks Feed: /api/storage/tracks-feed
+- Artists Feed: /api/storage/profiles-feed
+- Albums Feed: /api/storage/albums-feed

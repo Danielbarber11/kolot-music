@@ -100,11 +100,82 @@ try {
   console.warn('[R2 Storage] Could not read .r2-config.json:', e?.message);
 }
 
+const RUNTIME_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+
+function normalizeSafeR2Path(rawPath: string): string | null {
+  const normalized = String(rawPath || '').trim().replace(/^\/+/, '');
+  if (!normalized || normalized.length > 512) return null;
+  if (/[\x00-\x1f\x7f\\]/.test(normalized)) return null;
+  const segments = normalized.split('/');
+  if (segments.some((s) => !s || s === '.' || s === '..')) return null;
+  const ALLOWED_ROOT_PREFIXES = [
+    'tracks/',
+    'tracks_index.json',
+    'albums/',
+    'profiles/',
+    'audio/',
+    'covers/',
+    'avatars/',
+    'reports/',
+    'contact_messages/',
+    'legal_docs/',
+    'favorites/',
+  ];
+  const lower = normalized.toLowerCase();
+  if (!ALLOWED_ROOT_PREFIXES.some((p) => (p.endsWith('/') ? lower.startsWith(p) : lower === p))) {
+    return null;
+  }
+  return normalized;
+}
+
+function escapeHtmlServer(raw: string): string {
+  return String(raw || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeRawJsonByPath(filePath: string, rawText: string): string {
+  try {
+    const lower = filePath.toLowerCase();
+    const parsed = JSON.parse(rawText);
+    if (lower.startsWith('profiles/') && parsed && typeof parsed === 'object') {
+      const { googleEmail: _g, email: _e, ...cleanProfile } = parsed;
+      return JSON.stringify(cleanProfile);
+    }
+    if (lower.startsWith('tracks/') && parsed && typeof parsed === 'object') {
+      const { uploadedByEmail: _u, ...cleanTrack } = parsed;
+      return JSON.stringify(cleanTrack);
+    }
+    if (lower === 'tracks_index.json' && Array.isArray(parsed)) {
+      return JSON.stringify(
+        parsed.map((item: any) => {
+          if (!item || typeof item !== 'object') return item;
+          const { uploadedByEmail: _u, ...cleanTrack } = item;
+          return cleanTrack;
+        })
+      );
+    }
+  } catch {}
+  return rawText;
+}
+
+function hasServerR2Configured(): boolean {
+  const endpoint = sanitizeR2Endpoint(activeR2Config.endpoint) || sanitizeR2Endpoint(process.env.R2_ENDPOINT);
+  const accessKeyId = sanitizeKey(activeR2Config.accessKeyId || process.env.R2_ACCESS_KEY_ID);
+  const secretAccessKey = sanitizeKey(activeR2Config.secretAccessKey || process.env.R2_SECRET_ACCESS_KEY);
+  return Boolean(endpoint && accessKeyId && secretAccessKey);
+}
+
 function resolveR2Config(req?: express.Request): R2Config {
-  const headerEndpoint = req?.headers?.['x-r2-endpoint'] as string;
-  const headerAccessKey = req?.headers?.['x-r2-access-key-id'] as string;
-  const headerSecretKey = req?.headers?.['x-r2-secret-access-key'] as string;
-  const headerBucket = req?.headers?.['x-r2-bucket-name'] as string;
+  // Only allow client R2 override headers when no server-side R2 credentials are configured (local unconfigured setup)
+  const allowHeaderOverride = !hasServerR2Configured();
+  const headerEndpoint = allowHeaderOverride ? (req?.headers?.['x-r2-endpoint'] as string) : '';
+  const headerAccessKey = allowHeaderOverride ? (req?.headers?.['x-r2-access-key-id'] as string) : '';
+  const headerSecretKey = allowHeaderOverride ? (req?.headers?.['x-r2-secret-access-key'] as string) : '';
+  const headerBucket = allowHeaderOverride ? (req?.headers?.['x-r2-bucket-name'] as string) : '';
 
   const endpoint =
     sanitizeR2Endpoint(headerEndpoint) ||
@@ -199,6 +270,15 @@ async function getR2Context(req?: express.Request): Promise<{ client: S3Client; 
     config: cfg,
   };
 }
+
+// Baseline Security Headers
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
 
 // Increase payload limit for base64 images
 app.use(express.json({ limit: '25mb' }));
@@ -558,9 +638,19 @@ ${gutenbergCtx ? `PROJECT GUTENBERG:\n${gutenbergCtx}\n` : ''}`;
 
 // --- Cloudflare R2 Storage Endpoints ---
 
-// Save / Test R2 Configuration
+// Save / Test R2 Configuration (Admin-only once R2 is configured)
 app.post('/api/storage/config', async (req, res) => {
   try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    if (hasServerR2Configured()) {
+      const { sessionSecret } = getGoogleOAuthCreds();
+      const parsed = extractSessionFromRequest(req, sessionSecret);
+      if (!parsed?.session?.isAdmin) {
+        return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
+      }
+    }
     const { endpoint, accessKeyId, secretAccessKey, bucketName, publicUrl } = req.body;
     if (!endpoint || !accessKeyId || !secretAccessKey) {
       return res.status(400).json({
@@ -696,11 +786,35 @@ app.get('/api/storage/status', async (req, res) => {
 // 0. Generate Direct-to-R2 Presigned PUT URL for instant browser -> R2 uploads (supports up to 1GB+)
 app.post('/api/storage/presign', async (req: any, res) => {
   try {
-    const rawPath = String(req.body?.path || '').trim().replace(/^\/+/, '');
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const sess = extractSessionFromRequest(req, sessionSecret)?.session || null;
+    const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+    if (!sess || !cleanSessUid) {
+      return res.status(401).json({ success: false, error: 'יש להתחבר לחשבון כדי להעלות קבצים.' });
+    }
+
+    const rawPath = normalizeSafeR2Path(String(req.body?.path || ''));
     const contentType = String(req.body?.contentType || 'application/octet-stream').trim();
 
     if (!rawPath) {
-      return res.status(400).json({ success: false, error: 'Missing path' });
+      return res.status(400).json({ success: false, error: 'Invalid path' });
+    }
+    const lowerPresignPath = rawPath.toLowerCase();
+    const isMediaPrefix =
+      lowerPresignPath.startsWith('audio/') ||
+      lowerPresignPath.startsWith('covers/') ||
+      lowerPresignPath.startsWith('avatars/');
+    if (!isMediaPrefix) {
+      return res.status(403).json({ success: false, error: 'הנתיב אינו מורשה להעלאה ישירה.' });
+    }
+    if (lowerPresignPath.startsWith('avatars/') && !sess.isAdmin) {
+      const filePart = rawPath.slice('avatars/'.length);
+      if (!filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+        return res.status(403).json({ success: false, error: 'אין הרשאה להעלות תמונת פרופיל עבור משתמש אחר.' });
+      }
     }
 
     const { client, bucket, publicUrl } = await getR2Context(req);
@@ -733,7 +847,10 @@ app.post('/api/storage/presign', async (req: any, res) => {
 // 1. Upload File (Audio/Image/JSON) - 100% Pure Cloudflare R2
 app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), async (req: any, res) => {
   try {
-    const rawPath = String(req.body?.path || '').trim().replace(/^\/+/, '');
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const rawPath = normalizeSafeR2Path(String(req.body?.path || ''));
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
     const file = files?.file?.[0];
 
@@ -742,7 +859,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
     }
 
     if (!rawPath) {
-      return res.status(400).json({ success: false, error: 'No path provided' });
+      return res.status(400).json({ success: false, error: 'Invalid path provided' });
     }
 
     let body: Buffer = Buffer.from([]);
@@ -779,7 +896,33 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
         return extractSessionFromRequest(req, sessionSecret)?.session || null;
       };
 
-      if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
+      const lowerUploadPath = rawPath.toLowerCase();
+      if (
+        lowerUploadPath.startsWith('favorites/') ||
+        lowerUploadPath.startsWith('legal_docs/') ||
+        lowerUploadPath.startsWith('reports/') ||
+        lowerUploadPath.startsWith('contact_messages/')
+      ) {
+        return res.status(403).json({ success: false, error: 'נתיב זה מוגן לכתיבה ישירה.' });
+      }
+
+      if (
+        lowerUploadPath.startsWith('audio/') ||
+        lowerUploadPath.startsWith('covers/') ||
+        lowerUploadPath.startsWith('avatars/')
+      ) {
+        const sess = getReqSession();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid) {
+          return res.status(401).json({ success: false, error: 'יש להתחבר לחשבון כדי להעלות קבצי מדיה.' });
+        }
+        if (lowerUploadPath.startsWith('avatars/') && !sess.isAdmin) {
+          const filePart = rawPath.slice('avatars/'.length);
+          if (!filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+            return res.status(403).json({ success: false, error: 'אין הרשאה להעלות תמונת פרופיל עבור משתמש אחר.' });
+          }
+        }
+      } else if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
         const sess = getReqSession();
         const targetUid = rawPath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
         const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
@@ -795,7 +938,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
         const sess = getReqSession();
         const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
         const incomingUid = String(incoming?.uploadedByUid || '').replace(/^artist_/, '').trim();
-          if (!existing) {
+        if (!existing) {
           if (!sess || !cleanSessUid || (incomingUid && incomingUid !== cleanSessUid)) {
             return res.status(403).json({ success: false, error: 'רק בעל הפרופיל המחובר יכול להוסיף שירים.' });
           }
@@ -805,15 +948,14 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
           }
         } else {
           const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
-          const isCoreEdit =
-            (incoming?.name !== undefined && incoming.name !== existing.name) ||
-            (incoming?.artistName !== undefined && incoming.artistName !== existing.artistName) ||
-            (incoming?.audioUrl !== undefined && incoming.audioUrl !== existing.audioUrl) ||
-            (incomingUid && existingUid && incomingUid !== existingUid);
-          if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
+          const isOwner = Boolean(sess && cleanSessUid && (!existingUid || cleanSessUid === existingUid));
+          if (!isOwner && !sess?.isAdmin) {
             return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' });
           }
           if (incoming && typeof incoming === 'object') {
+            if (existingUid && !sess?.isAdmin) {
+              incoming.uploadedByUid = existingUid;
+            }
             const preservedViews = Math.max(
               Number(existing.viewsCount) || 0,
               Number(incoming.viewsCount) || 0
@@ -851,6 +993,11 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
           }
         }
       } else if (rawPath === 'tracks_index.json') {
+        const sess = getReqSession();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid) {
+          return res.status(401).json({ success: false, error: 'נדרש חיבור לחשבון לעדכון אינדקס השירים.' });
+        }
         try {
           const incomingArr = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf-8') : String(body));
           if (Array.isArray(incomingArr)) {
@@ -862,12 +1009,18 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
               });
               const mergedArr = incomingArr.map((item: any) => {
                 if (!item?.id) return item;
-                const prev = existingMap.get(item.id);
-                if (!prev) return item;
+                const { uploadedByEmail: _omitIncomingEmail, ...cleanIncoming } = item;
+                const prev = existingMap.get(cleanIncoming.id);
+                if (!prev) return cleanIncoming;
+                const prevOwner = String(prev.uploadedByUid || '').replace(/^artist_/, '').trim();
+                if (!sess.isAdmin && prevOwner && prevOwner !== cleanSessUid) {
+                  const { uploadedByEmail: _omitPrevEmail, ...cleanPrev } = prev;
+                  return cleanPrev;
+                }
                 return {
-                  ...item,
-                  viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(item.viewsCount) || 0),
-                  playsCount: Math.max(Number(prev.playsCount) || 0, Number(item.playsCount) || 0),
+                  ...cleanIncoming,
+                  viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(cleanIncoming.viewsCount) || 0),
+                  playsCount: Math.max(Number(prev.playsCount) || 0, Number(cleanIncoming.playsCount) || 0),
                 };
               });
               body = Buffer.from(JSON.stringify(mergedArr, null, 2), 'utf-8');
@@ -912,6 +1065,11 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
             body = Buffer.from(JSON.stringify(incomingAlbum, null, 2), 'utf-8');
           }
         } catch {}
+      } else {
+        const sess = getReqSession();
+        if (!sess?.isAdmin) {
+          return res.status(403).json({ success: false, error: 'אין הרשאה לכתוב לנתיב זה.' });
+        }
       }
 
       const command = new PutObjectCommand({
@@ -978,8 +1136,11 @@ app.get('/api/storage/list', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
     const prefix = String(req.query.prefix || '').replace(/^\/+/, '');
+    if (prefix.includes('..') || prefix.includes('\\') || /[\x00-\x1f\x7f]/.test(prefix)) {
+      return res.status(400).json({ success: false, error: 'Invalid prefix' });
+    }
     const lowerPrefix = prefix.toLowerCase();
-    const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/'];
+    const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/'];
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
     const isAdmin = Boolean(parsedSession?.session?.isAdmin);
@@ -1284,15 +1445,21 @@ app.get('/api/storage/albums-feed', async (req, res) => {
 // 3. Delete File - 100% Pure Cloudflare R2
 app.delete('/api/storage/delete', async (req, res) => {
   try {
-    const filePath = String(req.query.path || '').trim().replace(/^\/+/, '');
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const filePath = normalizeSafeR2Path(String(req.query.path || ''));
     if (!filePath) {
-      return res.status(400).json({ success: false, error: 'Missing path' });
+      return res.status(400).json({ success: false, error: 'Invalid path' });
     }
 
     const { client, bucket } = await getR2Context(req);
     const { sessionSecret } = getGoogleOAuthCreds();
     const sess = extractSessionFromRequest(req, sessionSecret)?.session || null;
     const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+    if (!sess || !cleanSessUid) {
+      return res.status(401).json({ success: false, error: 'נדרש חיבור לחשבון למחיקת קובץ.' });
+    }
 
     const readJsonR2 = async (key: string) => {
       try {
@@ -1303,22 +1470,48 @@ app.delete('/api/storage/delete', async (req, res) => {
       }
     };
 
+    const lowerDelPath = filePath.toLowerCase();
     if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
       const existing = await readJsonR2(filePath);
       const ownerUid = String(existing?.uploadedByUid || '').replace(/^artist_/, '').trim();
-      if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+      if (existing && ownerUid && ownerUid !== cleanSessUid) {
         return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי למחוק שיר זה.' });
       }
     } else if (filePath.startsWith('albums/') && filePath.endsWith('.json')) {
       const existing = await readJsonR2(filePath);
       const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
-      if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+      if (existing && ownerUid && ownerUid !== cleanSessUid) {
         return res.status(403).json({ success: false, error: 'רק בעל האלבום רשאי למחוק אלבום זה.' });
       }
     } else if (filePath.startsWith('profiles/') && filePath.endsWith('.json')) {
       const targetUid = filePath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
-      if (!sess || (!sess.isAdmin && cleanSessUid !== targetUid)) {
+      if (!sess.isAdmin && cleanSessUid !== targetUid) {
         return res.status(403).json({ success: false, error: 'אין הרשאה למחוק פרופיל זה.' });
+      }
+    } else if (lowerDelPath.startsWith('avatars/')) {
+      const filePart = filePath.slice('avatars/'.length);
+      if (!sess.isAdmin && !filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+        return res.status(403).json({ success: false, error: 'אין הרשאה למחוק תמונה זו.' });
+      }
+    } else if (lowerDelPath.startsWith('covers/albums/')) {
+      const albumBase = filePath.slice('covers/albums/'.length).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+      const alb = albumBase ? await readJsonR2(`albums/${albumBase}.json`) : null;
+      const albOwner = String(alb?.uploadedByUid || alb?.artistId || '').replace(/^artist_/, '').trim();
+      if (!sess.isAdmin && alb && albOwner && albOwner !== cleanSessUid) {
+        return res.status(403).json({ success: false, error: 'רק בעל האלבום רשאי למחוק עטיפה זו.' });
+      }
+    } else if (lowerDelPath.startsWith('audio/') || lowerDelPath.startsWith('covers/')) {
+      const prefixLen = lowerDelPath.startsWith('audio/') ? 'audio/'.length : 'covers/'.length;
+      const mediaFile = filePath.slice(prefixLen);
+      const trackId = mediaFile.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+      const trk = trackId ? await readJsonR2(`tracks/${trackId}.json`) : null;
+      const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
+      if (!sess.isAdmin && trk && trkOwner && trkOwner !== cleanSessUid) {
+        return res.status(403).json({ success: false, error: 'רק בעל השיר רשאי למחוק קבצי מדיה אלו.' });
+      }
+    } else {
+      if (!sess.isAdmin) {
+        return res.status(403).json({ success: false, error: 'אין הרשאה למחוק נתיב מערכת זה.' });
       }
     }
 
@@ -1361,14 +1554,21 @@ const resolveServerRawMimeType = (pathKey: string, stored?: string): string => {
 // 4. Raw Streamer Proxy - 100% Pure Cloudflare R2 with HTTP Range Support
 app.get('/api/storage/raw/*', async (req, res) => {
   const rawParam = (req.params as any)[0] || '';
-  const filePath = decodeURIComponent(rawParam).replace(/^\/+/, '');
-  if (!filePath) return res.status(400).send('Missing path');
+  let decodedParam = '';
+  try {
+    decodedParam = decodeURIComponent(rawParam);
+  } catch {
+    return res.status(400).send('Invalid path encoding');
+  }
+  const filePath = normalizeSafeR2Path(decodedParam);
+  if (!filePath) return res.status(400).send('Invalid path');
 
   const lowerPath = filePath.toLowerCase();
   if (
     lowerPath.startsWith('legal_docs/') ||
     lowerPath.startsWith('reports/') ||
-    lowerPath.startsWith('contact_messages/')
+    lowerPath.startsWith('contact_messages/') ||
+    lowerPath.startsWith('favorites/')
   ) {
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsed = extractSessionFromRequest(req, sessionSecret);
@@ -1382,7 +1582,11 @@ app.get('/api/storage/raw/*', async (req, res) => {
   const isPrivateDoc =
     lowerPath.startsWith('legal_docs/') ||
     lowerPath.startsWith('reports/') ||
-    lowerPath.startsWith('contact_messages/');
+    lowerPath.startsWith('contact_messages/') ||
+    lowerPath.startsWith('favorites/');
+  const needsJsonRedaction =
+    isJson &&
+    (lowerPath.startsWith('profiles/') || lowerPath.startsWith('tracks/') || lowerPath === 'tracks_index.json');
 
   try {
     const { client, bucket, publicUrl } = await getR2Context(req);
@@ -1394,10 +1598,19 @@ app.get('/api/storage/raw/*', async (req, res) => {
     const command = new GetObjectCommand({
       Bucket: bucket,
       Key: filePath,
-      ...(rangeHeader ? { Range: rangeHeader } : {}),
+      ...(rangeHeader && !needsJsonRedaction ? { Range: rangeHeader } : {}),
     });
 
     const s3Item = await client.send(command);
+
+    if (needsJsonRedaction && s3Item.Body) {
+      const rawText = await s3Item.Body.transformToString('utf-8');
+      const redacted = sanitizeRawJsonByPath(filePath, rawText);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.status(200).send(redacted);
+    }
 
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1678,16 +1891,18 @@ async function resolveAudioBytesForAi(req: any): Promise<{ audioBuffer: Buffer |
       audioBuffer = Buffer.from(match[2], 'base64');
     }
   } else if (rawStoragePath) {
-    const r2Key = decodeURIComponent(rawStoragePath.replace(/^\/api\/storage\/raw\//, ''));
-    const { client, bucket } = await getR2Context(req);
-    const s3Item = await client.send(new GetObjectCommand({ Bucket: bucket, Key: r2Key }));
-    if (s3Item.Body) {
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of s3Item.Body as any) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    const r2Key = normalizeSafeR2Path(decodeURIComponent(rawStoragePath.replace(/^\/api\/storage\/raw\//, '')));
+    if (r2Key && (r2Key.toLowerCase().startsWith('audio/') || r2Key.toLowerCase().startsWith('tracks/'))) {
+      const { client, bucket } = await getR2Context(req);
+      const s3Item = await client.send(new GetObjectCommand({ Bucket: bucket, Key: r2Key }));
+      if (s3Item.Body) {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of s3Item.Body as any) {
+          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        }
+        audioBuffer = Buffer.concat(chunks);
+        mimeType = guessAudioMimeType(r2Key, s3Item.ContentType);
       }
-      audioBuffer = Buffer.concat(chunks);
-      mimeType = guessAudioMimeType(r2Key, s3Item.ContentType);
     }
   } else if (audioUrl && isSafeExternalHttpUrl(audioUrl)) {
     const upstream = await fetch(audioUrl, {
@@ -3238,18 +3453,29 @@ app.delete('/api/storage/reports/:id', async (req, res) => {
 const isSameOriginOrBearerExpress = (req: express.Request): boolean => {
   const authHdr = String(req.headers.authorization || '').trim();
   if (authHdr.toLowerCase().startsWith('bearer ')) return true;
+  const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase().trim();
+  if (secFetchSite === 'cross-site') return false;
+  const expectedHost = String((req.headers['x-forwarded-host'] as string) || req.get('host') || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
   const originHdr = String(req.headers.origin || '').trim();
-  if (!originHdr) return true;
-  try {
-    const originHost = new URL(originHdr).host.toLowerCase();
-    const expectedHost = String((req.headers['x-forwarded-host'] as string) || req.get('host') || '')
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    return Boolean(originHost && expectedHost && originHost === expectedHost);
-  } catch {
-    return false;
+  if (originHdr) {
+    try {
+      return Boolean(expectedHost && new URL(originHdr).host.toLowerCase() === expectedHost);
+    } catch {
+      return false;
+    }
   }
+  const refererHdr = String(req.headers.referer || '').trim();
+  if (refererHdr) {
+    try {
+      return Boolean(expectedHost && new URL(refererHdr).host.toLowerCase() === expectedHost);
+    } catch {
+      return false;
+    }
+  }
+  return true;
 };
 
 const readJsonObjR2 = async (client: S3Client, bucket: string, key: string): Promise<any | null> => {
@@ -3681,6 +3907,68 @@ app.post('/api/storage/track-view', async (req, res) => {
     return res.json({ success: true, viewsCount: committedCount, authoritative: true });
   } catch {
     return res.status(503).json({ success: false, viewsCount: null });
+  }
+});
+
+// Safe metadata enrichment route for bgColor or empty/untagged genre (cannot overwrite other track fields)
+app.post('/api/storage/track-enrich', async (req, res) => {
+  try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
+    const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+    if (!cleanId) return res.status(400).json({ success: false, error: 'Missing trackId' });
+
+    const incomingBg = typeof req.body?.bgColor === 'string' ? req.body.bgColor.trim() : '';
+    const incomingGenre = typeof req.body?.genre === 'string' ? req.body.genre.trim().slice(0, 60) : '';
+    const validBg = /^radial-gradient\([0-9a-zA-Z%,.\s()#\-]+\)$/.test(incomingBg) ? incomingBg : '';
+    const validGenre = incomingGenre && !/[<>]/.test(incomingGenre) ? incomingGenre : '';
+    if (!validBg && !validGenre) {
+      return res.status(400).json({ success: false, error: 'Nothing valid to enrich' });
+    }
+
+    const { client, bucket } = await getR2Context(req);
+    const key = `tracks/${cleanId}.json`;
+    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key })).catch(() => null);
+    if (!obj?.Body) return res.status(404).json({ success: false, error: 'Track not found' });
+    const existing = JSON.parse(await obj.Body.transformToString('utf-8'));
+    if (!existing || typeof existing !== 'object') {
+      return res.status(404).json({ success: false, error: 'Track not found' });
+    }
+
+    const { sessionSecret } = getGoogleOAuthCreds();
+    const sess = extractSessionFromRequest(req, sessionSecret)?.session || null;
+    const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+    const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
+    const isOwner = Boolean(sess && (sess.isAdmin || (cleanSessUid && existingUid === cleanSessUid)));
+
+    const UNTAGGED = new Set(['', 'none', 'general', 'music', 'other', 'אחר', 'שונות', 'ללא סגנון', 'ללא סגנון מוזיקלי']);
+    const curGenre = String(existing.genre || '').trim().toLowerCase();
+
+    const updated = { ...existing };
+    let changed = false;
+    if (validBg && (!existing.bgColor || isOwner)) {
+      updated.bgColor = validBg;
+      changed = true;
+    }
+    if (validGenre && (UNTAGGED.has(curGenre) || isOwner)) {
+      updated.genre = validGenre;
+      changed = true;
+    }
+
+    if (changed) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: Buffer.from(JSON.stringify(updated, null, 2), 'utf-8'),
+          ContentType: 'application/json',
+        })
+      );
+    }
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Track enrich failed' });
   }
 });
 
@@ -4417,7 +4705,7 @@ function getGoogleOAuthCreds() {
     process.env.Client_secret || process.env.CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET
   );
   const sessionSecret =
-    clientSecret || sanitizeKey(process.env.R2_SECRET_ACCESS_KEY) || 'kolot-music-session-hmac-key';
+    clientSecret || sanitizeKey(process.env.R2_SECRET_ACCESS_KEY) || RUNTIME_SESSION_SECRET;
   return { clientId, clientSecret, sessionSecret };
 }
 
@@ -4565,7 +4853,7 @@ app.get('/api/auth/google/start', (req, res) => {
     return res
       .status(500)
       .set('Content-Type', 'text/html; charset=utf-8')
-      .send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${errMsg}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`);
+      .send(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${escapeHtmlServer(errMsg)}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`);
   }
 
   const appOrigin = resolveSafeAppOrigin(req, String(req.query.origin || ''));
@@ -4642,7 +4930,7 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
 <body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;">
   <div>
     <p style="font-size:16px;font-weight:bold;">${ok ? 'ההתחברות עם Google הצליחה — החלון נסגר...' : 'ההתחברות בוטלה או נכשלה'}</p>
-    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${errMsg}</p>` : ''}
+    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${escapeHtmlServer(errMsg)}</p>` : ''}
   </div>
   <script>
     (function() {
@@ -4958,6 +5246,9 @@ app.post('/api/auth/logout', (req, res) => {
 app.post('/api/auth/restore-google-avatar', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsed = extractSessionFromRequest(req, sessionSecret);
     if (!parsed) {
@@ -5035,6 +5326,9 @@ app.post('/api/auth/restore-google-avatar', async (req, res) => {
 app.post('/api/admin/delete-account', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsed = extractSessionFromRequest(req, sessionSecret);
     if (!parsed?.session?.isAdmin) {
@@ -5062,6 +5356,9 @@ app.post('/api/admin/delete-account', async (req, res) => {
 app.post('/api/account/delete', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
+    if (!isSameOriginOrBearerExpress(req)) {
+      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
+    }
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsed = extractSessionFromRequest(req, sessionSecret);
     if (!parsed?.session?.uid) {
@@ -5090,6 +5387,67 @@ app.post('/api/account/delete', async (req, res) => {
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'מחיקת החשבון נכשלה' });
   }
+});
+
+// Dynamic SEO & Agent Discovery Files (robots.txt, sitemap.xml, llms.txt)
+app.get('/robots.txt', (req, res) => {
+  const origin = resolveSafeAppOrigin(req);
+  const canonicalOrigin = origin.includes('kolot-music.workers.dev') ? origin : 'https://kolot-music.kolot-music.workers.dev';
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /auth/\n\nSitemap: ${canonicalOrigin}/sitemap.xml\n`);
+});
+
+app.get('/llms.txt', (_req, res) => {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(
+    [
+      '# Kolot Music (קולות מוזיקה)',
+      '',
+      '> Free independent music streaming, album creation, and AI subtitle platform.',
+      '> Official URL: https://kolot-music.kolot-music.workers.dev/',
+      '> Contact: kolot-music@googlegroups.com',
+      '> Social: https://www.tiktok.com/@kolot_music',
+      '',
+      '## Key Pages & Endpoints',
+      '- Home & Catalog: https://kolot-music.kolot-music.workers.dev/',
+      '- Search Songs/Artists: https://kolot-music.kolot-music.workers.dev/?q={query}',
+      '- Direct Song Player: https://kolot-music.kolot-music.workers.dev/?song={trackId}',
+      '- XML Sitemap: https://kolot-music.kolot-music.workers.dev/sitemap.xml',
+      '',
+      '## Public Data Feeds (Read-Only JSON)',
+      '- Bootstrap Feed: /api/bootstrap',
+      '- Tracks Feed: /api/storage/tracks-feed',
+      '- Artists Feed: /api/storage/profiles-feed',
+      '- Albums Feed: /api/storage/albums-feed',
+    ].join('\n')
+  );
+});
+
+app.get('/sitemap.xml', async (req, res) => {
+  const baseUrl = 'https://kolot-music.kolot-music.workers.dev';
+  const today = new Date().toISOString().split('T')[0];
+  const songEntries: string[] = [];
+  try {
+    const { client, bucket } = await getR2Context(req);
+    const listData = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: 'tracks/' }));
+    const trackIds = (listData.Contents || [])
+      .map((item) => item.Key || '')
+      .filter((k) => k.endsWith('.json'))
+      .map((k) => k.replace(/^tracks\//, '').replace(/\.json$/, '').replace(/[^a-zA-Z0-9_\-]/g, ''))
+      .filter(Boolean)
+      .slice(0, 500);
+    for (const id of trackIds) {
+      songEntries.push(
+        `  <url>\n    <loc>${baseUrl}/?song=${encodeURIComponent(id)}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>`
+      );
+    }
+  } catch {}
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>1.0</priority>\n  </url>\n${songEntries.join('\n')}\n</urlset>`;
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=1800');
+  res.send(xml);
 });
 
 // Setup Vite middleware in dev mode

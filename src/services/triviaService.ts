@@ -22,9 +22,8 @@ export const TRIVIA_CATEGORIES = [
 ];
 
 function decodeHtml(html: string): string {
-  const txt = document.createElement('textarea');
-  txt.innerHTML = html;
-  return txt.value;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return doc.documentElement.textContent || '';
 }
 
 export async function fetchTriviaQuestions(

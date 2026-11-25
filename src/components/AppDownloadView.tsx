@@ -77,16 +77,24 @@ export const AppDownloadView: React.FC<AppDownloadViewProps> = ({ lang }) => {
     const input = document.getElementById('bot-input');
     const chat = document.getElementById('chat-box');
 
+    function appendMessageBubble(className, text) {
+      const div = document.createElement('div');
+      div.className = className;
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const query = input.value.trim();
       if (!query) return;
 
-      chat.innerHTML += \`<div class="bg-purple-900/40 p-2.5 rounded-xl border border-purple-500/30 text-xs text-right">\${query}</div>\`;
+      appendMessageBubble('bg-purple-900/40 p-2.5 rounded-xl border border-purple-500/30 text-xs text-right', query);
       input.value = '';
 
-      chat.innerHTML += \`<div class="bg-slate-800 p-2.5 rounded-xl text-xs text-indigo-300">🔍 מחפש ב-Wikipedia ו-Internet Archive...</div>\`;
-      chat.scrollTop = chat.scrollHeight;
+      appendMessageBubble('bg-slate-800 p-2.5 rounded-xl text-xs text-indigo-300', '🔍 מחפש ב-Wikipedia ו-Internet Archive...');
 
       try {
         const wikiRes = await fetch(\`https://he.wikipedia.org/w/api.php?action=query&list=search&srsearch=\${encodeURIComponent(query)}&format=json&origin=*\`);
@@ -97,24 +105,56 @@ export const AppDownloadView: React.FC<AppDownloadViewProps> = ({ lang }) => {
         const iaData = await iaRes.json();
         const iaDocs = iaData.response?.docs || [];
 
-        let html = \`<div class="bg-slate-900 p-3 rounded-xl border border-indigo-500/30 space-y-2 text-xs">\`;
-        html += \`<p class="font-bold text-white">🧠 תשובת הבוט הפנימי עבור: "\${query}"</p>\`;
-        if (firstWiki) {
-          html += \`<p class="text-slate-300"><b>📖 Wikipedia:</b> \${firstWiki.snippet.replace(/<[^>]+>/g, '')}</p>\`;
-        }
-        if (iaDocs.length > 0) {
-          html += \`<p class="font-bold text-amber-300 mt-2">🎥 מציאות בארכיון:</p><ul class="list-disc pl-4 text-slate-400">\`;
-          iaDocs.forEach(d => {
-            html += \`<li>\${d.title} (\${d.mediatype}) - <a href="https://archive.org/details/\${d.identifier}" target="_blank" class="text-indigo-400 underline">Archive.org</a></li>\`;
-          });
-          html += \`</ul>\`;
-        }
-        html += \`</div>\`;
+        const card = document.createElement('div');
+        card.className = 'bg-slate-900 p-3 rounded-xl border border-indigo-500/30 space-y-2 text-xs';
 
-        chat.innerHTML += html;
+        const heading = document.createElement('p');
+        heading.className = 'font-bold text-white';
+        heading.textContent = \`🧠 תשובת הבוט הפנימי עבור: "\${query}"\`;
+        card.appendChild(heading);
+
+        if (firstWiki && typeof firstWiki.snippet === 'string') {
+          const parsedDoc = new DOMParser().parseFromString(firstWiki.snippet, 'text/html');
+          const cleanSnippet = (parsedDoc.body.textContent || '').trim();
+          const wikiP = document.createElement('p');
+          wikiP.className = 'text-slate-300';
+          const boldLabel = document.createElement('b');
+          boldLabel.textContent = '📖 Wikipedia: ';
+          wikiP.appendChild(boldLabel);
+          wikiP.appendChild(document.createTextNode(cleanSnippet));
+          card.appendChild(wikiP);
+        }
+
+        if (iaDocs.length > 0) {
+          const iaLabel = document.createElement('p');
+          iaLabel.className = 'font-bold text-amber-300 mt-2';
+          iaLabel.textContent = '🎥 מציאות בארכיון:';
+          card.appendChild(iaLabel);
+
+          const ul = document.createElement('ul');
+          ul.className = 'list-disc pl-4 text-slate-400';
+          iaDocs.forEach((d) => {
+            const safeId = String(d.identifier || '').replace(/[^a-zA-Z0-9._-]/g, '');
+            const li = document.createElement('li');
+            li.appendChild(document.createTextNode(\`\${String(d.title || '')} (\${String(d.mediatype || '')}) - \`));
+            if (safeId) {
+              const a = document.createElement('a');
+              a.href = \`https://archive.org/details/\${encodeURIComponent(safeId)}\`;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.className = 'text-indigo-400 underline';
+              a.textContent = 'Archive.org';
+              li.appendChild(a);
+            }
+            ul.appendChild(li);
+          });
+          card.appendChild(ul);
+        }
+
+        chat.appendChild(card);
         chat.scrollTop = chat.scrollHeight;
       } catch (err) {
-        chat.innerHTML += \`<div class="text-red-400 text-xs">שגיאה בתקשורת מול APIs.</div>\`;
+        appendMessageBubble('text-red-400 text-xs', 'שגיאה בתקשורת מול APIs.');
       }
     });
   </script>

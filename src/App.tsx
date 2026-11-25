@@ -1,10 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
 import { SongsView } from './components/SongsView';
-import { SongPlayerPage } from './components/SongPlayerPage';
 import { SplashScreen } from './components/SplashScreen';
 import { Language, JamendoTrack, ArtistProfile, Album } from './types';
+
+const SongPlayerPage = React.lazy(() =>
+  import('./components/SongPlayerPage').then((m) => ({ default: m.SongPlayerPage }))
+);
+const AccessibilityPage = React.lazy(() =>
+  import('./components/AccessibilityPage').then((m) => ({ default: m.AccessibilityPage }))
+);
 import {
   getInstantSongPool,
   fetchBootstrapData,
@@ -29,7 +35,6 @@ import {
 } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
 import { activateIosPlaybackSession } from './services/iosAudioHelper';
-import { AccessibilityPage } from './components/AccessibilityPage';
 import {
   AccessibilitySettings,
   PointerCapabilities,
@@ -306,17 +311,19 @@ export default function App() {
         boot.tracks.slice(0, 12).forEach((t) => prewarmTrackColor(t));
 
         const topImageUrls = [
-          ...boot.tracks.slice(0, 16).map((t) => t.coverUrl),
-          ...boot.profiles.slice(0, 12).map((a) => a.avatarUrl),
-          ...boot.albums.slice(0, 8).map((al) => al.coverUrl),
+          ...boot.tracks.slice(0, 4).map((t) => t.coverUrl),
+          ...boot.profiles.slice(0, 2).map((a) => a.avatarUrl),
+          ...boot.albums.slice(0, 2).map((al) => al.coverUrl),
         ];
-        void preloadAndDecodeImages(topImageUrls);
+        setTimeout(() => {
+          if (active) void preloadAndDecodeImages(topImageUrls);
+        }, 1000);
       } catch {
         // Non-fatal
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 800));
+    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 220));
 
     Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
       if (active) setIsInitializing(false);
@@ -502,6 +509,88 @@ export default function App() {
     };
   }, []);
 
+  // Register WebMCP context tools cleanly when supported by browser agents
+  useEffect(() => {
+    try {
+      const nav = navigator as Navigator & {
+        modelContext?: {
+          registerTool?: (tool: Record<string, unknown>) => void;
+          provideContext?: (ctx: Record<string, unknown>) => void;
+        };
+      };
+      const mc = nav?.modelContext;
+      if (!mc) return;
+
+      const tools = [
+        {
+          name: 'search_kolot_music',
+          description: 'Search songs, artists, albums, and genres available on Kolot Music.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Search keyword for song, artist, or genre' },
+            },
+            required: ['query'],
+          },
+          execute: async ({ query }: { query?: string }) => {
+            const q = String(query || '').trim().toLowerCase();
+            const pool = getInstantSongPool();
+            const matches = q
+              ? pool.filter(
+                  (t) =>
+                    t.name.toLowerCase().includes(q) ||
+                    t.artistName.toLowerCase().includes(q) ||
+                    (t.genre || '').toLowerCase().includes(q)
+                )
+              : pool;
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(
+                    matches.slice(0, 20).map((t) => ({
+                      id: t.id,
+                      name: t.name,
+                      artist: t.artistName,
+                      genre: t.genre,
+                      url: `${window.location.origin}/?song=${encodeURIComponent(t.id)}`,
+                    }))
+                  ),
+                },
+              ],
+            };
+          },
+        },
+        {
+          name: 'get_platform_info',
+          description: 'Returns public metadata and discovery endpoints for Kolot Music.',
+          inputSchema: { type: 'object', properties: {} },
+          execute: async () => ({
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  name: 'Kolot Music',
+                  url: window.location.origin,
+                  sitemap: `${window.location.origin}/sitemap.xml`,
+                  llms: `${window.location.origin}/llms.txt`,
+                }),
+              },
+            ],
+          }),
+        },
+      ];
+
+      if (typeof mc.provideContext === 'function') {
+        mc.provideContext({ tools });
+      } else if (typeof mc.registerTool === 'function') {
+        tools.forEach((tool) => mc.registerTool?.(tool));
+      }
+    } catch {
+      // Progressive enhancement only
+    }
+  }, []);
+
   const handleToggleLikeSong = (id: string) => {
     if (!authUser?.uid) {
       loginWithGoogle().catch(() => {});
@@ -523,7 +612,7 @@ export default function App() {
           {isInitializing && <SplashScreen key="splash" isLoading={isInitializing} />}
         </AnimatePresence>
 
-        <main className="flex-1 p-0 m-0">
+        <div className="flex-1 p-0 m-0">
           {/* Main SongsView receives preloaded tracks/artists/albums so UI renders immediately behind SplashScreen */}
           <SongsView
             lang={lang}
@@ -542,46 +631,50 @@ export default function App() {
           {/* Full-Page Luxury Player Overlay with Smooth Silk Transition */}
           <AnimatePresence>
             {activePlayerTrack && (
-              <SongPlayerPage
-                key={activePlayerTrack.id}
-                track={activePlayerTrack}
-                activeAlbumContext={activeAlbumContext}
-                onBack={handleExitTrack}
-                onFilterByArtist={handleExitTrack}
-                isLiked={likedSongIds.includes(activePlayerTrack.id)}
-                onToggleLike={handleToggleLikeSong}
-                onRequireAuth={() => {
-                  loginWithGoogle().catch(() => {});
-                }}
-                lang={lang}
-                allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
-                allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
-                allAlbums={allAlbums}
-                onPlayTrack={handleEnterTrack}
-                onRemoveTrack={(trackId) => {
-                  removeTrackFromMemory(trackId);
-                  setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
-                  if (activePlayerTrack?.id === trackId) {
-                    syncSongQueryParam(null);
-                    setActivePlayerTrack(null);
-                    setActiveAlbumContext(null);
-                  }
-                }}
-              />
+              <Suspense fallback={null}>
+                <SongPlayerPage
+                  key={activePlayerTrack.id}
+                  track={activePlayerTrack}
+                  activeAlbumContext={activeAlbumContext}
+                  onBack={handleExitTrack}
+                  onFilterByArtist={handleExitTrack}
+                  isLiked={likedSongIds.includes(activePlayerTrack.id)}
+                  onToggleLike={handleToggleLikeSong}
+                  onRequireAuth={() => {
+                    loginWithGoogle().catch(() => {});
+                  }}
+                  lang={lang}
+                  allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
+                  allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
+                  allAlbums={allAlbums}
+                  onPlayTrack={handleEnterTrack}
+                  onRemoveTrack={(trackId) => {
+                    removeTrackFromMemory(trackId);
+                    setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+                    if (activePlayerTrack?.id === trackId) {
+                      syncSongQueryParam(null);
+                      setActivePlayerTrack(null);
+                      setActiveAlbumContext(null);
+                    }
+                  }}
+                />
+              </Suspense>
             )}
           </AnimatePresence>
-        </main>
+        </div>
 
         {/* FULL-SCREEN BLACK ACCESSIBILITY SETTINGS & STATEMENT PAGE */}
         <AnimatePresence>
           {isAccessibilityOpen && (
-            <AccessibilityPage
-              isOpen={isAccessibilityOpen}
-              onClose={() => setIsAccessibilityOpen(false)}
-              settings={a11ySettings}
-              onUpdateSettings={handleUpdateAccessibility}
-              lang={lang}
-            />
+            <Suspense fallback={null}>
+              <AccessibilityPage
+                isOpen={isAccessibilityOpen}
+                onClose={() => setIsAccessibilityOpen(false)}
+                settings={a11ySettings}
+                onUpdateSettings={handleUpdateAccessibility}
+                lang={lang}
+              />
+            </Suspense>
           )}
         </AnimatePresence>
 

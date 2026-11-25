@@ -73,9 +73,11 @@ export const TrackCoverArt: React.FC<TrackCoverArtProps> = ({
         ref={imgRef}
         src={effectiveUrl}
         alt={`${trackName} by ${artistName}`}
+        width={400}
+        height={400}
         onError={handleImgError}
         className="w-full h-full object-cover opacity-100"
-        loading="eager"
+        loading={priority ? 'eager' : 'lazy'}
         // @ts-expect-error React 18 / 19 fetchPriority attribute support
         fetchpriority={priority ? 'high' : 'auto'}
         decoding={priority ? 'sync' : 'async'}

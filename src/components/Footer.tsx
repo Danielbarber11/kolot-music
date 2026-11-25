@@ -262,14 +262,14 @@ export const Footer: React.FC<FooterProps> = ({
                   <Logo heartOnly={true} className="w-full h-full" />
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5">
+                  <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-1.5">
                     <span>Kolot Music</span>
-                  </h3>
-                  <p className="text-[11px] text-white/50">פלטפורמת המוזיקה החופשית והעצמאית</p>
+                  </h2>
+                  <p className="text-[11px] text-white/75">פלטפורמת המוזיקה החופשית והעצמאית</p>
                 </div>
               </div>
 
-              <p className="text-xs text-white/70 leading-relaxed max-w-md font-normal">
+              <p className="text-xs text-white/75 leading-relaxed max-w-md font-normal">
                 {isHe
                   ? 'האזנה חופשית לשירים, אלבומים ואמנים יוצרים. העלאת מוזיקה וניהול פרופיל אמן בענן בהתאם לתנאי הפלטפורמה ומגבלותיה.'
                   : 'Free music streaming and creator publishing platform subject to platform terms.'}
@@ -277,9 +277,9 @@ export const Footer: React.FC<FooterProps> = ({
 
               {/* SOCIAL MEDIA LINKS (EXTENSIBLE) */}
               <div className="pt-2 space-y-2">
-                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-white/55">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-white/75">
                   {isHe ? 'רשתות חברתיות' : 'Social Media'}
-                </h4>
+                </h3>
                 <div className="flex flex-wrap items-center gap-2">
                   {[
                     {
@@ -306,7 +306,7 @@ export const Footer: React.FC<FooterProps> = ({
                         <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1v-3.5a6.37 6.37 0 0 0-.79-.05A6.34 6.34 0 0 0 3.15 15a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V8.87a8.28 8.28 0 0 0 4.76 1.5v-3.4a4.85 4.85 0 0 1-1-.28Z" />
                       </svg>
                       <span className="font-semibold">{social.label}</span>
-                      <span className="text-[11px] text-white/50 group-hover:text-white/75" dir="ltr">
+                      <span className="text-[11px] text-white/70 group-hover:text-white/90" dir="ltr">
                         {social.handle}
                       </span>
                     </a>
@@ -317,9 +317,9 @@ export const Footer: React.FC<FooterProps> = ({
 
             {/* ACTION BUTTONS & LINKS */}
             <div className="md:col-span-4 space-y-3 text-right">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-white/60">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-white/75">
                 {isHe ? 'פעולות וקישורים' : 'Quick Actions'}
-              </h4>
+              </h3>
 
               <div className="flex flex-col gap-2">
                 {/* 1. TERMS OF SERVICE BUTTON */}
@@ -332,7 +332,7 @@ export const Footer: React.FC<FooterProps> = ({
                     <FileText className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'תנאי שימוש ומדיניות' : 'Terms of Service'}</span>
                   </div>
-                  <span className="text-[10px] text-white/40 group-hover:text-white/70">
+                  <span className="text-[10px] text-white/65 group-hover:text-white/90">
                     {isHe ? 'קרא' : 'Read'}
                   </span>
                 </button>
@@ -351,7 +351,7 @@ export const Footer: React.FC<FooterProps> = ({
                     <Mail className="w-4 h-4 text-white/80 group-hover:scale-110 transition-transform" />
                     <span>{isHe ? 'יצירת קשר ופניות' : 'Contact & Support'}</span>
                   </div>
-                  <span className="text-[10px] text-white/40 group-hover:text-white/70 truncate max-w-[160px] sm:max-w-none" dir="ltr">
+                  <span className="text-[10px] text-white/65 group-hover:text-white/90 truncate max-w-[160px] sm:max-w-none" dir="ltr">
                     kolot-music@googlegroups.com
                   </span>
                 </button>
@@ -367,7 +367,7 @@ export const Footer: React.FC<FooterProps> = ({
                       <AccessibilityIcon className="w-4 h-4 text-white group-hover:scale-110 transition-transform" />
                       <span>{isHe ? 'נגישות והצהרת נגישות' : 'Accessibility & Statement'}</span>
                     </div>
-                    <span className="text-[10px] text-white/40 group-hover:text-white/70">
+                    <span className="text-[10px] text-white/65 group-hover:text-white/90">
                       {isHe ? 'פתח' : 'Open'}
                     </span>
                   </button>
@@ -385,7 +385,7 @@ export const Footer: React.FC<FooterProps> = ({
                   <p className="text-xs font-semibold text-white/90">
                     {isHe ? 'אתה גולש מתוך האפליקציה המותקנת' : 'Running Inside Installed App'}
                   </p>
-                  <p className="text-[11px] text-white/50 max-w-[210px]">
+                  <p className="text-[11px] text-white/70 max-w-[210px]">
                     {isHe
                       ? 'Kolot Music פועלת כעת במצב אפליקציה מלא במכשירך.'
                       : 'Kolot Music is currently running in standalone app mode.'}
@@ -458,12 +458,12 @@ export const Footer: React.FC<FooterProps> = ({
           </div>
 
           {/* BOTTOM COPYRIGHT ROW */}
-          <div className="pt-6 pb-8 md:pb-0 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/40 font-normal">
+          <div className="pt-6 pb-8 md:pb-0 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-white/70 font-normal">
             <div className="flex items-center gap-2">
               <span>© {new Date().getFullYear()} Kolot Music • קולות מוזיקה. כל הזכויות שמורות.</span>
             </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-x-3 sm:gap-x-4 gap-y-2 text-white/50">
+            <div className="flex flex-wrap items-center justify-center gap-x-3 sm:gap-x-4 gap-y-2 text-white/75">
               <button
                 type="button"
                 onClick={handleOpenTerms}
@@ -812,7 +812,8 @@ export const Footer: React.FC<FooterProps> = ({
               <button
                 type="button"
                 onClick={() => setShowIOSInstallGuide(false)}
-                className="p-1.5 rounded-full hover:bg-white/10 text-white/60 hover:text-white transition-colors cursor-pointer"
+                aria-label={isHe ? 'סגור' : 'Close'}
+                className="p-1.5 rounded-full hover:bg-white/10 text-white/70 hover:text-white transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>

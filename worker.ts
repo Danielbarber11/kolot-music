@@ -73,6 +73,96 @@ function getR2Creds(env: Env) {
   };
 }
 
+let runtimeWorkerSessionSecret = '';
+function getRuntimeWorkerSessionSecret(): string {
+  if (!runtimeWorkerSessionSecret) {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    runtimeWorkerSessionSecret = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return runtimeWorkerSessionSecret;
+}
+
+function normalizeSafeR2Path(rawPath: string): string | null {
+  const normalized = String(rawPath || '').trim().replace(/^\/+/, '');
+  if (!normalized || normalized.length > 512) return null;
+  if (/[\x00-\x1f\x7f\\]/.test(normalized)) return null;
+  const segments = normalized.split('/');
+  if (segments.some((s) => !s || s === '.' || s === '..')) return null;
+  const ALLOWED_ROOT_PREFIXES = [
+    'tracks/',
+    'tracks_index.json',
+    'albums/',
+    'profiles/',
+    'audio/',
+    'covers/',
+    'avatars/',
+    'reports/',
+    'contact_messages/',
+    'legal_docs/',
+    'favorites/',
+  ];
+  const lower = normalized.toLowerCase();
+  if (!ALLOWED_ROOT_PREFIXES.some((p) => (p.endsWith('/') ? lower.startsWith(p) : lower === p))) {
+    return null;
+  }
+  return normalized;
+}
+
+function escapeHtmlWorker(raw: string): string {
+  return String(raw || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeRawJsonByPathWorker(filePath: string, rawText: string): string {
+  try {
+    const lower = filePath.toLowerCase();
+    const parsed = JSON.parse(rawText);
+    if (lower.startsWith('profiles/') && parsed && typeof parsed === 'object') {
+      const { googleEmail: _g, email: _e, ...cleanProfile } = parsed;
+      return JSON.stringify(cleanProfile);
+    }
+    if (lower.startsWith('tracks/') && parsed && typeof parsed === 'object') {
+      const { uploadedByEmail: _u, ...cleanTrack } = parsed;
+      return JSON.stringify(cleanTrack);
+    }
+    if (lower === 'tracks_index.json' && Array.isArray(parsed)) {
+      return JSON.stringify(
+        parsed.map((item: any) => {
+          if (!item || typeof item !== 'object') return item;
+          const { uploadedByEmail: _u, ...cleanTrack } = item;
+          return cleanTrack;
+        })
+      );
+    }
+  } catch {}
+  return rawText;
+}
+
+function applyWorkerSecurityHeaders(res: Response): Response {
+  try {
+    if (res.status >= 300 && res.status < 400) return res;
+    const headers = new Headers(res.headers);
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    headers.set('Permissions-Policy', 'camera=(), geolocation=()');
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
+  } catch {
+    return res;
+  }
+}
+
 function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -82,6 +172,9 @@ function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, 
       'Pragma': 'no-cache',
       'Expires': '0',
       'Access-Control-Allow-Origin': '*',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
       ...extraHeaders,
     },
   });
@@ -448,8 +541,33 @@ export default {
         }
       }
 
-      const sessionSecret = clientSecret || creds.secretAccessKey || 'kolot-music-session-hmac-key';
+      const sessionSecret = clientSecret || creds.secretAccessKey || getRuntimeWorkerSessionSecret();
       return { clientId, clientSecret, sessionSecret };
+    };
+
+    const isSameOriginOrBearerWorker = (): boolean => {
+      const authHdr = String(request.headers.get('Authorization') || '').trim();
+      if (authHdr.toLowerCase().startsWith('bearer ')) return true;
+      const secFetchSite = String(request.headers.get('Sec-Fetch-Site') || '').toLowerCase().trim();
+      if (secFetchSite === 'cross-site') return false;
+      const expectedHost = url.host.toLowerCase();
+      const originHdr = String(request.headers.get('Origin') || '').trim();
+      if (originHdr) {
+        try {
+          return new URL(originHdr).host.toLowerCase() === expectedHost;
+        } catch {
+          return false;
+        }
+      }
+      const refererHdr = String(request.headers.get('Referer') || '').trim();
+      if (refererHdr) {
+        try {
+          return new URL(refererHdr).host.toLowerCase() === expectedHost;
+        } catch {
+          return false;
+        }
+      }
+      return true;
     };
 
     const resolveSessionSecretTop = () => resolveGoogleCredsTop().sessionSecret;
@@ -547,9 +665,34 @@ export default {
     // 1b. Presign / Direct streaming upload URL for fast browser uploads
     if (pathname === '/api/storage/presign' && request.method === 'POST') {
       try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
+        const sess = await extractSessionTop();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid) {
+          return jsonResponse({ success: false, error: 'יש להתחבר לחשבון כדי להעלות קבצים.' }, 401);
+        }
+
         const body: any = await request.json();
-        const rawPath = String(body?.path || '').trim().replace(/^\/+/, '');
-        if (!rawPath) return jsonResponse({ success: false, error: 'Missing path' }, 400);
+        const rawPath = normalizeSafeR2Path(String(body?.path || ''));
+        if (!rawPath) return jsonResponse({ success: false, error: 'Invalid path' }, 400);
+
+        const lowerPresignPath = rawPath.toLowerCase();
+        const isMediaPrefix =
+          lowerPresignPath.startsWith('audio/') ||
+          lowerPresignPath.startsWith('covers/') ||
+          lowerPresignPath.startsWith('avatars/');
+        if (!isMediaPrefix) {
+          return jsonResponse({ success: false, error: 'הנתיב אינו מורשה להעלאה ישירה.' }, 403);
+        }
+        if (lowerPresignPath.startsWith('avatars/') && !sess.isAdmin) {
+          const filePart = rawPath.slice('avatars/'.length);
+          if (!filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+            return jsonResponse({ success: false, error: 'אין הרשאה להעלות תמונת פרופיל עבור משתמש אחר.' }, 403);
+          }
+        }
+
         const fileUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
         return jsonResponse({
           success: true,
@@ -566,10 +709,34 @@ export default {
 
     if (pathname === '/api/storage/stream-upload' && request.method === 'PUT') {
       try {
-        const rawPath = (url.searchParams.get('path') || '').trim().replace(/^\/+/, '');
-        if (!rawPath || !request.body) {
-          return jsonResponse({ success: false, error: 'Missing path or stream body' }, 400);
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
         }
+        const sess = await extractSessionTop();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid) {
+          return jsonResponse({ success: false, error: 'יש להתחבר לחשבון כדי להעלות קבצים.' }, 401);
+        }
+
+        const rawPath = normalizeSafeR2Path(url.searchParams.get('path') || '');
+        if (!rawPath || !request.body) {
+          return jsonResponse({ success: false, error: 'Invalid path or missing stream body' }, 400);
+        }
+        const lowerStreamPath = rawPath.toLowerCase();
+        const isMediaPrefix =
+          lowerStreamPath.startsWith('audio/') ||
+          lowerStreamPath.startsWith('covers/') ||
+          lowerStreamPath.startsWith('avatars/');
+        if (!isMediaPrefix) {
+          return jsonResponse({ success: false, error: 'הנתיב אינו מורשה להעלאה ישירה.' }, 403);
+        }
+        if (lowerStreamPath.startsWith('avatars/') && !sess.isAdmin) {
+          const filePart = rawPath.slice('avatars/'.length);
+          if (!filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+            return jsonResponse({ success: false, error: 'אין הרשאה להעלות תמונת פרופיל עבור משתמש אחר.' }, 403);
+          }
+        }
+
         const contentType = request.headers.get('content-type') || 'application/octet-stream';
         if (env.R2_BUCKET) {
           await env.R2_BUCKET.put(rawPath, request.body, { httpMetadata: { contentType } });
@@ -591,14 +758,17 @@ export default {
     // 2. Upload file (multipart or JSON)
     if (pathname === '/api/storage/upload' && request.method === 'POST') {
       try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
         const cType = request.headers.get('content-type') || '';
-        let rawPath = '';
+        let rawPathInput = '';
         let bodyBytes: Uint8Array | null = null;
         let contentType = 'application/octet-stream';
 
         if (cType.includes('multipart/form-data')) {
           const form = await request.formData();
-          rawPath = String(form.get('path') || '').trim().replace(/^\/+/, '');
+          rawPathInput = String(form.get('path') || '');
           const file = form.get('file') as File | null;
           if (file) {
             bodyBytes = new Uint8Array(await file.arrayBuffer());
@@ -606,19 +776,45 @@ export default {
           }
         } else {
           const json: any = await request.json();
-          rawPath = String(json.path || '').trim().replace(/^\/+/, '');
+          rawPathInput = String(json.path || '');
           if (typeof json.content === 'string') {
             bodyBytes = encoder.encode(json.content);
             contentType = json.contentType || 'application/json';
           }
         }
 
+        const rawPath = normalizeSafeR2Path(rawPathInput);
         if (!rawPath || !bodyBytes) {
-          return jsonResponse({ success: false, error: 'Missing path or file content' }, 400);
+          return jsonResponse({ success: false, error: 'Invalid path or missing file content' }, 400);
         }
 
-        // Strict Ownership Enforcement on Profile, Track, and Album writes
-        if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
+        const lowerUploadPath = rawPath.toLowerCase();
+        if (
+          lowerUploadPath.startsWith('favorites/') ||
+          lowerUploadPath.startsWith('legal_docs/') ||
+          lowerUploadPath.startsWith('reports/') ||
+          lowerUploadPath.startsWith('contact_messages/')
+        ) {
+          return jsonResponse({ success: false, error: 'נתיב זה מוגן לכתיבה ישירה.' }, 403);
+        }
+
+        if (
+          lowerUploadPath.startsWith('audio/') ||
+          lowerUploadPath.startsWith('covers/') ||
+          lowerUploadPath.startsWith('avatars/')
+        ) {
+          const sess = await extractSessionTop();
+          const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid) {
+            return jsonResponse({ success: false, error: 'יש להתחבר לחשבון כדי להעלות קבצי מדיה.' }, 401);
+          }
+          if (lowerUploadPath.startsWith('avatars/') && !sess.isAdmin) {
+            const filePart = rawPath.slice('avatars/'.length);
+            if (!filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+              return jsonResponse({ success: false, error: 'אין הרשאה להעלות תמונת פרופיל עבור משתמש אחר.' }, 403);
+            }
+          }
+        } else if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
           const sess = await extractSessionTop();
           const targetUid = rawPath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
           const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
@@ -644,15 +840,14 @@ export default {
             }
           } else {
             const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
-            const isCoreEdit =
-              (incoming?.name !== undefined && incoming.name !== existing.name) ||
-              (incoming?.artistName !== undefined && incoming.artistName !== existing.artistName) ||
-              (incoming?.audioUrl !== undefined && incoming.audioUrl !== existing.audioUrl) ||
-              (incomingUid && existingUid && incomingUid !== existingUid);
-            if (isCoreEdit && (!sess || !cleanSessUid || (existingUid && cleanSessUid !== existingUid))) {
+            const isOwner = Boolean(sess && cleanSessUid && (!existingUid || cleanSessUid === existingUid));
+            if (!isOwner && !sess?.isAdmin) {
               return jsonResponse({ success: false, error: 'רק בעל השיר רשאי לערוך שיר זה.' }, 403);
             }
             if (incoming && typeof incoming === 'object') {
+              if (existingUid && !sess?.isAdmin) {
+                incoming.uploadedByUid = existingUid;
+              }
               incoming.viewsCount = Math.max(
                 Number(existing.viewsCount) || 0,
                 Number(incoming.viewsCount) || 0
@@ -689,6 +884,11 @@ export default {
             }
           }
         } else if (rawPath === 'tracks_index.json') {
+          const sess = await extractSessionTop();
+          const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+          if (!sess || !cleanSessUid) {
+            return jsonResponse({ success: false, error: 'נדרש חיבור לחשבון לעדכון אינדקס השירים.' }, 401);
+          }
           try {
             const incomingArr = JSON.parse(new TextDecoder().decode(bodyBytes));
             if (Array.isArray(incomingArr)) {
@@ -700,12 +900,18 @@ export default {
                 });
                 const mergedArr = incomingArr.map((item: any) => {
                   if (!item?.id) return item;
-                  const prev = existingMap.get(item.id);
-                  if (!prev) return item;
+                  const { uploadedByEmail: _omitIncomingEmail, ...cleanIncoming } = item;
+                  const prev = existingMap.get(cleanIncoming.id);
+                  if (!prev) return cleanIncoming;
+                  const prevOwner = String(prev.uploadedByUid || '').replace(/^artist_/, '').trim();
+                  if (!sess.isAdmin && prevOwner && prevOwner !== cleanSessUid) {
+                    const { uploadedByEmail: _omitPrevEmail, ...cleanPrev } = prev;
+                    return cleanPrev;
+                  }
                   return {
-                    ...item,
-                    viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(item.viewsCount) || 0),
-                    playsCount: Math.max(Number(prev.playsCount) || 0, Number(item.playsCount) || 0),
+                    ...cleanIncoming,
+                    viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(cleanIncoming.viewsCount) || 0),
+                    playsCount: Math.max(Number(prev.playsCount) || 0, Number(cleanIncoming.playsCount) || 0),
                   };
                 });
                 bodyBytes = encoder.encode(JSON.stringify(mergedArr, null, 2));
@@ -750,6 +956,11 @@ export default {
               bodyBytes = encoder.encode(JSON.stringify(incomingAlbum, null, 2));
             }
           } catch {}
+        } else {
+          const sess = await extractSessionTop();
+          if (!sess?.isAdmin) {
+            return jsonResponse({ success: false, error: 'אין הרשאה לכתוב לנתיב זה.' }, 403);
+          }
         }
 
         if (env.R2_BUCKET) {
@@ -774,8 +985,11 @@ export default {
     if (pathname === '/api/storage/list' && request.method === 'GET') {
       try {
         const prefix = (url.searchParams.get('prefix') || '').replace(/^\/+/, '');
+        if (prefix.includes('..') || prefix.includes('\\') || /[\x00-\x1f\x7f]/.test(prefix)) {
+          return jsonResponse({ success: false, error: 'Invalid prefix' }, 400);
+        }
         const lowerPrefix = prefix.toLowerCase();
-        const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/'];
+        const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/'];
         const sess = await extractSessionTop();
         const isAdmin = Boolean(sess?.isAdmin);
 
@@ -1086,29 +1300,59 @@ export default {
     // 4. Delete file (strictly owner-verified; admin has NO song deletion permission)
     if (pathname === '/api/storage/delete' && request.method === 'DELETE') {
       try {
-        const filePath = (url.searchParams.get('path') || '').trim().replace(/^\/+/, '');
-        if (!filePath) return jsonResponse({ success: false, error: 'Missing path' }, 400);
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
+        const filePath = normalizeSafeR2Path(url.searchParams.get('path') || '');
+        if (!filePath) return jsonResponse({ success: false, error: 'Invalid path' }, 400);
 
         const sess = await extractSessionTop();
         const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        if (!sess || !cleanSessUid) {
+          return jsonResponse({ success: false, error: 'נדרש חיבור לחשבון למחיקת קובץ.' }, 401);
+        }
 
+        const lowerDelPath = filePath.toLowerCase();
         if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
           const existing = await readR2JsonTop(filePath);
           const ownerUid = String(existing?.uploadedByUid || '').replace(/^artist_/, '').trim();
-          if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+          if (existing && ownerUid && ownerUid !== cleanSessUid) {
             return jsonResponse({ success: false, error: 'רק בעל השיר רשאי למחוק שיר זה.' }, 403);
           }
         } else if (filePath.startsWith('albums/') && filePath.endsWith('.json')) {
           const existing = await readR2JsonTop(filePath);
           const ownerUid = String(existing?.uploadedByUid || existing?.artistId || '').replace(/^artist_/, '').trim();
-          if (!sess || !cleanSessUid || (existing && ownerUid && ownerUid !== cleanSessUid)) {
+          if (existing && ownerUid && ownerUid !== cleanSessUid) {
             return jsonResponse({ success: false, error: 'רק בעל האלבום רשאי למחוק אלבום זה.' }, 403);
           }
         } else if (filePath.startsWith('profiles/') && filePath.endsWith('.json')) {
           const targetUid = filePath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
-          if (!sess || (!sess.isAdmin && cleanSessUid !== targetUid)) {
+          if (!sess.isAdmin && cleanSessUid !== targetUid) {
             return jsonResponse({ success: false, error: 'אין הרשאה למחוק פרופיל זה.' }, 403);
           }
+        } else if (lowerDelPath.startsWith('avatars/')) {
+          const filePart = filePath.slice('avatars/'.length);
+          if (!sess.isAdmin && !filePart.startsWith(cleanSessUid) && !filePart.startsWith(`artist_${cleanSessUid}`)) {
+            return jsonResponse({ success: false, error: 'אין הרשאה למחוק תמונה זו.' }, 403);
+          }
+        } else if (lowerDelPath.startsWith('covers/albums/')) {
+          const albumBase = filePath.slice('covers/albums/'.length).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+          const alb = albumBase ? await readR2JsonTop(`albums/${albumBase}.json`) : null;
+          const albOwner = String(alb?.uploadedByUid || alb?.artistId || '').replace(/^artist_/, '').trim();
+          if (!sess.isAdmin && alb && albOwner && albOwner !== cleanSessUid) {
+            return jsonResponse({ success: false, error: 'רק בעל האלבום רשאי למחוק עטיפה זו.' }, 403);
+          }
+        } else if (lowerDelPath.startsWith('audio/') || lowerDelPath.startsWith('covers/')) {
+          const prefixLen = lowerDelPath.startsWith('audio/') ? 'audio/'.length : 'covers/'.length;
+          const mediaFile = filePath.slice(prefixLen);
+          const trackId = mediaFile.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
+          const trk = trackId ? await readR2JsonTop(`tracks/${trackId}.json`) : null;
+          const trkOwner = String(trk?.uploadedByUid || '').replace(/^artist_/, '').trim();
+          if (!sess.isAdmin && trk && trkOwner && trkOwner !== cleanSessUid) {
+            return jsonResponse({ success: false, error: 'רק בעל השיר רשאי למחוק קבצי מדיה אלו.' }, 403);
+          }
+        } else if (!sess.isAdmin) {
+          return jsonResponse({ success: false, error: 'אין הרשאה למחוק נתיב מערכת זה.' }, 403);
         }
 
         if (env.R2_BUCKET) {
@@ -1136,20 +1380,31 @@ export default {
         });
       }
 
-      const filePath = decodeURIComponent(pathname.replace(/^\/api\/storage\/raw\//, '')).replace(/^\/+/, '');
-      if (!filePath) return new Response('Missing path', { status: 400 });
+      let decodedRawParam = '';
+      try {
+        decodedRawParam = decodeURIComponent(pathname.replace(/^\/api\/storage\/raw\//, ''));
+      } catch {
+        return new Response('Invalid path encoding', { status: 400 });
+      }
+      const filePath = normalizeSafeR2Path(decodedRawParam);
+      if (!filePath) return new Response('Invalid path', { status: 400 });
 
       const lowerPath = filePath.toLowerCase();
       if (
         lowerPath.startsWith('legal_docs/') ||
         lowerPath.startsWith('reports/') ||
-        lowerPath.startsWith('contact_messages/')
+        lowerPath.startsWith('contact_messages/') ||
+        lowerPath.startsWith('favorites/')
       ) {
         const sess = await extractSessionTop();
         if (!sess?.isAdmin) {
           return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
         }
       }
+
+      const needsJsonRedaction =
+        lowerPath.endsWith('.json') &&
+        (lowerPath.startsWith('profiles/') || lowerPath.startsWith('tracks/') || lowerPath === 'tracks_index.json');
 
       const resolveRawMimeType = (pathKey: string, stored?: string | null): string => {
         const s = (stored || '').trim().toLowerCase();
@@ -1175,7 +1430,7 @@ export default {
         return 'application/octet-stream';
       };
 
-      const rangeHeader = request.headers.get('range');
+      const rangeHeader = needsJsonRedaction ? null : request.headers.get('range');
       if (env.R2_BUCKET) {
         let parsedRangeOpt: { offset?: number; length?: number; suffix?: number } | undefined;
         if (rangeHeader) {
@@ -1214,6 +1469,18 @@ export default {
             );
 
         if (!obj) return new Response('File not found', { status: 404 });
+
+        if (needsJsonRedaction && !isHead) {
+          const redacted = sanitizeRawJsonByPathWorker(filePath, await obj.text());
+          return new Response(redacted, {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'Access-Control-Allow-Origin': '*',
+            },
+          });
+        }
 
         const totalSize = Number(obj.size) || 0;
         const headers = new Headers();
@@ -1273,6 +1540,17 @@ export default {
       );
       if (!s3Res.ok && s3Res.status !== 206) {
         return new Response('File not found in storage', { status: 404 });
+      }
+      if (needsJsonRedaction && request.method !== 'HEAD') {
+        const redacted = sanitizeRawJsonByPathWorker(filePath, await s3Res.text());
+        return new Response(redacted, {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
       }
       const headers = new Headers(s3Res.headers);
       headers.set('Accept-Ranges', 'bytes');
@@ -1334,18 +1612,24 @@ export default {
           audioBytes = new Uint8Array(await bodyData.file.arrayBuffer());
           mimeType = bodyData.file.type || 'audio/mp3';
         } else if (resolvedRawPath) {
-          const r2Key = decodeURIComponent(resolvedRawPath.replace(/^\/api\/storage\/raw\//, ''));
-          if (env.R2_BUCKET) {
-            const obj = await env.R2_BUCKET.get(r2Key);
-            if (obj) {
-              audioBytes = new Uint8Array(await obj.arrayBuffer());
-              mimeType = obj.httpMetadata?.contentType || 'audio/mp3';
-            }
-          } else {
-            const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(r2Key)}`);
-            if (s3Res.ok) {
-              audioBytes = new Uint8Array(await s3Res.arrayBuffer());
-              mimeType = s3Res.headers.get('content-type') || 'audio/mp3';
+          let decodedRaw = '';
+          try {
+            decodedRaw = decodeURIComponent(resolvedRawPath.replace(/^\/api\/storage\/raw\//, ''));
+          } catch {}
+          const r2Key = normalizeSafeR2Path(decodedRaw);
+          if (r2Key && (r2Key.toLowerCase().startsWith('audio/') || r2Key.toLowerCase().startsWith('tracks/'))) {
+            if (env.R2_BUCKET) {
+              const obj = await env.R2_BUCKET.get(r2Key);
+              if (obj) {
+                audioBytes = new Uint8Array(await obj.arrayBuffer());
+                mimeType = obj.httpMetadata?.contentType || 'audio/mp3';
+              }
+            } else {
+              const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(r2Key)}`);
+              if (s3Res.ok) {
+                audioBytes = new Uint8Array(await s3Res.arrayBuffer());
+                mimeType = s3Res.headers.get('content-type') || 'audio/mp3';
+              }
             }
           }
         } else if (audioUrl && isSafeExternalHttpUrl(audioUrl)) {
@@ -2089,17 +2373,6 @@ export default {
     }
 
     // 12b. Account Favorites Sync & Profile-Owner-Only Favorite Counts
-    const isSameOriginOrBearerWorker = (): boolean => {
-      const authHdr = String(request.headers.get('Authorization') || '').trim();
-      if (authHdr.toLowerCase().startsWith('bearer ')) return true;
-      const originHdr = String(request.headers.get('Origin') || '').trim();
-      if (!originHdr) return true;
-      try {
-        return new URL(originHdr).host.toLowerCase() === url.host.toLowerCase();
-      } catch {
-        return false;
-      }
-    };
 
     if (pathname === '/api/storage/favorites' && request.method === 'GET') {
       try {
@@ -2530,6 +2803,58 @@ export default {
         });
       } catch {
         return jsonResponse({ success: false, viewsCount: null }, 503);
+      }
+    }
+
+    // 13b-2. Safe metadata enrichment route for bgColor or empty/untagged genre
+    if (pathname === '/api/storage/track-enrich' && request.method === 'POST') {
+      try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
+        const body: any = await request.json().catch(() => ({}));
+        const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) return jsonResponse({ success: false, error: 'Missing trackId' }, 400);
+
+        const incomingBg = typeof body?.bgColor === 'string' ? body.bgColor.trim() : '';
+        const incomingGenre = typeof body?.genre === 'string' ? body.genre.trim().slice(0, 60) : '';
+        const validBg = /^radial-gradient\([0-9a-zA-Z%,.\s()#\-]+\)$/.test(incomingBg) ? incomingBg : '';
+        const validGenre = incomingGenre && !/[<>]/.test(incomingGenre) ? incomingGenre : '';
+        if (!validBg && !validGenre) {
+          return jsonResponse({ success: false, error: 'Nothing valid to enrich' }, 400);
+        }
+
+        const key = `tracks/${cleanId}.json`;
+        const existing = await r2ReadJson(key);
+        if (!existing || typeof existing !== 'object') {
+          return jsonResponse({ success: false, error: 'Track not found' }, 404);
+        }
+
+        const sess = await extractSessionTop();
+        const cleanSessUid = String(sess?.uid || '').replace(/^artist_/, '').trim();
+        const existingUid = String(existing.uploadedByUid || '').replace(/^artist_/, '').trim();
+        const isOwner = Boolean(sess && (sess.isAdmin || (cleanSessUid && existingUid === cleanSessUid)));
+
+        const UNTAGGED = new Set(['', 'none', 'general', 'music', 'other', 'אחר', 'שונות', 'ללא סגנון', 'ללא סגנון מוזיקלי']);
+        const curGenre = String(existing.genre || '').trim().toLowerCase();
+
+        const updated = { ...existing };
+        let changed = false;
+        if (validBg && (!existing.bgColor || isOwner)) {
+          updated.bgColor = validBg;
+          changed = true;
+        }
+        if (validGenre && (UNTAGGED.has(curGenre) || isOwner)) {
+          updated.genre = validGenre;
+          changed = true;
+        }
+
+        if (changed) {
+          await r2WriteJson(key, updated);
+        }
+        return jsonResponse({ success: true });
+      } catch (err: any) {
+        return jsonResponse({ success: false, error: err?.message || 'Track enrich failed' }, 500);
       }
     }
 
@@ -3338,7 +3663,7 @@ export default {
         const missing = [!clientId ? 'Client_ID' : '', !clientSecret ? 'Client_secret' : ''].filter(Boolean).join(' + ');
         const envKeyList = Object.keys((env as Record<string, any>) || {}).join(', ') || 'none';
         const errMsg = `מזהה ההתחברות של Google (${missing}) אינו מוגדר בהגדרות השרת. (מפתחות פעילים: ${envKeyList})`;
-        const html = `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${errMsg}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`;
+        const html = `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>Kolot Music Auth</title></head><body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;"><div><p style="font-size:16px;font-weight:bold;color:#fda4af;">${escapeHtmlWorker(errMsg)}</p><script>try{if(window.opener){window.opener.postMessage({type:'OAUTH_AUTH_ERROR',error:${JSON.stringify(errMsg)}},'*');}}catch(e){}</script></div></body></html>`;
         return new Response(html, {
           status: 500,
           headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
@@ -3414,7 +3739,7 @@ export default {
 <body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;">
   <div>
     <p style="font-size:16px;font-weight:bold;">${ok ? 'ההתחברות עם Google הצליחה — החלון נסגר...' : 'ההתחברות בוטלה או נכשלה'}</p>
-    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${errMsg}</p>` : ''}
+    ${errMsg ? `<p style="font-size:13px;color:#fda4af;">${escapeHtmlWorker(errMsg)}</p>` : ''}
   </div>
   <script>
     (function() {
@@ -3696,6 +4021,9 @@ export default {
 
     if (pathname === '/api/auth/restore-google-avatar' && request.method === 'POST') {
       try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
         const { sessionSecret } = getGoogleCreds();
         const parsed = await extractWorkerSession(sessionSecret);
         if (!parsed) {
@@ -3752,6 +4080,9 @@ export default {
     // 16. Admin-Only Account Deletion (strictly removes account profile & avatars; does NOT delete songs)
     if (pathname === '/api/admin/delete-account' && request.method === 'POST') {
       try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
         const { sessionSecret } = getGoogleCreds();
         const parsed = await extractWorkerSession(sessionSecret);
         if (!parsed?.session?.isAdmin) {
@@ -3776,6 +4107,9 @@ export default {
     // 17. Self-Service Account Deletion for logged-in user
     if (pathname === '/api/account/delete' && request.method === 'POST') {
       try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
         const { sessionSecret } = getGoogleCreds();
         const parsed = await extractWorkerSession(sessionSecret);
         if (!parsed?.session?.uid) {
@@ -3803,6 +4137,80 @@ export default {
       }
     }
 
+    // 18. Dynamic SEO & Agent Discovery Files (robots.txt, sitemap.xml, llms.txt)
+    if (pathname === '/robots.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
+      const canonicalOrigin = url.origin.includes('kolot-music.workers.dev')
+        ? url.origin
+        : 'https://kolot-music.kolot-music.workers.dev';
+      const bodyTxt = `User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /auth/\n\nSitemap: ${canonicalOrigin}/sitemap.xml\n`;
+      return new Response(request.method === 'HEAD' ? null : bodyTxt, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+
+    if (pathname === '/llms.txt' && (request.method === 'GET' || request.method === 'HEAD')) {
+      const bodyTxt = [
+        '# Kolot Music (קולות מוזיקה)',
+        '',
+        '> Free independent music streaming, album creation, and AI subtitle platform.',
+        '> Official URL: https://kolot-music.kolot-music.workers.dev/',
+        '> Contact: kolot-music@googlegroups.com',
+        '> Social: https://www.tiktok.com/@kolot_music',
+        '',
+        '## Key Pages & Endpoints',
+        '- Home & Catalog: https://kolot-music.kolot-music.workers.dev/',
+        '- Search Songs/Artists: https://kolot-music.kolot-music.workers.dev/?q={query}',
+        '- Direct Song Player: https://kolot-music.kolot-music.workers.dev/?song={trackId}',
+        '- XML Sitemap: https://kolot-music.kolot-music.workers.dev/sitemap.xml',
+        '',
+        '## Public Data Feeds (Read-Only JSON)',
+        '- Bootstrap Feed: /api/bootstrap',
+        '- Tracks Feed: /api/storage/tracks-feed',
+        '- Artists Feed: /api/storage/profiles-feed',
+        '- Albums Feed: /api/storage/albums-feed',
+      ].join('\n');
+      return new Response(request.method === 'HEAD' ? null : bodyTxt, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+
+    if (pathname === '/sitemap.xml' && (request.method === 'GET' || request.method === 'HEAD')) {
+      const baseUrl = 'https://kolot-music.kolot-music.workers.dev';
+      const today = new Date().toISOString().split('T')[0];
+      const songEntries: string[] = [];
+      try {
+        const trackKeys = (await r2ListKeys('tracks/').catch(() => []))
+          .filter((k) => k.endsWith('.json'))
+          .map((k) => k.replace(/^tracks\//, '').replace(/\.json$/, '').replace(/[^a-zA-Z0-9_\-]/g, ''))
+          .filter(Boolean)
+          .slice(0, 500);
+        for (const id of trackKeys) {
+          songEntries.push(
+            `  <url>\n    <loc>${baseUrl}/?song=${encodeURIComponent(id)}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>`
+          );
+        }
+      } catch {}
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${baseUrl}/</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>daily</changefreq>\n    <priority>1.0</priority>\n  </url>\n${songEntries.join('\n')}\n</urlset>`;
+      return new Response(request.method === 'HEAD' ? null : xml, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=1800',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    }
+
     // Fallback to static Vite assets & SPA index.html (NEVER return cached index.html or HTML for missing JS/CSS assets)
     if (env.ASSETS) {
       const isDocumentRequest = pathname === '/' || pathname === '/index.html';
@@ -3815,29 +4223,29 @@ export default {
         const headers = new Headers(docRes.headers);
         headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
         headers.set('Pragma', 'no-cache');
-        return new Response(docRes.body, { status: docRes.status, headers });
+        return applyWorkerSecurityHeaders(new Response(docRes.body, { status: docRes.status, headers }));
       }
 
       const assetRes = await env.ASSETS.fetch(request);
       if (assetRes.status === 404) {
         if (pathname.startsWith('/api/') || isStaticAssetPath) {
-          return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+          return applyWorkerSecurityHeaders(new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store' } }));
         }
         const spaRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
         const headers = new Headers(spaRes.headers);
         headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-        return new Response(spaRes.body, { status: spaRes.status, headers });
+        return applyWorkerSecurityHeaders(new Response(spaRes.body, { status: spaRes.status, headers }));
       }
 
       if (pathname.startsWith('/assets/')) {
         const headers = new Headers(assetRes.headers);
         headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(assetRes.body, { status: assetRes.status, headers });
+        return applyWorkerSecurityHeaders(new Response(assetRes.body, { status: assetRes.status, headers }));
       }
 
-      return assetRes;
+      return applyWorkerSecurityHeaders(assetRes);
     }
 
-    return new Response('Not Found', { status: 404 });
+    return applyWorkerSecurityHeaders(new Response('Not Found', { status: 404 }));
   },
 };
