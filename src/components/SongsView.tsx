@@ -40,6 +40,7 @@ import {
   getCachedArtistProfiles,
   fetchRealAlbums,
   getCachedAlbums,
+  fetchBootstrapData,
   checkTermsAcceptedInR2,
   saveTermsAcceptedToR2,
   getArtistAccountByUid,
@@ -505,40 +506,23 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   }, [initialAlbums]);
 
-  // Mount effect - Independent progressive Cloud Load (< 1s first paint, zero Promise.all blocking)
+  // Mount effect - Await consolidated /api/bootstrap prefetch (1 request for tracks + profiles + albums)
   useEffect(() => {
     let active = true;
 
-    fetchAllRealSongs(undefined, (batch) => {
-      if (!active) return;
-      const valid = (batch || []).filter(isValidTrackWithOwner);
-      if (valid.length > 0) {
-        setAllTracks(valid);
-        onTracksSync?.(valid);
-      }
-    })
-      .then((finalSongs) => {
-        if (!active) return;
-        const validSongs = (finalSongs || []).filter(isValidTrackWithOwner);
+    fetchBootstrapData()
+      .then((boot) => {
+        if (!active || !boot) return;
+        const validSongs = (boot.tracks || []).filter(isValidTrackWithOwner);
         setAllTracks(validSongs);
         onTracksSync?.(validSongs);
-      })
-      .catch(() => {});
-
-    fetchAllArtistProfiles()
-      .then((profiles) => {
-        if (!active || !Array.isArray(profiles)) return;
-        setAllArtists(profiles);
-        onArtistsSync?.(profiles);
-      })
-      .catch(() => {});
-
-    fetchRealAlbums()
-      .then((albums) => {
-        if (!active || !Array.isArray(albums)) return;
-        if (albums.length > 0) {
-          setRemoteAlbums(albums);
-          onAlbumsSync?.(albums);
+        if (Array.isArray(boot.profiles)) {
+          setAllArtists(boot.profiles);
+          onArtistsSync?.(boot.profiles);
+        }
+        if (Array.isArray(boot.albums) && boot.albums.length > 0) {
+          setRemoteAlbums(boot.albums);
+          onAlbumsSync?.(boot.albums);
         }
       })
       .catch(() => {});

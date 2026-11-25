@@ -387,19 +387,33 @@ export async function classifyTrackAudio(params: {
       const timer = controller ? setTimeout(() => controller.abort(), 14000) : null;
       try {
         let uploadBlob: Blob | null = null;
-        if (source) {
-          const compact = await extractFastAudioWavBlob(source, 90, controller?.signal).catch(() => null);
-          if (compact?.blob && compact.blob.size <= 10 * 1024 * 1024) {
+        let uploadName = 'sample.wav';
+        const isRemoteUrl = typeof source === 'string' && !/^(?:blob:|data:)/i.test(source);
+
+        if (isRemoteUrl) {
+          uploadBlob = null;
+        } else if (
+          params.audioFile &&
+          params.audioFile.size > 0 &&
+          ((!params.audioFile.type.includes('wav') && params.audioFile.size <= 6 * 1024 * 1024) ||
+            (params.audioFile.type.includes('wav') && params.audioFile.size <= 4.5 * 1024 * 1024))
+        ) {
+          uploadBlob = params.audioFile;
+          uploadName = params.audioFile instanceof File ? params.audioFile.name : 'sample.mp3';
+        } else if (source) {
+          const compact = await extractFastAudioWavBlob(source, 45, controller?.signal).catch(() => null);
+          if (compact?.blob && compact.blob.size <= 6 * 1024 * 1024) {
             uploadBlob = compact.blob;
-          } else if (params.audioFile && params.audioFile.size <= 12 * 1024 * 1024) {
-            uploadBlob = params.audioFile;
+          } else if (params.audioFile && params.audioFile.size > 0) {
+            uploadBlob = params.audioFile.slice(0, Math.floor(4.5 * 1024 * 1024), params.audioFile.type || 'audio/mpeg');
+            uploadName = params.audioFile instanceof File ? params.audioFile.name : 'sample.mp3';
           }
         }
 
         let res: Response;
         if (uploadBlob) {
           const fd = new FormData();
-          fd.append('file', uploadBlob, 'sample.wav');
+          fd.append('file', uploadBlob, uploadName);
           if (title) fd.append('songTitle', title);
           if (artist) fd.append('artistName', artist);
           if (lyrics) fd.append('lyrics', lyrics.slice(0, 1500));

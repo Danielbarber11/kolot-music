@@ -20,26 +20,39 @@ if (env.backends?.onnx?.wasm) {
 
 let audioClassifierPipelinePromise: Promise<any> | null = null;
 let cachedAiStatus: { aiConfigured: boolean; ts: number } | null = null;
+let inFlightAiStatusPromise: Promise<boolean> | null = null;
 let sharedWhisperWorker: Worker | null = null;
 let nextWhisperReqId = 1;
 
+export function primeServerAiStatus(aiConfigured: boolean): void {
+  cachedAiStatus = { aiConfigured: Boolean(aiConfigured), ts: Date.now() };
+}
+
 export async function isServerAiConfigured(): Promise<boolean> {
-  if (cachedAiStatus && Date.now() - cachedAiStatus.ts < 60000) {
+  if (cachedAiStatus && Date.now() - cachedAiStatus.ts < 300000) {
     return cachedAiStatus.aiConfigured;
   }
-  try {
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), 2200) : null;
-    const res = await fetch('/api/storage/status', { signal: controller?.signal });
-    if (timer) clearTimeout(timer);
-    if (!res.ok) return false;
-    const data: any = await res.json().catch(() => null);
-    const configured = Boolean(data?.aiConfigured);
-    cachedAiStatus = { aiConfigured: configured, ts: Date.now() };
-    return configured;
-  } catch {
-    return false;
+  if (inFlightAiStatusPromise) {
+    return inFlightAiStatusPromise;
   }
+  inFlightAiStatusPromise = (async () => {
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 1800) : null;
+      const res = await fetch('/api/ai/status', { signal: controller?.signal, cache: 'no-store' });
+      if (timer) clearTimeout(timer);
+      if (!res.ok) return false;
+      const data: any = await res.json().catch(() => null);
+      const configured = Boolean(data?.aiConfigured);
+      cachedAiStatus = { aiConfigured: configured, ts: Date.now() };
+      return configured;
+    } catch {
+      return false;
+    } finally {
+      inFlightAiStatusPromise = null;
+    }
+  })();
+  return inFlightAiStatusPromise;
 }
 
 function getOrCreateWhisperWorker(): Worker {
@@ -235,8 +248,25 @@ function fallbackDownsampleDecodedTo16k(decoded: AudioBuffer, maxSeconds: number
   return out;
 }
 
+interface CachedPcmEntry {
+  pcm: Float32Array;
+  duration: number;
+  maxSeconds: number;
+}
+const decodedBlobPcmCache = new WeakMap<Blob, CachedPcmEntry>();
+const decodedUrlPcmCache = new Map<string, CachedPcmEntry>();
+
+function storeUrlPcmCache(urlKey: string, entry: CachedPcmEntry) {
+  if (decodedUrlPcmCache.size >= 6) {
+    const oldestKey = decodedUrlPcmCache.keys().next().value;
+    if (oldestKey) decodedUrlPcmCache.delete(oldestKey);
+  }
+  decodedUrlPcmCache.set(urlKey, entry);
+}
+
 /**
  * Decodes audio into compact mono 16kHz PCM Float32Array safely on mobile and desktop.
+ * Reuses cached PCM across classification and transcription fallbacks so AudioContext only runs once.
  */
 export async function decodeAudioToMono16k(
   source: File | Blob | string,
@@ -249,6 +279,28 @@ export async function decodeAudioToMono16k(
 
   const isConstrained = isMobileOrConstrainedDevice();
   const isFullSong = Boolean(options?.fullSong || maxSeconds > 120);
+  const requestedCapSec = isFullSong
+    ? (maxSeconds || 600)
+    : (isConstrained ? Math.min(maxSeconds, 44) : Math.min(maxSeconds, 88));
+
+  const cachedEntry = typeof source === 'string'
+    ? decodedUrlPcmCache.get(source)
+    : decodedBlobPcmCache.get(source);
+
+  if (
+    cachedEntry &&
+    (cachedEntry.maxSeconds >= requestedCapSec || cachedEntry.duration <= cachedEntry.maxSeconds + 0.5)
+  ) {
+    const neededSamples = Math.min(cachedEntry.pcm.length, Math.ceil(requestedCapSec * 16000));
+    const sliced = neededSamples < cachedEntry.pcm.length
+      ? cachedEntry.pcm.subarray(0, neededSamples)
+      : cachedEntry.pcm;
+    return {
+      pcm: options?.isolateVocals ? normalizePcmForVocals(sliced) : sliced,
+      duration: cachedEntry.duration,
+    };
+  }
+
   const maxBytes = isFullSong
     ? (isConstrained ? 36 * 1024 * 1024 : 60 * 1024 * 1024)
     : (isConstrained ? 4 * 1024 * 1024 : 8 * 1024 * 1024);
@@ -301,6 +353,17 @@ export async function decodeAudioToMono16k(
     const sampleDuration = effectiveMaxSec > 0 ? Math.min(decoded.duration, effectiveMaxSec) : decoded.duration;
 
     const manualPcm = fallbackDownsampleDecodedTo16k(decoded, sampleDuration);
+    const cacheRecord: CachedPcmEntry = {
+      pcm: manualPcm,
+      duration: fullDuration,
+      maxSeconds: sampleDuration,
+    };
+    if (typeof source === 'string') {
+      storeUrlPcmCache(source, cacheRecord);
+    } else {
+      decodedBlobPcmCache.set(source, cacheRecord);
+    }
+
     return {
       pcm: options?.isolateVocals ? normalizePcmForVocals(manualPcm) : manualPcm,
       duration: fullDuration,
@@ -889,21 +952,31 @@ export async function generateSubtitlesWithGeminiMethod(options: {
 
     let serverRes: Response;
     try {
-      const extracted = await extractFastAudioWavBlob(source, 600, controller.signal).catch(() => null);
-      if (options.signal?.aborted) {
-        return emptyFail('יצירת הכתוביות בוטלה', true);
-      }
-
-      const detectedDuration = Math.max(10, Math.round(extracted?.duration || options.duration || 180));
       const langParam = options.subtitleLanguageHint === 'en' ? 'en' : options.language || 'he';
+      const defaultDuration = Math.max(10, Math.round(options.duration || 180));
 
-      if (extracted?.blob && extracted.blob.size <= 12 * 1024 * 1024) {
+      const isDirectSmallFile = Boolean(
+        options.audioFile &&
+        options.audioFile.size > 0 &&
+        ((!options.audioFile.type.includes('wav') && options.audioFile.size <= 14 * 1024 * 1024) ||
+          (options.audioFile.type.includes('wav') && options.audioFile.size <= 10 * 1024 * 1024))
+      );
+
+      const isRemoteAudioUrl = Boolean(
+        !options.audioFile &&
+        options.audioUrl &&
+        !/^(?:blob:|data:)/i.test(options.audioUrl)
+      );
+
+      if (isDirectSmallFile && options.audioFile) {
+        // Fast path 1: Upload compressed local audio (MP3/M4A/AAC/OGG/small WAV) directly without client WAV decode
         const fd = new FormData();
-        fd.append('file', extracted.blob, 'track-16k.wav');
+        const fileName = options.audioFile instanceof File ? options.audioFile.name : 'track.mp3';
+        fd.append('file', options.audioFile, fileName);
         fd.append('language', langParam);
         if (options.songTitle) fd.append('songTitle', options.songTitle);
         if (options.artistName) fd.append('artistName', options.artistName);
-        fd.append('duration', String(detectedDuration));
+        fd.append('duration', String(defaultDuration));
 
         serverRes = await fetchWithRetry(
           '/api/ai/transcribe',
@@ -911,32 +984,53 @@ export async function generateSubtitlesWithGeminiMethod(options: {
           2,
           controller.signal
         );
+      } else if (isRemoteAudioUrl && options.audioUrl) {
+        // Fast path 2: Remote R2/HTTP URL -> let server/Worker read audio directly from R2 (0 bytes uploaded!)
+        serverRes = await fetchWithRetry(
+          '/api/ai/transcribe',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              audioUrl: options.audioUrl,
+              language: langParam,
+              songTitle: options.songTitle || '',
+              artistName: options.artistName || '',
+              duration: defaultDuration,
+            }),
+          },
+          2,
+          controller.signal
+        );
       } else {
-        let uploadBlob: Blob | null = null;
-        let uploadName = 'track.mp3';
+        // Slow-file fallback: oversized local file (>14MB / big WAV) or blob:/data: URL -> compact WAV extract or sliced upload
+        const extracted = await extractFastAudioWavBlob(source, 600, controller.signal).catch(() => null);
+        if (options.signal?.aborted) {
+          return emptyFail('יצירת הכתוביות בוטלה', true);
+        }
+        const detectedDuration = Math.max(10, Math.round(extracted?.duration || defaultDuration));
 
-        if (options.audioFile) {
-          uploadBlob =
+        if (extracted?.blob && extracted.blob.size <= 12 * 1024 * 1024) {
+          const fd = new FormData();
+          fd.append('file', extracted.blob, 'track-16k.wav');
+          fd.append('language', langParam);
+          if (options.songTitle) fd.append('songTitle', options.songTitle);
+          if (options.artistName) fd.append('artistName', options.artistName);
+          fd.append('duration', String(detectedDuration));
+
+          serverRes = await fetchWithRetry(
+            '/api/ai/transcribe',
+            { method: 'POST', body: fd, credentials: 'include' },
+            2,
+            controller.signal
+          );
+        } else if (options.audioFile) {
+          const uploadBlob =
             options.audioFile.size > 14 * 1024 * 1024
               ? options.audioFile.slice(0, 14 * 1024 * 1024, options.audioFile.type || 'audio/mpeg')
               : options.audioFile;
-          uploadName = options.audioFile instanceof File ? options.audioFile.name : 'track.mp3';
-        } else if (options.audioUrl) {
-          try {
-            const audioFetchRes = await fetch(options.audioUrl, { signal: controller.signal });
-            if (audioFetchRes.ok) {
-              const rawBlob = await audioFetchRes.blob();
-              if (rawBlob.size > 0) {
-                uploadBlob =
-                  rawBlob.size > 14 * 1024 * 1024
-                    ? rawBlob.slice(0, 14 * 1024 * 1024, rawBlob.type || 'audio/mpeg')
-                    : rawBlob;
-              }
-            }
-          } catch {}
-        }
-
-        if (uploadBlob && uploadBlob.size > 0) {
+          const uploadName = options.audioFile instanceof File ? options.audioFile.name : 'track.mp3';
           const fd = new FormData();
           fd.append('file', uploadBlob, uploadName);
           fd.append('language', langParam);

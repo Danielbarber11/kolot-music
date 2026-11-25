@@ -51,6 +51,73 @@ export interface Env {
 const workerPendingViewDeltas = new Map<string, number>();
 const workerActiveViewFlushes = new Map<string, Promise<number | null>>();
 
+interface WorkerFeedSnapshot {
+  tracks: any[];
+  profiles: any[];
+  albums: any[];
+  fetchedAt: number;
+}
+const WORKER_FEED_CACHE_TTL_MS = 20000;
+const WORKER_STATUS_CACHE_TTL_MS = 60000;
+const workerFeedCache = new Map<string, WorkerFeedSnapshot>();
+const workerFeedInFlight = new Map<string, Promise<WorkerFeedSnapshot>>();
+const workerStatusCache = new Map<string, { ts: number; configured: boolean; bucket: string }>();
+
+function invalidateWorkerFeedCache(cacheKey: string) {
+  workerFeedCache.delete(cacheKey);
+}
+
+function upsertTrackInWorkerFeedCache(cacheKey: string, track: any) {
+  const snap = workerFeedCache.get(cacheKey);
+  if (!snap || !track?.id) return;
+  const { uploadedByEmail: _omit, ...cleanTrack } = track;
+  const normalized = { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 };
+  const idx = snap.tracks.findIndex((t: any) => t?.id === normalized.id);
+  if (idx >= 0) {
+    snap.tracks[idx] = { ...snap.tracks[idx], ...normalized };
+  } else {
+    snap.tracks.unshift(normalized);
+  }
+}
+
+function removeTrackFromWorkerFeedCache(cacheKey: string, trackId: string) {
+  const snap = workerFeedCache.get(cacheKey);
+  if (!snap || !trackId) return;
+  snap.tracks = snap.tracks.filter((t: any) => t?.id !== trackId);
+}
+
+function upsertProfileInWorkerFeedCache(cacheKey: string, profile: any, fallbackUid?: string) {
+  const snap = workerFeedCache.get(cacheKey);
+  if (!snap || !profile || typeof profile !== 'object') return;
+  const { googleEmail: _omit, ...clean } = profile;
+  const uid = String(clean.googleUid || clean.id || fallbackUid || '').replace(/^artist_/, '').trim();
+  if (!uid) return;
+  const normalized = { ...clean, id: uid, googleUid: uid };
+  const idx = snap.profiles.findIndex((p: any) => String(p?.googleUid || p?.id || '').replace(/^artist_/, '').trim() === uid);
+  if (idx >= 0) {
+    snap.profiles[idx] = normalized;
+  } else {
+    snap.profiles.push(normalized);
+  }
+}
+
+function upsertAlbumInWorkerFeedCache(cacheKey: string, album: any) {
+  const snap = workerFeedCache.get(cacheKey);
+  if (!snap || !album?.id) return;
+  const idx = snap.albums.findIndex((a: any) => a?.id === album.id);
+  if (idx >= 0) {
+    snap.albums[idx] = album;
+  } else {
+    snap.albums.unshift(album);
+  }
+}
+
+function removeAlbumFromWorkerFeedCache(cacheKey: string, albumId: string) {
+  const snap = workerFeedCache.get(cacheKey);
+  if (!snap || !albumId) return;
+  snap.albums = snap.albums.filter((a: any) => a?.id !== albumId);
+}
+
 function sanitizeEndpoint(raw?: string): string {
   if (!raw) return '';
   let cleaned = raw.trim().replace(/^["']|["']$/g, '');
@@ -572,6 +639,8 @@ export default {
 
     const resolveSessionSecretTop = () => resolveGoogleCredsTop().sessionSecret;
 
+    const feedCacheKey = `${creds.bucket}|${Boolean(env.R2_BUCKET)}`;
+
     const readR2JsonTop = async (key: string) => {
       try {
         if (env.R2_BUCKET) {
@@ -583,6 +652,212 @@ export default {
       } catch {
         return null;
       }
+    };
+
+    const writeR2JsonTop = async (key: string, data: unknown) => {
+      const bodyBytes = encoder.encode(JSON.stringify(data));
+      if (env.R2_BUCKET) {
+        await env.R2_BUCKET.put(key, bodyBytes, { httpMetadata: { contentType: 'application/json' } });
+      } else {
+        await signedR2Fetch(creds, 'PUT', `/${creds.bucket}/${encodeS3Path(key)}`, {}, bodyBytes, {
+          'Content-Type': 'application/json',
+        });
+      }
+    };
+
+    const listR2JsonKeysTop = async (prefix: string): Promise<string[]> => {
+      const keys: string[] = [];
+      if (env.R2_BUCKET) {
+        let cursor: string | undefined;
+        do {
+          const listed = await env.R2_BUCKET.list({ prefix, cursor });
+          listed.objects.forEach((o) => {
+            if (o.key.endsWith('.json')) keys.push(o.key);
+          });
+          cursor = listed.truncated ? listed.cursor : undefined;
+        } while (cursor);
+      } else {
+        let token = '';
+        do {
+          const q: Record<string, string> = { 'list-type': '2', prefix };
+          if (token) q['continuation-token'] = token;
+          const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
+          if (!listRes.ok) break;
+          const xml = await listRes.text();
+          parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
+            if (it.Key?.endsWith('.json')) keys.push(it.Key);
+          });
+          const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
+          const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
+          token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
+        } while (token);
+      }
+      return keys;
+    };
+
+    const getWorkerFeedSnapshot = async (): Promise<WorkerFeedSnapshot> => {
+      const cached = workerFeedCache.get(feedCacheKey);
+      if (cached && Date.now() - cached.fetchedAt < WORKER_FEED_CACHE_TTL_MS) {
+        return cached;
+      }
+      const inFlight = workerFeedInFlight.get(feedCacheKey);
+      if (inFlight) return inFlight;
+
+      const job = (async (): Promise<WorkerFeedSnapshot> => {
+        const readInBatches = async <T,>(keys: string[], mapper: (k: string) => Promise<T>): Promise<T[]> => {
+          const out: T[] = [];
+          const batchSize = 50;
+          for (let i = 0; i < keys.length; i += batchSize) {
+            const chunk = await Promise.all(keys.slice(i, i + batchSize).map(mapper));
+            out.push(...chunk);
+          }
+          return out;
+        };
+
+        const [trackKeys, profileKeys, albumKeys, indexData] = await Promise.all([
+          listR2JsonKeysTop('tracks/').catch(() => [] as string[]),
+          listR2JsonKeysTop('profiles/').catch(() => [] as string[]),
+          listR2JsonKeysTop('albums/').catch(() => [] as string[]),
+          readR2JsonTop('tracks_index.json'),
+        ]);
+
+        const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
+          readInBatches(trackKeys, (k) => readR2JsonTop(k)),
+          readInBatches(profileKeys, async (k) => ({ key: k, data: await readR2JsonTop(k) })),
+          readInBatches(albumKeys, (k) => readR2JsonTop(k)),
+        ]);
+
+        const trackMap = new Map<string, any>();
+        if (Array.isArray(indexData)) {
+          indexData.forEach((t: any) => {
+            if (t?.id && t?.name && t?.audioUrl) {
+              const { uploadedByEmail: _omit, ...cleanTrack } = t;
+              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
+            }
+          });
+        }
+
+        loadedTracks.forEach((t: any) => {
+          if (t?.id && t?.name && t?.audioUrl) {
+            const { uploadedByEmail: _omit, ...cleanTrack } = t;
+            const prev = trackMap.get(cleanTrack.id);
+            const authoritativeViews =
+              cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
+                ? Number(cleanTrack.viewsCount) || 0
+                : Number(prev?.viewsCount) || 0;
+            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
+          }
+        });
+
+        const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
+        for (const item of loadedProfiles) {
+          if (!item?.data || typeof item.data !== 'object') continue;
+          const { googleEmail: _omitEmail, ...clean } = item.data;
+          const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
+          if (!uid) continue;
+          const ts = Math.max(
+            Date.parse(String(clean.updatedAt || '')) || 0,
+            Date.parse(String(clean.acceptedTermsAt || '')) || 0
+          );
+          const isCanonicalKey = !item.key.startsWith('profiles/artist_');
+          const prev = profileMap.get(uid);
+          if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
+            profileMap.set(uid, {
+              data: { ...clean, id: uid, googleUid: uid },
+              ts,
+              isCanonicalKey,
+            });
+          }
+        }
+
+        const snap: WorkerFeedSnapshot = {
+          tracks: Array.from(trackMap.values()),
+          profiles: Array.from(profileMap.values()).map((entry) => entry.data),
+          albums: loadedAlbums.filter(Boolean),
+          fetchedAt: Date.now(),
+        };
+        workerFeedCache.set(feedCacheKey, snap);
+        return snap;
+      })().finally(() => {
+        workerFeedInFlight.delete(feedCacheKey);
+      });
+
+      workerFeedInFlight.set(feedCacheKey, job);
+      return job;
+    };
+
+    const syncTrackInIndexWorker = async (trackObj: any) => {
+      if (!trackObj?.id) return;
+      const { uploadedByEmail: _omit, ...cleanTrack } = trackObj;
+      try {
+        if (env.R2_BUCKET) {
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const idxObj = await env.R2_BUCKET.get('tracks_index.json');
+            const idxArr = idxObj ? JSON.parse(await idxObj.text()) : [];
+            const map = new Map<string, any>();
+            if (Array.isArray(idxArr)) {
+              idxArr.forEach((t: any) => {
+                if (t?.id) map.set(t.id, t);
+              });
+            }
+            const prev = map.get(cleanTrack.id);
+            map.set(cleanTrack.id, {
+              ...cleanTrack,
+              viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(cleanTrack.viewsCount) || 0),
+              playsCount: Math.max(Number(prev?.playsCount) || 0, Number(cleanTrack.playsCount) || 0),
+            });
+            const bytes = encoder.encode(JSON.stringify(Array.from(map.values())));
+            const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+            if (idxObj?.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+            const resPut = await env.R2_BUCKET.put('tracks_index.json', bytes, putOpts);
+            if (resPut !== null) break;
+            await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 40)));
+          }
+          return;
+        }
+        const idxArr = await readR2JsonTop('tracks_index.json');
+        const map = new Map<string, any>();
+        if (Array.isArray(idxArr)) {
+          idxArr.forEach((t: any) => {
+            if (t?.id) map.set(t.id, t);
+          });
+        }
+        const prev = map.get(cleanTrack.id);
+        map.set(cleanTrack.id, {
+          ...cleanTrack,
+          viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(cleanTrack.viewsCount) || 0),
+          playsCount: Math.max(Number(prev?.playsCount) || 0, Number(cleanTrack.playsCount) || 0),
+        });
+        await writeR2JsonTop('tracks_index.json', Array.from(map.values()));
+      } catch {}
+    };
+
+    const removeTrackFromIndexWorker = async (trackId: string) => {
+      if (!trackId) return;
+      try {
+        if (env.R2_BUCKET) {
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const idxObj = await env.R2_BUCKET.get('tracks_index.json');
+            if (!idxObj) break;
+            const idxArr = JSON.parse(await idxObj.text());
+            if (!Array.isArray(idxArr)) break;
+            const nextArr = idxArr.filter((t: any) => t?.id !== trackId);
+            if (nextArr.length === idxArr.length) break;
+            const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
+            if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
+            const resPut = await env.R2_BUCKET.put('tracks_index.json', encoder.encode(JSON.stringify(nextArr)), putOpts);
+            if (resPut !== null) break;
+            await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 40)));
+          }
+          return;
+        }
+        const idxArr = await readR2JsonTop('tracks_index.json');
+        if (!Array.isArray(idxArr)) return;
+        const nextArr = idxArr.filter((t: any) => t?.id !== trackId);
+        if (nextArr.length !== idxArr.length) {
+          await writeR2JsonTop('tracks_index.json', nextArr);
+        }
+      } catch {}
     };
 
     type TopSessionUser = {
@@ -645,20 +920,52 @@ export default {
       }
     };
 
-    // 1. Storage status
+    // 0b. Fast Zero-I/O AI Status Probe
+    if (pathname === '/api/ai/status' && request.method === 'GET') {
+      const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
+      return jsonResponse({ success: true, aiConfigured });
+    }
+
+    // 1. Storage status (cached 60s for S3 mode, zero-I/O for R2 binding)
     if (pathname === '/api/storage/status' && request.method === 'GET') {
       const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
       if (env.R2_BUCKET) {
-        return jsonResponse({ success: true, configured: true, aiConfigured, bucket: creds.bucket, endpoint: 'configured' });
+        return jsonResponse({
+          success: true,
+          configured: true,
+          aiConfigured,
+          directStreamUpload: true,
+          bucket: creds.bucket,
+          endpoint: 'configured',
+        });
+      }
+      const cachedStatus = workerStatusCache.get(feedCacheKey);
+      if (cachedStatus && Date.now() - cachedStatus.ts < WORKER_STATUS_CACHE_TTL_MS) {
+        return jsonResponse({
+          success: true,
+          configured: cachedStatus.configured,
+          aiConfigured,
+          directStreamUpload: false,
+          bucket: cachedStatus.bucket,
+          endpoint: 'configured',
+        });
       }
       try {
         const res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, { 'list-type': '2', 'max-keys': '1' });
         if (res.ok) {
-          return jsonResponse({ success: true, configured: true, aiConfigured, bucket: creds.bucket, endpoint: 'configured' });
+          workerStatusCache.set(feedCacheKey, { ts: Date.now(), configured: true, bucket: creds.bucket });
+          return jsonResponse({
+            success: true,
+            configured: true,
+            aiConfigured,
+            directStreamUpload: false,
+            bucket: creds.bucket,
+            endpoint: 'configured',
+          });
         }
-        return jsonResponse({ success: false, configured: false, aiConfigured, error: `Storage HTTP ${res.status}` });
+        return jsonResponse({ success: false, configured: false, aiConfigured, directStreamUpload: false, error: `Storage HTTP ${res.status}` });
       } catch (err: any) {
-        return jsonResponse({ success: false, configured: false, aiConfigured, error: err?.message || 'Storage connection failed' });
+        return jsonResponse({ success: false, configured: false, aiConfigured, directStreamUpload: false, error: err?.message || 'Storage connection failed' });
       }
     }
 
@@ -974,6 +1281,27 @@ export default {
           }
         }
 
+        try {
+          if (rawPath.startsWith('tracks/') && rawPath.endsWith('.json')) {
+            const savedTrack = JSON.parse(new TextDecoder().decode(bodyBytes));
+            if (savedTrack?.id) {
+              upsertTrackInWorkerFeedCache(feedCacheKey, savedTrack);
+              const idxTask = syncTrackInIndexWorker(savedTrack);
+              if (ctx?.waitUntil) ctx.waitUntil(idxTask);
+              else void idxTask;
+            }
+          } else if (rawPath.startsWith('profiles/') && rawPath.endsWith('.json')) {
+            const savedProf = JSON.parse(new TextDecoder().decode(bodyBytes));
+            const fallbackUid = rawPath.replace(/^profiles\/(?:artist_)?/, '').replace(/\.json$/, '').trim();
+            upsertProfileInWorkerFeedCache(feedCacheKey, savedProf, fallbackUid);
+          } else if (rawPath.startsWith('albums/') && rawPath.endsWith('.json')) {
+            const savedAlbum = JSON.parse(new TextDecoder().decode(bodyBytes));
+            upsertAlbumInWorkerFeedCache(feedCacheKey, savedAlbum);
+          } else if (rawPath === 'tracks_index.json') {
+            invalidateWorkerFeedCache(feedCacheKey);
+          }
+        } catch {}
+
         const outUrl = creds.publicUrl ? `${creds.publicUrl}/${rawPath}` : `/api/storage/raw/${rawPath}`;
         return jsonResponse({ success: true, url: outUrl, path: rawPath });
       } catch (err: any) {
@@ -1085,66 +1413,11 @@ export default {
       }
     }
 
-    // 3b. Fast Single-Roundtrip Tracks Feed (tracks/*.json is authoritative source of truth)
+    // 3b. Fast Single-Roundtrip Tracks Feed (cached + authoritative)
     if (pathname === '/api/storage/tracks-feed' && request.method === 'GET') {
       try {
-        const trackMap = new Map<string, any>();
-        const readJsonKey = async (key: string) => {
-          try {
-            if (env.R2_BUCKET) {
-              const obj = await env.R2_BUCKET.get(key);
-              return obj ? JSON.parse(await obj.text()) : null;
-            }
-            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
-            return r.ok ? await r.json() : null;
-          } catch {
-            return null;
-          }
-        };
-
-        const indexData = await readJsonKey('tracks_index.json');
-        if (Array.isArray(indexData)) {
-          indexData.forEach((t: any) => {
-            if (t?.id && t?.name && t?.audioUrl) {
-              const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
-            }
-          });
-        }
-
-        const keys: string[] = [];
-        if (env.R2_BUCKET) {
-          const listed = await env.R2_BUCKET.list({ prefix: 'tracks/' });
-          listed.objects.forEach((o) => {
-            if (o.key.endsWith('.json')) keys.push(o.key);
-          });
-        } else {
-          const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, { 'list-type': '2', prefix: 'tracks/' });
-          if (listRes.ok) {
-            const xml = await listRes.text();
-            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
-              if (it.Key?.endsWith('.json')) keys.push(it.Key);
-            });
-          }
-        }
-
-        for (let i = 0; i < keys.length; i += 25) {
-          const slice = keys.slice(i, i + 25);
-          const items = await Promise.all(slice.map((k) => readJsonKey(k)));
-          items.forEach((t: any) => {
-            if (t?.id && t?.name && t?.audioUrl) {
-              const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              const prev = trackMap.get(cleanTrack.id);
-              const authoritativeViews =
-                cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
-                  ? Number(cleanTrack.viewsCount) || 0
-                  : Number(prev?.viewsCount) || 0;
-              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
-            }
-          });
-        }
-
-        return jsonResponse({ success: true, tracks: Array.from(trackMap.values()) });
+        const snap = await getWorkerFeedSnapshot();
+        return jsonResponse({ success: true, tracks: snap.tracks });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Tracks feed failed' }, 500);
       }
@@ -1157,20 +1430,7 @@ export default {
         const cleanUid = rawUid.replace(/^artist_/, '').replace(/[^a-zA-Z0-9_\-]/g, '');
         if (!cleanUid) return jsonResponse({ success: false, error: 'Missing uid' }, 400);
 
-        const readProfileKey = async (key: string) => {
-          try {
-            if (env.R2_BUCKET) {
-              const obj = await env.R2_BUCKET.get(key);
-              return obj ? JSON.parse(await obj.text()) : null;
-            }
-            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
-            return r.ok ? await r.json() : null;
-          } catch {
-            return null;
-          }
-        };
-
-        const found = (await readProfileKey(`profiles/${cleanUid}.json`)) || (await readProfileKey(`profiles/artist_${cleanUid}.json`));
+        const found = (await readR2JsonTop(`profiles/${cleanUid}.json`)) || (await readR2JsonTop(`profiles/artist_${cleanUid}.json`));
         if (!found || typeof found !== 'object') {
           return jsonResponse({ success: true, profile: null });
         }
@@ -1181,117 +1441,21 @@ export default {
       }
     }
 
-    // 3d. Fast Canonical Profiles Feed - 100% Pure Cloudflare R2
+    // 3d. Fast Canonical Profiles Feed - 100% Pure Cloudflare R2 (cached)
     if (pathname === '/api/storage/profiles-feed' && request.method === 'GET') {
       try {
-        const readProfileKey = async (key: string) => {
-          try {
-            if (env.R2_BUCKET) {
-              const obj = await env.R2_BUCKET.get(key);
-              return obj ? JSON.parse(await obj.text()) : null;
-            }
-            const r = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(key)}`);
-            return r.ok ? await r.json() : null;
-          } catch {
-            return null;
-          }
-        };
-
-        const keys: string[] = [];
-        if (env.R2_BUCKET) {
-          let cursor: string | undefined;
-          do {
-            const listed = await env.R2_BUCKET.list({ prefix: 'profiles/', cursor });
-            listed.objects.forEach((o) => {
-              if (o.key.endsWith('.json')) keys.push(o.key);
-            });
-            cursor = listed.truncated ? listed.cursor : undefined;
-          } while (cursor);
-        } else {
-          let token = '';
-          do {
-            const q: Record<string, string> = { 'list-type': '2', prefix: 'profiles/' };
-            if (token) q['continuation-token'] = token;
-            const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
-            if (!listRes.ok) break;
-            const xml = await listRes.text();
-            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
-              if (it.Key?.endsWith('.json')) keys.push(it.Key);
-            });
-            const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
-            const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
-            token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
-          } while (token);
-        }
-
-        const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
-        for (let i = 0; i < keys.length; i += 25) {
-          const slice = keys.slice(i, i + 25);
-          const loaded = await Promise.all(slice.map(async (k) => ({ key: k, data: await readProfileKey(k) })));
-          for (const item of loaded) {
-            if (!item.data || typeof item.data !== 'object') continue;
-            const { googleEmail: _omitEmail, ...clean } = item.data;
-            const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
-            if (!uid) continue;
-            const ts = Math.max(
-              Date.parse(String(clean.updatedAt || '')) || 0,
-              Date.parse(String(clean.acceptedTermsAt || '')) || 0
-            );
-            const isCanonicalKey = !item.key.startsWith('profiles/artist_');
-            const prev = profileMap.get(uid);
-            if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
-              profileMap.set(uid, { data: { ...clean, id: uid, googleUid: uid }, ts, isCanonicalKey });
-            }
-          }
-        }
-
-        return jsonResponse({
-          success: true,
-          profiles: Array.from(profileMap.values()).map((entry) => entry.data),
-        });
+        const snap = await getWorkerFeedSnapshot();
+        return jsonResponse({ success: true, profiles: snap.profiles });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Profiles feed failed' }, 500);
       }
     }
 
-    // 3b. Direct Server-Side Albums Feed
+    // 3e. Direct Server-Side Albums Feed (cached)
     if (pathname === '/api/storage/albums-feed' && request.method === 'GET') {
       try {
-        const keys: string[] = [];
-        if (env.R2_BUCKET) {
-          let cursor: string | undefined;
-          do {
-            const listed = await env.R2_BUCKET.list({ prefix: 'albums/', cursor });
-            listed.objects.forEach((o) => {
-              if (o.key.endsWith('.json')) keys.push(o.key);
-            });
-            cursor = listed.truncated ? listed.cursor : undefined;
-          } while (cursor);
-        } else {
-          let token = '';
-          do {
-            const q: Record<string, string> = { 'list-type': '2', prefix: 'albums/' };
-            if (token) q['continuation-token'] = token;
-            const listRes = await signedR2Fetch(creds, 'GET', `/${creds.bucket}`, q);
-            if (!listRes.ok) break;
-            const xml = await listRes.text();
-            parseXmlTagValues(xml, 'Contents', ['Key']).forEach((it) => {
-              if (it.Key?.endsWith('.json')) keys.push(it.Key);
-            });
-            const truncMatch = xml.match(/<IsTruncated>(true|false)<\/IsTruncated>/);
-            const nextMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
-            token = truncMatch?.[1] === 'true' && nextMatch?.[1] ? nextMatch[1] : '';
-          } while (token);
-        }
-        const loaded: any[] = [];
-        for (let i = 0; i < keys.length; i += 25) {
-          const slice = keys.slice(i, i + 25);
-          const items = await Promise.all(slice.map((k) => readR2JsonTop(k)));
-          items.forEach((a) => {
-            if (a && typeof a === 'object') loaded.push(a);
-          });
-        }
-        return jsonResponse({ success: true, albums: loaded });
+        const snap = await getWorkerFeedSnapshot();
+        return jsonResponse({ success: true, albums: snap.albums });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Albums feed failed' }, 500);
       }
@@ -1360,6 +1524,22 @@ export default {
         } else {
           await signedR2Fetch(creds, 'DELETE', `/${creds.bucket}/${encodeS3Path(filePath)}`);
         }
+
+        if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
+          const deletedId = filePath.slice('tracks/'.length, -'.json'.length).replace(/[^a-zA-Z0-9_\-]/g, '');
+          removeTrackFromWorkerFeedCache(feedCacheKey, deletedId);
+          if (deletedId) {
+            const idxDelTask = removeTrackFromIndexWorker(deletedId);
+            if (ctx?.waitUntil) ctx.waitUntil(idxDelTask);
+            else void idxDelTask;
+          }
+        } else if (filePath.startsWith('albums/') && filePath.endsWith('.json')) {
+          const deletedAlbId = filePath.slice('albums/'.length, -'.json'.length).replace(/[^a-zA-Z0-9_\-]/g, '');
+          removeAlbumFromWorkerFeedCache(feedCacheKey, deletedAlbId);
+        } else if (filePath.startsWith('profiles/')) {
+          invalidateWorkerFeedCache(feedCacheKey);
+        }
+
         return jsonResponse({ success: true });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Delete failed' }, 500);
@@ -1596,40 +1776,38 @@ export default {
         let audioBytes: Uint8Array | null = null;
         let mimeType = 'audio/mp3';
 
-        const resolvedRawPath = (() => {
-          if (audioUrl.startsWith('/api/storage/raw/')) return audioUrl;
+        const resolvedR2Key = (() => {
+          const publicBase = creds.publicUrl ? `${creds.publicUrl}/` : '';
+          if (audioUrl.startsWith('/api/storage/raw/')) {
+            return normalizeSafeR2Path(decodeURIComponent(audioUrl.slice('/api/storage/raw/'.length).split('?')[0]));
+          }
+          if (publicBase && audioUrl.startsWith(publicBase)) {
+            return normalizeSafeR2Path(decodeURIComponent(audioUrl.slice(publicBase.length).split('?')[0]));
+          }
           try {
             const parsedAudio = new URL(audioUrl);
-            const reqOrigin = new URL(request.url).origin;
-            if (parsedAudio.origin === reqOrigin && parsedAudio.pathname.startsWith('/api/storage/raw/')) {
-              return parsedAudio.pathname;
+            if (parsedAudio.pathname.startsWith('/api/storage/raw/')) {
+              return normalizeSafeR2Path(decodeURIComponent(parsedAudio.pathname.slice('/api/storage/raw/'.length)));
             }
           } catch {}
-          return '';
+          return null;
         })();
 
         if (bodyData.file && typeof bodyData.file.arrayBuffer === 'function') {
           audioBytes = new Uint8Array(await bodyData.file.arrayBuffer());
           mimeType = bodyData.file.type || 'audio/mp3';
-        } else if (resolvedRawPath) {
-          let decodedRaw = '';
-          try {
-            decodedRaw = decodeURIComponent(resolvedRawPath.replace(/^\/api\/storage\/raw\//, ''));
-          } catch {}
-          const r2Key = normalizeSafeR2Path(decodedRaw);
-          if (r2Key && (r2Key.toLowerCase().startsWith('audio/') || r2Key.toLowerCase().startsWith('tracks/'))) {
-            if (env.R2_BUCKET) {
-              const obj = await env.R2_BUCKET.get(r2Key);
-              if (obj) {
-                audioBytes = new Uint8Array(await obj.arrayBuffer());
-                mimeType = obj.httpMetadata?.contentType || 'audio/mp3';
-              }
-            } else {
-              const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(r2Key)}`);
-              if (s3Res.ok) {
-                audioBytes = new Uint8Array(await s3Res.arrayBuffer());
-                mimeType = s3Res.headers.get('content-type') || 'audio/mp3';
-              }
+        } else if (resolvedR2Key && (resolvedR2Key.toLowerCase().startsWith('audio/') || resolvedR2Key.toLowerCase().startsWith('tracks/'))) {
+          if (env.R2_BUCKET) {
+            const obj = await env.R2_BUCKET.get(resolvedR2Key);
+            if (obj) {
+              audioBytes = new Uint8Array(await obj.arrayBuffer());
+              mimeType = obj.httpMetadata?.contentType || 'audio/mp3';
+            }
+          } else {
+            const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(resolvedR2Key)}`);
+            if (s3Res.ok) {
+              audioBytes = new Uint8Array(await s3Res.arrayBuffer());
+              mimeType = s3Res.headers.get('content-type') || 'audio/mp3';
             }
           }
         } else if (audioUrl && isSafeExternalHttpUrl(audioUrl)) {
@@ -1738,9 +1916,8 @@ export default {
         };
 
         for (const candidate of [
-          { model: 'gemini-3-flash-preview', timeoutMs: 48000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
-          { model: 'gemini-2.5-flash', timeoutMs: 42000, genConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
-          { model: 'gemini-2.5-flash-lite', timeoutMs: 30000, genConfig: { maxOutputTokens: 32768, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-4-hydrogen', timeoutMs: 28000, genConfig: { thinkingConfig: { thinkingLevel: 'LOW' }, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
+          { model: 'gemini-3.1-flash-lite', timeoutMs: 22000, genConfig: { thinkingConfig: { thinkingLevel: 'MINIMAL' }, responseMimeType: 'application/json', responseSchema: subtitleSchema } },
         ]) {
           try {
             const gRes = await fetch(
@@ -1843,7 +2020,7 @@ export default {
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-              signal: AbortSignal.timeout(35000),
+              signal: AbortSignal.timeout(24000),
               body: JSON.stringify({
                 contents: [{ parts: [{ inlineData: { mimeType, data: b64 } }, { text: promptText }] }],
               }),
@@ -1859,11 +2036,11 @@ export default {
         if (segments.length > 0) {
           try {
             const enrichRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-                signal: AbortSignal.timeout(10000),
+                signal: AbortSignal.timeout(9000),
                 body: JSON.stringify({
                   contents: [{
                     role: 'user',
@@ -1874,7 +2051,7 @@ export default {
                     }],
                   }],
                   generationConfig: {
-                    thinkingConfig: { thinkingBudget: 0 },
+                    thinkingConfig: { thinkingLevel: 'LOW' },
                     responseMimeType: 'application/json',
                     responseSchema: {
                       type: 'OBJECT',
@@ -1954,19 +2131,35 @@ export default {
         let audioBytes: Uint8Array | null = null;
         let mimeType = 'audio/mp3';
 
+        const directClsR2Key = (() => {
+          const publicBase = creds.publicUrl ? `${creds.publicUrl}/` : '';
+          if (audioUrl.startsWith('/api/storage/raw/')) {
+            return normalizeSafeR2Path(decodeURIComponent(audioUrl.slice('/api/storage/raw/'.length).split('?')[0]));
+          }
+          if (publicBase && audioUrl.startsWith(publicBase)) {
+            return normalizeSafeR2Path(decodeURIComponent(audioUrl.slice(publicBase.length).split('?')[0]));
+          }
+          try {
+            const parsed = new URL(audioUrl);
+            if (parsed.pathname.startsWith('/api/storage/raw/')) {
+              return normalizeSafeR2Path(decodeURIComponent(parsed.pathname.slice('/api/storage/raw/'.length)));
+            }
+          } catch {}
+          return null;
+        })();
+
         if (bodyData.file && typeof bodyData.file.arrayBuffer === 'function') {
           audioBytes = new Uint8Array(await bodyData.file.arrayBuffer());
           mimeType = bodyData.file.type || 'audio/mp3';
-        } else if (audioUrl.startsWith('/api/storage/raw/')) {
-          const r2Key = decodeURIComponent(audioUrl.replace(/^\/api\/storage\/raw\//, ''));
+        } else if (directClsR2Key && (directClsR2Key.toLowerCase().startsWith('audio/') || directClsR2Key.toLowerCase().startsWith('tracks/'))) {
           if (env.R2_BUCKET) {
-            const obj = await env.R2_BUCKET.get(r2Key);
+            const obj = await env.R2_BUCKET.get(directClsR2Key);
             if (obj) {
               audioBytes = new Uint8Array(await obj.arrayBuffer());
               mimeType = obj.httpMetadata?.contentType || 'audio/mp3';
             }
           } else {
-            const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(r2Key)}`);
+            const s3Res = await signedR2Fetch(creds, 'GET', `/${creds.bucket}/${encodeS3Path(directClsR2Key)}`);
             if (s3Res.ok) {
               audioBytes = new Uint8Array(await s3Res.arrayBuffer());
               mimeType = s3Res.headers.get('content-type') || 'audio/mp3';
@@ -1980,8 +2173,9 @@ export default {
           }
         }
 
-        if (audioBytes && audioBytes.length > 15 * 1024 * 1024) {
-          audioBytes = audioBytes.subarray(0, 15 * 1024 * 1024);
+        const MAX_CLS_AUDIO = Math.floor(4.5 * 1024 * 1024);
+        if (audioBytes && audioBytes.length > MAX_CLS_AUDIO) {
+          audioBytes = audioBytes.subarray(0, MAX_CLS_AUDIO);
         }
 
         if (env.GEMINI_API_KEY && ((audioBytes && audioBytes.length > 0) || lyrics || songTitle)) {
@@ -2000,17 +2194,20 @@ export default {
               `Do not pick randomly — choose the true closest genre. Return strict JSON with keys: genre (concise English genre name), hebrewGenre (natural Hebrew genre label), confidence (0..1), mood (Hebrew), bpmEstimate (number), reasonHe (Hebrew).`,
           });
 
-          for (const clsModel of ['gemini-3-flash-preview', 'gemini-2.5-flash']) {
+          for (const clsCandidate of [
+            { model: 'gemini-4-hydrogen', timeoutMs: 10000, thinkingLevel: 'LOW' },
+            { model: 'gemini-3.1-flash-lite', timeoutMs: 8000, thinkingLevel: 'MINIMAL' },
+          ]) {
             try {
               const geminiRes = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${clsModel}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+                `https://generativelanguage.googleapis.com/v1beta/models/${clsCandidate.model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
                 {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
-                  signal: AbortSignal.timeout(15000),
+                  signal: AbortSignal.timeout(clsCandidate.timeoutMs),
                   body: JSON.stringify({
                     contents: [{ parts }],
-                    generationConfig: { thinkingConfig: { thinkingBudget: 0 }, responseMimeType: 'application/json' },
+                    generationConfig: { thinkingConfig: { thinkingLevel: clsCandidate.thinkingLevel }, responseMimeType: 'application/json' },
                   }),
                 }
               );
@@ -2596,7 +2793,9 @@ export default {
         const trackData = await r2ReadJson(key);
         if (!trackData) return jsonResponse({ success: false, playsCount: 1 });
         const playsCount = (Number(trackData.playsCount) || 0) + 1;
-        await r2WriteJson(key, { ...trackData, playsCount });
+        const nextTrack = { ...trackData, playsCount };
+        await r2WriteJson(key, nextTrack);
+        upsertTrackInWorkerFeedCache(feedCacheKey, nextTrack);
         return jsonResponse({ success: true, playsCount });
       } catch {
         return jsonResponse({ success: false, playsCount: 1 });
@@ -2796,6 +2995,10 @@ export default {
           await syncIndexTask;
         }
 
+        const snap = workerFeedCache.get(feedCacheKey);
+        if (snap) {
+          snap.tracks = snap.tracks.map((t: any) => (t?.id === cleanId ? { ...t, viewsCount: committedViews } : t));
+        }
         return jsonResponse({
           success: true,
           viewsCount: committedViews,
@@ -2851,6 +3054,7 @@ export default {
 
         if (changed) {
           await r2WriteJson(key, updated);
+          upsertTrackInWorkerFeedCache(feedCacheKey, updated);
         }
         return jsonResponse({ success: true });
       } catch (err: any) {
@@ -2972,6 +3176,7 @@ export default {
         };
 
         await r2WriteJson(key, updated);
+        upsertTrackInWorkerFeedCache(feedCacheKey, updated);
 
         try {
           if (env.R2_BUCKET) {
@@ -3460,74 +3665,18 @@ export default {
       }
     }
 
-    // 14. Single-Request Bootstrap Feed (tracks + profiles + albums loaded in parallel)
+    // 14. Single-Request Bootstrap Feed (tracks + profiles + albums loaded via warm isolate cache)
     if (pathname === '/api/bootstrap' && request.method === 'GET') {
       try {
-        const [trackKeysAll, profileKeysAll, albumKeysAll, indexData] = await Promise.all([
-          r2ListKeys('tracks/').catch(() => []),
-          r2ListKeys('profiles/').catch(() => []),
-          r2ListKeys('albums/').catch(() => []),
-          r2ReadJson('tracks_index.json'),
-        ]);
-
-        const trackMap = new Map<string, any>();
-        if (Array.isArray(indexData)) {
-          indexData.forEach((t: any) => {
-            if (t?.id && t?.name && t?.audioUrl) {
-              const { uploadedByEmail: _omit, ...cleanTrack } = t;
-              trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: Number(cleanTrack.viewsCount) || 0 });
-            }
-          });
-        }
-
-        const trackKeys = trackKeysAll.filter((k) => k.endsWith('.json'));
-        const profileKeys = profileKeysAll.filter((k) => k.endsWith('.json'));
-        const albumKeys = albumKeysAll.filter((k) => k.endsWith('.json'));
-
-        const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
-          Promise.all(trackKeys.map((k) => r2ReadJson(k))),
-          Promise.all(profileKeys.map(async (k) => ({ key: k, data: await r2ReadJson(k) }))),
-          Promise.all(albumKeys.map((k) => r2ReadJson(k))),
-        ]);
-
-        loadedTracks.forEach((t: any) => {
-          if (t?.id && t?.name && t?.audioUrl) {
-            const { uploadedByEmail: _omit, ...cleanTrack } = t;
-            const prev = trackMap.get(cleanTrack.id);
-            const authoritativeViews =
-              cleanTrack.viewsCount !== undefined && cleanTrack.viewsCount !== null
-                ? Number(cleanTrack.viewsCount) || 0
-                : Number(prev?.viewsCount) || 0;
-            trackMap.set(cleanTrack.id, { ...cleanTrack, viewsCount: authoritativeViews });
-          }
-        });
-
-        const profileMap = new Map<string, { data: any; ts: number; isCanonicalKey: boolean }>();
-        for (const item of loadedProfiles) {
-          if (!item?.data || typeof item.data !== 'object') continue;
-          const { googleEmail: _omitEmail, ...clean } = item.data;
-          const uid = String(clean.googleUid || clean.id || '').replace(/^artist_/, '').trim();
-          if (!uid) continue;
-          const ts = Math.max(
-            Date.parse(String(clean.updatedAt || '')) || 0,
-            Date.parse(String(clean.acceptedTermsAt || '')) || 0
-          );
-          const isCanonicalKey = !item.key.startsWith('profiles/artist_');
-          const prev = profileMap.get(uid);
-          if (!prev || ts > prev.ts || (ts === prev.ts && isCanonicalKey && !prev.isCanonicalKey)) {
-            profileMap.set(uid, {
-              data: { ...clean, id: uid, googleUid: uid },
-              ts,
-              isCanonicalKey,
-            });
-          }
-        }
-
+        const snap = await getWorkerFeedSnapshot();
+        const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
         return jsonResponse({
           success: true,
-          tracks: Array.from(trackMap.values()),
-          profiles: Array.from(profileMap.values()).map((entry) => entry.data),
-          albums: loadedAlbums.filter(Boolean),
+          aiConfigured,
+          directStreamUpload: Boolean(env.R2_BUCKET),
+          tracks: snap.tracks,
+          profiles: snap.profiles,
+          albums: snap.albums,
         });
       } catch (err: any) {
         return jsonResponse(

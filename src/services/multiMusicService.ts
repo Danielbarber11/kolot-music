@@ -608,6 +608,10 @@ export function getTotalSongCount(): number {
 let bootstrapPromise: Promise<{ tracks: JamendoTrack[]; profiles: ArtistProfile[]; albums: Album[] }> | null = null;
 let hasBootstrapped = false;
 
+export function hasCompletedBootstrap(): boolean {
+  return hasBootstrapped;
+}
+
 /**
  * Fast single-roundtrip bootstrap loading tracks + profiles + albums together from /api/bootstrap.
  * Populates all session caches cleanly before UI reveals so cards & profiles never pop in belatedly.

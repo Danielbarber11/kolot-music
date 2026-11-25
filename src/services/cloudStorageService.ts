@@ -1,4 +1,7 @@
 import { JamendoTrack, Album } from '../types';
+import { primeServerAiStatus } from './onDeviceWhisperService';
+
+let cachedDirectStreamUpload: boolean | null = null;
 
 export interface CloudStorageConfig {
   capacityMb: number;
@@ -89,6 +92,12 @@ export async function checkR2StorageStatus(): Promise<{ configured: boolean; buc
   try {
     const res = await fetch('/api/storage/status', { cache: 'no-store' });
     const data = await safeJson(res, 'בדיקת חיבור האחסון נכשלה');
+    if (typeof data?.aiConfigured === 'boolean') {
+      primeServerAiStatus(data.aiConfigured);
+    }
+    if (typeof data?.directStreamUpload === 'boolean') {
+      cachedDirectStreamUpload = data.directStreamUpload;
+    }
     return {
       configured: !!data.configured,
       bucket: data.bucket,
@@ -167,6 +176,27 @@ export async function uploadBinaryFastToR2(
 ): Promise<{ success: boolean; url?: string; error?: string }> {
   // 1. Direct Stream / Presigned PUT for larger binary files (> 1.5MB)
   if (blob.size > 1.5 * 1024 * 1024) {
+    if (cachedDirectStreamUpload === true) {
+      try {
+        const directStreamRes = await xhrSend(
+          'PUT',
+          `/api/storage/stream-upload?path=${encodeURIComponent(r2Path)}`,
+          blob,
+          { 'Content-Type': contentType },
+          onProgress
+        );
+        if (directStreamRes.status >= 200 && directStreamRes.status < 300) {
+          const parsed = JSON.parse((directStreamRes.responseText || '{}').trim());
+          if (parsed?.success && parsed.url) {
+            return { success: true, url: parsed.url };
+          }
+        }
+        cachedDirectStreamUpload = false;
+      } catch {
+        cachedDirectStreamUpload = false;
+      }
+    }
+
     try {
       const presignRes = await fetch('/api/storage/presign', {
         method: 'POST',
@@ -177,6 +207,9 @@ export async function uploadBinaryFastToR2(
       if (presignRes.ok) {
         const presignData = await safeJson(presignRes, 'קבלת כתובת העלאה מהירה נכשלה');
         if (presignData.success && presignData.uploadUrl && presignData.url) {
+          if (String(presignData.uploadUrl).startsWith('/api/storage/stream-upload')) {
+            cachedDirectStreamUpload = true;
+          }
           const directRes = await xhrSend(
             'PUT',
             presignData.uploadUrl,
@@ -254,20 +287,19 @@ async function syncTracksIndexInBackground(trackToSave: JamendoTrack): Promise<v
 }
 
 /**
- * Upload & Commit track audio file, cover image, and metadata JSON directly into Cloudflare R2
- * Runs Audio + Cover uploads IN PARALLEL via Direct Presigned PUT for <10s completion.
+ * Uploads track audio & cover media in parallel to Cloudflare R2 without waiting for AI metadata.
  */
-export async function uploadTrackToCloudStorage(
-  track: JamendoTrack,
+export async function uploadTrackMediaToCloudStorage(
+  trackId: string,
+  currentAudioUrl: string,
+  currentCoverUrl: string,
   audioFile?: File | Blob,
   coverFile?: File | Blob,
   onProgress?: (percent: number, stageText: string) => void
 ): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string; error?: string }> {
-  const trackId = track.id;
-  let audioUrl = track.audioUrl || '';
-  let coverUrl = track.coverUrl || '';
+  let audioUrl = currentAudioUrl || '';
+  let coverUrl = currentCoverUrl || '';
 
-  // Prefer crisp pre-compressed JPEG DataURL (~60KB) if available instead of multi-MB unresized image
   let coverBlobToUpload: Blob | File | undefined;
   if (coverUrl.startsWith('data:image/')) {
     coverBlobToUpload = (await urlToBlob(coverUrl)) || undefined;
@@ -277,7 +309,6 @@ export async function uploadTrackToCloudStorage(
 
   onProgress?.(5, 'מעלה את השיר לאחסון האתר...');
 
-  // 1 & 2. Upload Audio & Cover IN PARALLEL!
   const audioPromise: Promise<{ success: boolean; url?: string; error?: string }> = audioFile
     ? (async () => {
         const ext =
@@ -341,14 +372,16 @@ export async function uploadTrackToCloudStorage(
     };
   }
 
-  onProgress?.(95, 'שומר פרטי שיר בענן...');
+  return { success: true, audioUrl, coverUrl };
+}
 
-  // Save tracks/${trackId}.json (strip PII email fields before storing in public JSON)
+/**
+ * Commits tracks/${track.id}.json to R2 (server/Worker automatically updates tracks_index.json & feed cache).
+ */
+export async function commitTrackJsonToCloud(track: JamendoTrack): Promise<{ success: boolean; error?: string }> {
   const { uploadedByEmail: _omitEmail, ...cleanTrack } = track as any;
   const trackToSave: JamendoTrack = {
     ...cleanTrack,
-    audioUrl,
-    coverUrl,
     source: 'Kolot Cloud Storage',
   };
 
@@ -358,7 +391,7 @@ export async function uploadTrackToCloudStorage(
       headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
       credentials: 'include',
       body: JSON.stringify({
-        path: `tracks/${trackId}.json`,
+        path: `tracks/${track.id}.json`,
         content: JSON.stringify(trackToSave),
       }),
     });
@@ -369,22 +402,53 @@ export async function uploadTrackToCloudStorage(
         error: metaData.error || 'שגיאה בשמירת נתוני השיר באחסון הענן.',
       };
     }
+    return { success: true };
   } catch (err: any) {
     return {
       success: false,
       error: err?.message || 'שגיאה בשמירת נתוני השיר באחסון הענן.',
     };
   }
+}
+
+/**
+ * Upload & Commit track audio file, cover image, and metadata JSON directly into Cloudflare R2.
+ */
+export async function uploadTrackToCloudStorage(
+  track: JamendoTrack,
+  audioFile?: File | Blob,
+  coverFile?: File | Blob,
+  onProgress?: (percent: number, stageText: string) => void
+): Promise<{ success: boolean; audioUrl?: string; coverUrl?: string; error?: string }> {
+  const mediaRes = await uploadTrackMediaToCloudStorage(
+    track.id,
+    track.audioUrl || '',
+    track.coverUrl || '',
+    audioFile,
+    coverFile,
+    onProgress
+  );
+  if (!mediaRes.success || !mediaRes.audioUrl) {
+    return mediaRes;
+  }
+
+  onProgress?.(95, 'שומר פרטי שיר בענן...');
+
+  const commitRes = await commitTrackJsonToCloud({
+    ...track,
+    audioUrl: mediaRes.audioUrl,
+    coverUrl: mediaRes.coverUrl || track.coverUrl || '',
+  });
+  if (!commitRes.success) {
+    return { success: false, error: commitRes.error };
+  }
 
   onProgress?.(100, 'השיר פורסם בהצלחה!');
 
-  // Non-blocking background sync of tracks_index.json (never delays publish completion!)
-  void syncTracksIndexInBackground(trackToSave);
-
   return {
     success: true,
-    audioUrl,
-    coverUrl,
+    audioUrl: mediaRes.audioUrl,
+    coverUrl: mediaRes.coverUrl,
   };
 }
 
@@ -527,25 +591,11 @@ export async function deleteTrackFromCloudStorage(trackId: string): Promise<bool
       await Promise.allSettled(deletions);
     } catch {}
 
-    // Delete track metadata JSON
+    // Delete track metadata JSON (server/Worker automatically updates tracks_index.json & feed cache)
     await fetch(`/api/storage/delete?path=${encodeURIComponent(`tracks/${trackId}.json`)}`, {
       method: 'DELETE',
       headers: getR2AuthHeaders(),
       credentials: 'include',
-    });
-
-    // Update index
-    const tracks = await fetchTracksFromCloudStorage();
-    const updatedIndex = tracks.filter((t) => t.id !== trackId);
-
-    await fetch('/api/storage/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getR2AuthHeaders() },
-      credentials: 'include',
-      body: JSON.stringify({
-        path: 'tracks_index.json',
-        content: JSON.stringify(updatedIndex, null, 2),
-      }),
     });
 
     return true;
@@ -874,12 +924,9 @@ export async function saveTrackSubtitlesInCloud(
       credentials: 'include',
       body: JSON.stringify({
         path: `tracks/${track.id}.json`,
-        content: JSON.stringify(updatedTrack, null, 2),
+        content: JSON.stringify(updatedTrack),
       }),
     });
-    if (res.ok) {
-      void syncTracksIndexInBackground(updatedTrack);
-    }
     return res.ok;
   } catch {
     return false;
@@ -971,6 +1018,12 @@ export async function fetchBootstrapFromCloud(): Promise<{
     if (!res.ok) return null;
     const data = await safeJson(res, 'טעינת נתונים מהענן');
     if (data?.success) {
+      if (typeof data.aiConfigured === 'boolean') {
+        primeServerAiStatus(data.aiConfigured);
+      }
+      if (typeof data.directStreamUpload === 'boolean') {
+        cachedDirectStreamUpload = data.directStreamUpload;
+      }
       return {
         tracks: Array.isArray(data.tracks) ? data.tracks.filter(isCloudPlayableTrack) : [],
         profiles: Array.isArray(data.profiles) ? data.profiles : [],

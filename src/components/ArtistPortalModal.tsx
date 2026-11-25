@@ -69,6 +69,8 @@ import {
 } from '../services/authService';
 import {
   uploadTrackToCloud,
+  uploadTrackMediaToCloudStorage,
+  commitTrackJsonToCloud,
   deleteTrackFromCloud,
   uploadAlbumToCloud,
   deleteAlbumFromCloud,
@@ -1951,6 +1953,24 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     const isAutoGenreSelected = !effectiveGenre || effectiveGenre === 'ללא סגנון מוזיקלי';
 
     const trackId = `artist_track_${Date.now()}`;
+    const currentAudioFile = rawAudioFile;
+    const currentCoverFile = rawCoverFile;
+    const activeUploadJobKey = uploadJobKeyRef.current;
+
+    // Start Audio + Cover R2 Upload IMMEDIATELY IN PARALLEL with color extraction + AI subtitles/genre!
+    setPublishProgressStep(isHe ? 'מעלה את השיר לאחסון האתר במקביל לעיבוד...' : 'Uploading media in parallel with AI processing...');
+    const mediaUploadPromise = uploadTrackMediaToCloudStorage(
+      trackId,
+      audioStreamUrl.trim(),
+      coverArtUrl.trim(),
+      currentAudioFile || undefined,
+      currentCoverFile || undefined,
+      (pct, msg) => {
+        setUploadProgressPercent((cur) => Math.max(cur, Math.min(88, pct)));
+        if (msg) setPublishProgressStep(msg);
+      }
+    );
+
     const tempTrackForColor: JamendoTrack = {
       id: trackId,
       name: songTitle,
@@ -1962,22 +1982,24 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       genre: effectiveGenre,
     };
 
-    // Cover color extraction (capped at <= 250ms)
-    let computedColor = getTrackInstantColor(tempTrackForColor);
-    if (coverArtUrl.trim()) {
-      try {
-        const extractedBefore = await Promise.race([
-          extractImageColor(coverArtUrl.trim()),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
-        ]);
-        if (extractedBefore) {
-          computedColor = extractedBefore;
-        }
-      } catch {}
-    }
+    // Cover color extraction (capped at <= 250ms, runs concurrently with media upload)
+    const colorPromise = (async () => {
+      let computedColor = getTrackInstantColor(tempTrackForColor);
+      if (coverArtUrl.trim()) {
+        try {
+          const extractedBefore = await Promise.race([
+            extractImageColor(coverArtUrl.trim()),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+          ]);
+          if (extractedBefore) {
+            computedColor = extractedBefore;
+          }
+        } catch {}
+      }
+      return computedColor;
+    })();
 
     setUploadProgressPercent(10);
-    const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.8) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
 
     const updatedArtist: ArtistProfile = {
       ...currentArtist,
@@ -1996,7 +2018,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
     let finalDraftLyricsHe = whisperDraftLyricsHe;
     let finalDraftLyricsEn = whisperDraftLyricsEn;
     const trackDurationSeconds = Math.max(10, Math.round(audioDurationRef.current || 180));
-    let progressFloor = 15;
 
     let finalDraftSegmentsOrig: JamendoTrack['subtitleSegmentsOrig'] = whisperDraftSegmentsOrig;
     let finalDraftLyricsOrig = whisperDraftLyricsOrig;
@@ -2026,15 +2047,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
       finalDetectedLangCode = undefined;
       finalDetectedLangLabel = undefined;
 
-      // When AI Subtitles are OFF, run genuine AI audio classification (Gemini audio or full-chorus AST/DSP)
+      // When AI Subtitles are OFF, run genuine AI audio classification in parallel with R2 media upload
       if (isAutoGenreSelected) {
-        setUploadProgressPercent(18);
-        setPublishProgressStep(isHe ? 'הבינה המלאכותית בוחרת את הז׳אנר המתאים ביותר...' : 'AI selecting best matching genre...');
+        setUploadProgressPercent((cur) => Math.max(cur, 18));
         try {
           const audioOnlyCls = await Promise.race([
             classifyTrackAudio({
-              audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
-              audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
+              audioFile: currentAudioFile && currentAudioFile.size <= 15 * 1024 * 1024 ? currentAudioFile : undefined,
+              audioUrl: !currentAudioFile ? audioStreamUrl.trim() : undefined,
               songTitle: songTitle.trim(),
               artistName: finalArtistName,
               lyrics: '',
@@ -2057,11 +2077,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           }
         } catch {}
       }
-      progressFloor = 28;
-      setUploadProgressPercent(28);
     } else {
-      // Wait for AI Subtitles Model first so we have transcribed lyrics for Automatic Genre inference
-      setUploadProgressPercent(14);
+      setUploadProgressPercent((cur) => Math.max(cur, 14));
 
       let subPromise = autoSubPromiseRef.current;
       const existingSnap =
@@ -2070,8 +2087,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
 
       if (!subPromise && !existingSnap?.isComplete) {
         subPromise = startSilentAutoSubtitles(
-          rawAudioFile,
-          !rawAudioFile ? audioStreamUrl.trim() : undefined,
+          currentAudioFile,
+          !currentAudioFile ? audioStreamUrl.trim() : undefined,
           songTitle.trim()
         );
       }
@@ -2092,11 +2109,9 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         uploadCompletedUpTo = resolvedSnap.completedUpTo || trackDurationSeconds;
       }
 
-      setUploadProgressPercent(40);
+      setUploadProgressPercent((cur) => Math.max(cur, 40));
 
-      // Automatic Genre using BOTH real audio + AI transcribed lyrics (generous timeout so AI picks accurately, never randomly)
       if (isAutoGenreSelected) {
-        setPublishProgressStep(isHe ? 'הבינה המלאכותית בוחרת את הז׳אנר המתאים ביותר...' : 'AI selecting best matching genre...');
         const aiSubtitlesText = [finalDraftLyricsOrig, finalDraftLyricsHe, finalDraftLyricsEn]
           .filter(Boolean)
           .join('\n')
@@ -2104,8 +2119,8 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         try {
           const subGenreCls = await Promise.race([
             classifyTrackAudio({
-              audioFile: rawAudioFile && rawAudioFile.size <= 15 * 1024 * 1024 ? rawAudioFile : undefined,
-              audioUrl: !rawAudioFile ? audioStreamUrl.trim() : undefined,
+              audioFile: currentAudioFile && currentAudioFile.size <= 15 * 1024 * 1024 ? currentAudioFile : undefined,
+              audioUrl: !currentAudioFile ? audioStreamUrl.trim() : undefined,
               songTitle: songTitle.trim(),
               artistName: finalArtistName,
               lyrics: aiSubtitlesText,
@@ -2128,9 +2143,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
           }
         } catch {}
       }
-
-      progressFloor = 45;
-      setUploadProgressPercent(45);
     }
 
     const sanitizedPrimaryHe = finalDraftLyricsHe ? sanitizeMultilineLyrics(finalDraftLyricsHe) : '';
@@ -2144,68 +2156,14 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         !!(finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0) ||
         !!(finalDraftSegmentsOrig && finalDraftSegmentsOrig.length > 0));
 
-    const newTrack: JamendoTrack = {
-      id: trackId,
-      name: songTitle.trim(),
-      artistName: finalArtistName,
-      featuredArtist: featuredArtistInput.trim() || undefined,
-      writers: writersInput.trim() || undefined,
-      albumName: albumTitle.trim() || (isHe ? 'סינגל עצמאי' : 'Independent Single'),
-      duration: trackDurationSeconds,
-      audioUrl: audioStreamUrl.trim(),
-      coverUrl: coverArtUrl.trim(),
-      genre: effectiveGenre,
-      license: 'User Upload — Sole Uploader Responsibility',
-      licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      source: 'Kolot Cloud Storage',
-      lyrics: includeSubtitles ? (sanitizedPrimaryHe || sanitizedPrimaryEn || undefined) : undefined,
-      lyricsHe: includeSubtitles ? (sanitizedPrimaryHe || undefined) : undefined,
-      lyricsEn: includeSubtitles ? (sanitizedPrimaryEn || undefined) : undefined,
-      lyricsOrig: includeSubtitles ? (sanitizedPrimaryOrig || undefined) : undefined,
-      subtitleSegments: hasAnyDraftSubtitles ? (finalDraftSegments && finalDraftSegments.length > 0 ? finalDraftSegments : finalDraftSegmentsHe) : undefined,
-      subtitleSegmentsHe: hasAnyDraftSubtitles && finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0 ? finalDraftSegmentsHe : undefined,
-      subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
-      subtitleSegmentsOrig: hasAnyDraftSubtitles && finalDraftSegmentsOrig && finalDraftSegmentsOrig.length > 0 ? finalDraftSegmentsOrig : undefined,
-      detectedLanguageCode: includeSubtitles ? finalDetectedLangCode : undefined,
-      detectedLanguageLabel: includeSubtitles ? finalDetectedLangLabel : undefined,
-      hasWhisperSubtitles: hasAnyDraftSubtitles,
-      subtitlesIncomplete: includeSubtitles ? !uploadJobIsComplete && !hasAnyDraftSubtitles : false,
-      ...(uploadCompletedUpTo > 0 ? { subtitlesCompletedUpTo: uploadCompletedUpTo } : {}),
-      ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
-      karaokeEnabled: false,
-      artistBio: cleanArtistBio(currentArtist.bio) || undefined,
-      artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
-      publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
-      uploadedByUid: verifiedUser.uid,
-      isPrivate: false,
-      customServerUrl: customServerUrlInput.trim() || undefined,
-      bgColor: cachedBgColor,
-      isAiGenerated: isAiGeneratedInput,
-    };
-
-    const currentAudioFile = rawAudioFile;
-    const currentCoverFile = rawCoverFile;
-    const activeUploadJobKey = uploadJobKeyRef.current;
-
     try {
-      setPublishProgressStep(isHe ? 'מעלה לאחסון האתר...' : 'Uploading to cloud storage...');
+      const [cloudMediaRes, computedColor] = await Promise.all([mediaUploadPromise, colorPromise]);
 
-      // 1. DIRECT PARALLEL UPLOAD (audio + compressed cover + tracks/*.json)
-      const cloudRes = await uploadTrackToCloud(
-        newTrack,
-        currentAudioFile || undefined,
-        currentCoverFile || undefined,
-        (pct, msg) => {
-          setUploadProgressPercent(Math.max(progressFloor, pct));
-          setPublishProgressStep(msg);
-        }
-      );
-
-      if (!cloudRes.success) {
+      if (!cloudMediaRes.success || !cloudMediaRes.audioUrl) {
         setIsPublishing(false);
         setUploadProgressPercent(0);
         setPublishErrorMessage(
-          cloudRes.error ||
+          cloudMediaRes.error ||
             (isHe
               ? 'שגיאה בשמירת השיר באחסון הענן. אנא נסה שוב.'
               : 'Failed to publish track to cloud storage.')
@@ -2213,11 +2171,61 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         return;
       }
 
-      if (cloudRes.audioUrl) {
-        newTrack.audioUrl = cloudRes.audioUrl;
-      }
-      if (cloudRes.coverUrl) {
-        newTrack.coverUrl = cloudRes.coverUrl;
+      const cachedBgColor = `radial-gradient(circle at 50% 35%, rgba(${computedColor.r}, ${computedColor.g}, ${computedColor.b}, 0.8) 0%, rgba(${Math.round(computedColor.r * 0.18)}, ${Math.round(computedColor.g * 0.18)}, ${Math.round(computedColor.b * 0.18)}, 0.96) 55%, #030712 100%)`;
+
+      const newTrack: JamendoTrack = {
+        id: trackId,
+        name: songTitle.trim(),
+        artistName: finalArtistName,
+        featuredArtist: featuredArtistInput.trim() || undefined,
+        writers: writersInput.trim() || undefined,
+        albumName: albumTitle.trim() || (isHe ? 'סינגל עצמאי' : 'Independent Single'),
+        duration: trackDurationSeconds,
+        audioUrl: cloudMediaRes.audioUrl,
+        coverUrl: cloudMediaRes.coverUrl || coverArtUrl.trim(),
+        genre: effectiveGenre,
+        license: 'User Upload — Sole Uploader Responsibility',
+        licenseUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
+        source: 'Kolot Cloud Storage',
+        lyrics: includeSubtitles ? (sanitizedPrimaryHe || sanitizedPrimaryEn || undefined) : undefined,
+        lyricsHe: includeSubtitles ? (sanitizedPrimaryHe || undefined) : undefined,
+        lyricsEn: includeSubtitles ? (sanitizedPrimaryEn || undefined) : undefined,
+        lyricsOrig: includeSubtitles ? (sanitizedPrimaryOrig || undefined) : undefined,
+        subtitleSegments: hasAnyDraftSubtitles ? (finalDraftSegments && finalDraftSegments.length > 0 ? finalDraftSegments : finalDraftSegmentsHe) : undefined,
+        subtitleSegmentsHe: hasAnyDraftSubtitles && finalDraftSegmentsHe && finalDraftSegmentsHe.length > 0 ? finalDraftSegmentsHe : undefined,
+        subtitleSegmentsEn: hasAnyDraftSubtitles && finalDraftSegmentsEn && finalDraftSegmentsEn.length > 0 ? finalDraftSegmentsEn : undefined,
+        subtitleSegmentsOrig: hasAnyDraftSubtitles && finalDraftSegmentsOrig && finalDraftSegmentsOrig.length > 0 ? finalDraftSegmentsOrig : undefined,
+        detectedLanguageCode: includeSubtitles ? finalDetectedLangCode : undefined,
+        detectedLanguageLabel: includeSubtitles ? finalDetectedLangLabel : undefined,
+        hasWhisperSubtitles: hasAnyDraftSubtitles,
+        subtitlesIncomplete: includeSubtitles ? !uploadJobIsComplete && !hasAnyDraftSubtitles : false,
+        ...(uploadCompletedUpTo > 0 ? { subtitlesCompletedUpTo: uploadCompletedUpTo } : {}),
+        ...(includeSubtitles ? {} : { subtitlesDisabled: true }),
+        karaokeEnabled: false,
+        artistBio: cleanArtistBio(currentArtist.bio) || undefined,
+        artistAvatarUrl: getEffectiveUserAvatar(verifiedUser, currentArtist) || undefined,
+        publisherAccountUrl: currentArtist.archiveAccountUrl || 'https://audius.co',
+        uploadedByUid: verifiedUser.uid,
+        isPrivate: false,
+        customServerUrl: customServerUrlInput.trim() || undefined,
+        bgColor: cachedBgColor,
+        isAiGenerated: isAiGeneratedInput,
+      };
+
+      setUploadProgressPercent((cur) => Math.max(cur, 92));
+      setPublishProgressStep(isHe ? 'שומר פרטי שיר בענן...' : 'Saving track metadata...');
+
+      const commitRes = await commitTrackJsonToCloud(newTrack);
+      if (!commitRes.success) {
+        setIsPublishing(false);
+        setUploadProgressPercent(0);
+        setPublishErrorMessage(
+          commitRes.error ||
+            (isHe
+              ? 'שגיאה בשמירת השיר באחסון הענן. אנא נסה שוב.'
+              : 'Failed to publish track to cloud storage.')
+        );
+        return;
       }
 
       if (includeSubtitles && !uploadJobIsComplete && !hasAnyDraftSubtitles) {
@@ -2235,14 +2243,10 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
         globalTrackColorCache.set(newTrack.coverUrl, computedColor);
       }
 
-      // 2. Sync artist profile
+      // Sync artist profile & broadcast track immediately to UI
       void saveArtistAccountToR2(updatedArtist).catch(() => {});
-
-      // 3. Broadcast track immediately to UI
       upsertTrackInMemory(newTrack);
       onTrackPublished(newTrack);
-      void fetchAllRealSongs().catch(() => {});
-      void fetchAllArtistProfiles().catch(() => {});
 
       setUploadProgressPercent(100);
       setPublishProgressStep(isHe ? 'השיר נשמר ופורסם במלואו בענן!' : 'Track published & saved to cloud!');
