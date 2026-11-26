@@ -228,11 +228,12 @@ function serializeJsonForHtmlScript(value: unknown): string {
 }
 
 function injectBootstrapIntoHtml(html: string, payload: unknown): string {
+  const normalizedHtml = html.replace(/<title>[\s\S]*?<\/title>/i, '<title>Kolot Music</title>');
   const scriptTag = `<script id="kolot-bootstrap-data">window.__KOLOT_BOOTSTRAP__=${serializeJsonForHtmlScript(payload)};</script>`;
-  if (/<\/head>/i.test(html)) {
-    return html.replace(/<\/head>/i, `${scriptTag}\n  </head>`);
+  if (/<\/head>/i.test(normalizedHtml)) {
+    return normalizedHtml.replace(/<\/head>/i, `${scriptTag}\n  </head>`);
   }
-  return `${scriptTag}\n${html}`;
+  return `${scriptTag}\n${normalizedHtml}`;
 }
 
 async function listAllR2KeysS3(client: S3Client, bucket: string, prefix: string): Promise<string[]> {
@@ -5434,7 +5435,8 @@ async function buildSsrBootstrappedHtml(req: express.Request, rawHtml: string): 
     }
   })();
   const payload = await Promise.race([dataPromise, timeoutPromise]);
-  return payload ? injectBootstrapIntoHtml(rawHtml, payload) : rawHtml;
+  if (payload) return injectBootstrapIntoHtml(rawHtml, payload);
+  return rawHtml.replace(/<title>[\s\S]*?<\/title>/i, '<title>Kolot Music</title>');
 }
 
 // Setup Vite middleware in dev mode

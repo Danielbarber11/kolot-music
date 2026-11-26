@@ -1,5 +1,5 @@
-// Kolot Music Service Worker v7 - Network-First Navigation + Local Offline Fallback
-const CACHE_NAME = 'kolot-music-v7';
+// Kolot Music Service Worker v8 - Network-First Navigation + Local Offline Fallback
+const CACHE_NAME = 'kolot-music-v8';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
@@ -17,6 +17,8 @@ self.addEventListener('activate', (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then(() => caches.open(CACHE_NAME).then((cache) => Promise.all([cache.delete('/'), cache.delete('/index.html')])))
+      .catch(() => {})
       .then(() => self.clients.claim())
   );
 });

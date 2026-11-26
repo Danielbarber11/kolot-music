@@ -5,6 +5,10 @@ import { initializeMultiMusicService } from './services/multiMusicService';
 
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 
+if (typeof document !== 'undefined') {
+  document.title = 'Kolot Music';
+}
+
 // Recover automatically if an older cached tab references stale hashed JS/CSS chunks after a Cloudflare deploy
 async function triggerCleanChunkRecoveryReload() {
   try {

@@ -68,11 +68,12 @@ function serializeJsonForHtmlScript(value: unknown): string {
 }
 
 function injectBootstrapIntoHtml(html: string, payload: unknown): string {
+  const normalizedHtml = html.replace(/<title>[\s\S]*?<\/title>/i, '<title>Kolot Music</title>');
   const scriptTag = `<script id="kolot-bootstrap-data">window.__KOLOT_BOOTSTRAP__=${serializeJsonForHtmlScript(payload)};</script>`;
-  if (/<\/head>/i.test(html)) {
-    return html.replace(/<\/head>/i, `${scriptTag}\n  </head>`);
+  if (/<\/head>/i.test(normalizedHtml)) {
+    return normalizedHtml.replace(/<\/head>/i, `${scriptTag}\n  </head>`);
   }
-  return `${scriptTag}\n${html}`;
+  return `${scriptTag}\n${normalizedHtml}`;
 }
 
 function sanitizeEndpoint(raw?: string): string {
@@ -4258,7 +4259,7 @@ export default {
           return applyWorkerSecurityHeaders(new Response(assetRes.body, { status: assetRes.status, headers }));
         }
         const htmlText = await assetRes.text();
-        let finalHtml = htmlText;
+        let finalHtml = htmlText.replace(/<title>[\s\S]*?<\/title>/i, '<title>Kolot Music</title>');
         try {
           const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
           const bootstrapTask = getWorkerFeedSnapshot()
@@ -4274,10 +4275,10 @@ export default {
           const timeoutTask = new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000));
           const bootPayload = await Promise.race([bootstrapTask, timeoutTask]);
           if (bootPayload) {
-            finalHtml = injectBootstrapIntoHtml(htmlText, bootPayload);
+            finalHtml = injectBootstrapIntoHtml(finalHtml, bootPayload);
           }
         } catch {
-          finalHtml = htmlText;
+          finalHtml = htmlText.replace(/<title>[\s\S]*?<\/title>/i, '<title>Kolot Music</title>');
         }
         headers.delete('content-length');
         headers.delete('content-encoding');

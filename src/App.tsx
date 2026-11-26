@@ -131,6 +131,12 @@ export default function App() {
 
   useEffect(() => subscribePointerCapabilities(setPointerCaps), []);
 
+  useEffect(() => {
+    if (typeof document !== 'undefined' && document.title !== 'Kolot Music') {
+      document.title = 'Kolot Music';
+    }
+  }, [activePlayerTrack?.id]);
+
   const handleUpdateAccessibility = (next: AccessibilitySettings) => {
     setA11ySettings(next);
     saveAccessibilitySettings(next);
