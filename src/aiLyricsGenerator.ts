@@ -1,5 +1,5 @@
 import { JamendoTrack, SubtitleSegment } from './types';
-import { transcribeAudioOnDevice, sanitizeSubtitleLettersOnly } from './services/onDeviceWhisperService';
+import { sanitizeSubtitleLettersOnly } from './utils/subtitleTextUtils';
 
 export interface LyricWord {
   text: string;
@@ -243,7 +243,19 @@ export function generateSynchronizedLyrics(
   };
 }
 
-export { buildInstantSubtitlesFromLyrics, parseSubtitleFileContent } from './services/onDeviceWhisperService';
+export async function buildInstantSubtitlesFromLyrics(
+  ...args: Parameters<typeof import('./services/onDeviceWhisperService').buildInstantSubtitlesFromLyrics>
+) {
+  const m = await import('./services/onDeviceWhisperService');
+  return m.buildInstantSubtitlesFromLyrics(...args);
+}
+
+export async function parseSubtitleFileContent(
+  ...args: Parameters<typeof import('./services/onDeviceWhisperService').parseSubtitleFileContent>
+) {
+  const m = await import('./services/onDeviceWhisperService');
+  return m.parseSubtitleFileContent(...args);
+}
 
 /**
  * Generates bilingual letters-only subtitle tracks without blocking the main UI thread.
@@ -279,6 +291,7 @@ export async function transcribeTrackWithWhisperAI(
   provider?: string;
   error?: string;
 }> {
+  const { transcribeAudioOnDevice } = await import('./services/onDeviceWhisperService');
   return transcribeAudioOnDevice({
     audioFile: options.audioFile,
     audioUrl: options.track?.audioUrl,

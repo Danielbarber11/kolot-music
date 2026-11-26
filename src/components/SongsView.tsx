@@ -42,7 +42,6 @@ import {
   getCachedAlbums,
   fetchBootstrapData,
   hasCompletedBootstrap,
-  incrementTrackViewInMemory,
   checkTermsAcceptedInR2,
   saveTermsAcceptedToR2,
   getArtistAccountByUid,
@@ -51,13 +50,13 @@ import {
   removeMemoryArtistProfile,
   updateMemoryTracksArtistAvatar,
   isValidTrackWithOwner,
-  TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
   TRACK_DELETED_EVENT,
   ALBUMS_UPDATED_EVENT,
 } from '../services/multiMusicService';
 import { activateIosPlaybackSession } from '../services/iosAudioHelper';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
+import { SongPlayerPage } from './SongPlayerPage';
 import { Logo } from './Logo';
 import { Footer, TermsReaderModal } from './Footer';
 import { CookieBanner } from './CookieBanner';
@@ -78,7 +77,6 @@ import {
   deleteTrackFromCloud,
   getStreamingMediaUrl,
   saveTrackGenreInCloud,
-  incrementTrackViewsInCloud,
 } from '../services/cloudStorageService';
 import {
   CANONICAL_GENRES,
@@ -88,9 +86,6 @@ import {
 } from '../utils/genreUtils';
 import { saveCachedCloudTracks } from '../services/multiMusicService';
 
-const SongPlayerPage = React.lazy(() =>
-  import('./SongPlayerPage').then((m) => ({ default: m.SongPlayerPage }))
-);
 const ArtistPortalModal = React.lazy(() =>
   import('./ArtistPortalModal').then((m) => ({ default: m.ArtistPortalModal }))
 );
@@ -564,41 +559,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
       }
     };
 
-    const handleViewsUpdated = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number; authoritative?: boolean }>)?.detail;
-      const trackId = detail?.trackId;
-      const serverViews = Number(detail?.viewsCount);
-      if (!trackId || !Number.isFinite(serverViews) || serverViews < 0 || !active) return;
-      const isAuthoritative = detail?.authoritative !== false;
-
-      setAllTracks((prev) => {
-        if (!prev.some((t) => t.id === trackId)) return prev;
-        const next = prev.map((t) =>
-          t.id === trackId
-            ? {
-                ...t,
-                viewsCount: isAuthoritative
-                  ? serverViews
-                  : Math.max(Number(t.viewsCount) || 0, serverViews),
-              }
-            : t
-        );
-        saveCachedCloudTracks(next);
-        onTracksSync?.(next);
-        return next;
-      });
-      setPlayerTrack((cur) =>
-        cur && cur.id === trackId
-          ? {
-              ...cur,
-              viewsCount: isAuthoritative
-                ? serverViews
-                : Math.max(Number(cur.viewsCount) || 0, serverViews),
-            }
-          : cur
-      );
-    };
-
     const handleTrackUpdated = (ev: Event) => {
       const updated = (ev as CustomEvent<JamendoTrack>)?.detail;
       if (!updated?.id || !active) return;
@@ -633,7 +593,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
 
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     window.addEventListener('focus', handleVisibilityOrFocus);
-    window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
     window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
     window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
@@ -642,7 +601,6 @@ export const SongsView: React.FC<SongsViewProps> = ({
       active = false;
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
-      window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
       window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
       window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
@@ -655,11 +613,8 @@ export const SongsView: React.FC<SongsViewProps> = ({
     if (onPlayTrack) {
       onPlayTrack(track, albumContext ?? null);
     } else {
-      const nextViews = (Number(track.viewsCount) || 0) + 1;
-      incrementTrackViewInMemory(track.id);
       setPlayerAlbumContext(albumContext ?? null);
-      setPlayerTrack({ ...track, viewsCount: nextViews });
-      void incrementTrackViewsInCloud(track);
+      setPlayerTrack(track);
     }
   };
 
@@ -711,15 +666,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
     }
   }, [activeTab, selectedGenre, artistFilter, searchQuery]);
 
-  // Popularity heuristic (views + plays count + deterministic name hash — independent of user favorites)
+  // Popularity heuristic (plays count + deterministic name hash — independent of user favorites)
   const getTrackPopularity = React.useCallback((t: JamendoTrack) => {
-    const views = Number(t.viewsCount) || 0;
     const plays = Number(t.playsCount) || 0;
     let hash = 0;
     for (let i = 0; i < t.name.length; i++) {
       hash = (hash * 17 + t.name.charCodeAt(i)) % 40;
     }
-    return views * 2 + plays + hash;
+    return plays + hash;
   }, []);
 
   const displayedTracks = React.useMemo(() => {
@@ -1736,7 +1690,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                               e.stopPropagation();
                               openArtistProfile(track.artistName, track.uploadedByUid);
                             }}
-                            className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                            className="inline-block max-w-full w-fit text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                           >
                             {track.artistName}
                           </p>
@@ -2234,7 +2188,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             e.stopPropagation();
                             openArtistProfile(track.artistName, track.uploadedByUid);
                           }}
-                          className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
+                          className="inline-block max-w-full w-fit text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                         >
                           {track.artistName}
                         </p>
@@ -2476,7 +2430,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                             e.stopPropagation();
                             openArtistProfile(track.artistName, track.uploadedByUid);
                           }}
-                          className="text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
+                          className="inline-block max-w-full w-fit text-xs text-white/60 truncate mt-1 hover:underline hover:text-white"
                         >
                           {track.artistName}
                         </p>
@@ -2638,7 +2592,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
                                 e.stopPropagation();
                                 openArtistProfile(track.artistName, track.uploadedByUid);
                               }}
-                              className="text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
+                              className="inline-block max-w-full w-fit text-xs text-white/70 truncate mt-1 hover:underline hover:text-white"
                             >
                               {track.artistName}
                             </p>
@@ -2707,39 +2661,38 @@ export const SongsView: React.FC<SongsViewProps> = ({
       {/* FULL-PAGE SONG PLAYER OVERLAY (ONLY IF DIRECTLY INLINE, THOUGH APP.TSX MANAGES IT NORMALLY) */}
       <AnimatePresence>
         {playerTrack && (
-          <Suspense fallback={null}>
-            <SongPlayerPage
-              track={playerTrack}
-              activeAlbumContext={playerAlbumContext}
-              onBack={closeSongPlayer}
-              onFilterByArtist={(artist) => {
-                setArtistFilter(artist);
+          <SongPlayerPage
+            key={playerTrack.id}
+            track={playerTrack}
+            activeAlbumContext={playerAlbumContext}
+            onBack={closeSongPlayer}
+            onFilterByArtist={(artist) => {
+              setArtistFilter(artist);
+              closeSongPlayer();
+            }}
+            isLiked={likedSongIds.includes(playerTrack.id)}
+            onToggleLike={toggleFavorite}
+            onRequireAuth={() => openLoginModal()}
+            lang={lang}
+            allTracks={allTracks}
+            allArtists={allArtists}
+            allAlbums={popularAlbums}
+            onPlayTrack={(track, albCtx) => {
+              setPlayerAlbumContext(albCtx ?? null);
+              setPlayerTrack(track);
+            }}
+            onRemoveTrack={async (trackId) => {
+              markSongAsDeleted(trackId);
+              setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+              if (playerTrack?.id === trackId) {
                 closeSongPlayer();
-              }}
-              isLiked={likedSongIds.includes(playerTrack.id)}
-              onToggleLike={toggleFavorite}
-              onRequireAuth={() => openLoginModal()}
-              lang={lang}
-              allTracks={allTracks}
-              allArtists={allArtists}
-              allAlbums={popularAlbums}
-              onPlayTrack={(track, albCtx) => {
-                setPlayerAlbumContext(albCtx ?? null);
-                setPlayerTrack(track);
-              }}
-              onRemoveTrack={async (trackId) => {
-                markSongAsDeleted(trackId);
-                setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
-                if (playerTrack?.id === trackId) {
-                  closeSongPlayer();
-                }
-                await Promise.allSettled([
-                  removeTrackFromStorage(trackId),
-                  deleteTrackFromCloud(trackId),
-                ]);
-              }}
-            />
-          </Suspense>
+              }
+              await Promise.allSettled([
+                removeTrackFromStorage(trackId),
+                deleteTrackFromCloud(trackId),
+              ]);
+            }}
+          />
         )}
       </AnimatePresence>
 

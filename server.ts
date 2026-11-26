@@ -218,20 +218,6 @@ interface FeedSnapshot {
 }
 const serverFeedInFlight = new Map<string, Promise<FeedSnapshot>>();
 
-function parseViewEventKey(key: string): { trackId: string; ts: number } | null {
-  if (!key.startsWith('views_events/')) return null;
-  const rest = key.slice('views_events/'.length);
-  const slashIdx = rest.indexOf('/');
-  if (slashIdx <= 0) return null;
-  const trackId = rest.slice(0, slashIdx);
-  const fileName = rest.slice(slashIdx + 1);
-  const match = fileName.match(/^(\d+)_/);
-  if (!match) return null;
-  const ts = Number(match[1]);
-  if (!Number.isFinite(ts) || ts <= 0) return null;
-  return { trackId, ts };
-}
-
 function serializeJsonForHtmlScript(value: unknown): string {
   return JSON.stringify(value)
     .replace(/</g, '\\u003c')
@@ -1052,18 +1038,9 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
             if (existingUid && !sess?.isAdmin) {
               incoming.uploadedByUid = existingUid;
             }
-            if (existing.viewsBase !== undefined) {
-              incoming.viewsBase = Number(existing.viewsBase) || 0;
-            }
-            if (existing.viewsCompactedUpToTs !== undefined) {
-              incoming.viewsCompactedUpToTs = Number(existing.viewsCompactedUpToTs) || 0;
-            }
-            const preservedViews = Math.max(
-              Number(existing.viewsCount) || 0,
-              Number(existing.viewsBase) || 0,
-              Number(incoming.viewsCount) || 0
-            );
-            incoming.viewsCount = preservedViews;
+            delete incoming.viewsBase;
+            delete incoming.viewsCompactedUpToTs;
+            delete incoming.viewsCount;
             if (!incoming.uploadedByEmail) {
               if (existing.uploadedByEmail) {
                 incoming.uploadedByEmail = existing.uploadedByEmail;
@@ -1112,17 +1089,28 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
               });
               const mergedArr = incomingArr.map((item: any) => {
                 if (!item?.id) return item;
-                const { uploadedByEmail: _omitIncomingEmail, ...cleanIncoming } = item;
+                const {
+                  uploadedByEmail: _omitIncomingEmail,
+                  viewsBase: _omitIncomingBase,
+                  viewsCompactedUpToTs: _omitIncomingTs,
+                  viewsCount: _omitIncomingViews,
+                  ...cleanIncoming
+                } = item;
                 const prev = existingMap.get(cleanIncoming.id);
                 if (!prev) return cleanIncoming;
                 const prevOwner = String(prev.uploadedByUid || '').replace(/^artist_/, '').trim();
                 if (!sess.isAdmin && prevOwner && prevOwner !== cleanSessUid) {
-                  const { uploadedByEmail: _omitPrevEmail, ...cleanPrev } = prev;
+                  const {
+                    uploadedByEmail: _omitPrevEmail,
+                    viewsBase: _omitPrevBase,
+                    viewsCompactedUpToTs: _omitPrevTs,
+                    viewsCount: _omitPrevViews,
+                    ...cleanPrev
+                  } = prev;
                   return cleanPrev;
                 }
                 return {
                   ...cleanIncoming,
-                  viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(cleanIncoming.viewsCount) || 0),
                   playsCount: Math.max(Number(prev.playsCount) || 0, Number(cleanIncoming.playsCount) || 0),
                 };
               });
@@ -1212,6 +1200,7 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
                 uploadedByEmail: _omitEmail,
                 viewsBase: _omitBase,
                 viewsCompactedUpToTs: _omitTs,
+                viewsCount: _omitViews,
                 ...cleanIdxTrack
               } = savedTrack;
               void (tracksIndexWriteChain = tracksIndexWriteChain
@@ -1228,7 +1217,6 @@ app.post('/api/storage/upload', upload.fields([{ name: 'file', maxCount: 1 }]), 
                     const prev = map.get(cleanIdxTrack.id);
                     map.set(cleanIdxTrack.id, {
                       ...cleanIdxTrack,
-                      viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(cleanIdxTrack.viewsCount) || 0),
                       playsCount: Math.max(Number(prev?.playsCount) || 0, Number(cleanIdxTrack.playsCount) || 0),
                     });
                     await client.send(
@@ -1351,10 +1339,7 @@ app.get('/api/storage/track/:id', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing track id' });
     }
     const { client, bucket } = await getR2Context(req);
-    const [obj, eventKeys] = await Promise.all([
-      client.send(new GetObjectCommand({ Bucket: bucket, Key: `tracks/${cleanId}.json` })).catch(() => null),
-      listAllR2KeysS3(client, bucket, `views_events/${cleanId}/`).catch(() => [] as string[]),
-    ]);
+    const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: `tracks/${cleanId}.json` })).catch(() => null);
     if (!obj?.Body) {
       return res.status(404).json({ success: false, error: 'Track not found' });
     }
@@ -1362,22 +1347,16 @@ app.get('/api/storage/track/:id', async (req, res) => {
     if (!parsed || typeof parsed !== 'object') {
       return res.status(404).json({ success: false, error: 'Track not found' });
     }
-    const base = Number(parsed.viewsBase ?? parsed.viewsCount) || 0;
-    const compactedTs = Number(parsed.viewsCompactedUpToTs) || 0;
-    let pendingCount = 0;
-    for (const vk of eventKeys) {
-      const ev = parseViewEventKey(vk);
-      if (ev && ev.ts > compactedTs) pendingCount += 1;
-    }
     const {
       uploadedByEmail: _omitEmail,
       viewsBase: _omitBase,
       viewsCompactedUpToTs: _omitTs,
+      viewsCount: _omitViews,
       ...cleanTrack
     } = parsed;
     return res.json({
       success: true,
-      track: { ...cleanTrack, viewsCount: base + pendingCount },
+      track: cleanTrack,
     });
   } catch (err: any) {
     return res.status(500).json({
@@ -1423,33 +1402,12 @@ async function getConsolidatedFeedSnapshot(client: S3Client, bucket: string): Pr
       return out;
     };
 
-    const [trackKeys, profileKeys, albumKeys, viewEventKeys, indexData] = await Promise.all([
+    const [trackKeys, profileKeys, albumKeys, indexData] = await Promise.all([
       listAllKeys('tracks/'),
       listAllKeys('profiles/'),
       listAllKeys('albums/'),
-      listAllR2KeysS3(client, bucket, 'views_events/').catch(() => [] as string[]),
       readJsonKey('tracks_index.json'),
     ]);
-
-    const viewEventTsByTrack = new Map<string, number[]>();
-    for (const vk of viewEventKeys) {
-      const parsed = parseViewEventKey(vk);
-      if (!parsed) continue;
-      const arr = viewEventTsByTrack.get(parsed.trackId);
-      if (arr) arr.push(parsed.ts);
-      else viewEventTsByTrack.set(parsed.trackId, [parsed.ts]);
-    }
-
-    const countLiveTrackViews = (rawTrack: any, fallbackViews = 0): number => {
-      const base = Number(rawTrack?.viewsBase ?? rawTrack?.viewsCount ?? fallbackViews) || 0;
-      const compactedTs = Number(rawTrack?.viewsCompactedUpToTs) || 0;
-      const events = viewEventTsByTrack.get(String(rawTrack?.id || '')) || [];
-      let pending = 0;
-      for (const ts of events) {
-        if (ts > compactedTs) pending += 1;
-      }
-      return base + pending;
-    };
 
     const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
       readInBatches(trackKeys, (k) => readJsonKey(k)),
@@ -1465,12 +1423,10 @@ async function getConsolidatedFeedSnapshot(client: S3Client, bucket: string): Pr
             uploadedByEmail: _omit,
             viewsBase: _omitBase,
             viewsCompactedUpToTs: _omitTs,
+            viewsCount: _omitViews,
             ...cleanTrack
           } = t;
-          trackMap.set(cleanTrack.id, {
-            ...cleanTrack,
-            viewsCount: countLiveTrackViews(t),
-          });
+          trackMap.set(cleanTrack.id, cleanTrack);
         }
       });
     }
@@ -1481,13 +1437,10 @@ async function getConsolidatedFeedSnapshot(client: S3Client, bucket: string): Pr
           uploadedByEmail: _omit,
           viewsBase: _omitBase,
           viewsCompactedUpToTs: _omitTs,
+          viewsCount: _omitViews,
           ...cleanTrack
         } = t;
-        const prev = trackMap.get(cleanTrack.id);
-        trackMap.set(cleanTrack.id, {
-          ...cleanTrack,
-          viewsCount: countLiveTrackViews(t, Number(prev?.viewsCount) || 0),
-        });
+        trackMap.set(cleanTrack.id, cleanTrack);
       }
     });
 
@@ -1695,16 +1648,6 @@ app.delete('/api/storage/delete', async (req, res) => {
     if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
       const deletedId = filePath.slice('tracks/'.length, -'.json'.length).replace(/[^a-zA-Z0-9_\-]/g, '');
       if (deletedId) {
-        void listAllR2KeysS3(client, bucket, `views_events/${deletedId}/`)
-          .then(async (evKeys) => {
-            for (let i = 0; i < evKeys.length; i += 20) {
-              const batch = evKeys.slice(i, i + 20);
-              await Promise.all(
-                batch.map((Key) => client.send(new DeleteObjectCommand({ Bucket: bucket, Key })).catch(() => {}))
-              );
-            }
-          })
-          .catch(() => {});
         void (tracksIndexWriteChain = tracksIndexWriteChain
           .then(async () => {
             try {
@@ -3985,168 +3928,7 @@ app.post('/api/storage/track-play', async (req, res) => {
   }
 });
 
-// 4i-2. Collision-Free Per-Event R2 Ledger Track Views Counter (100% Parallel-Safe Single Source of Truth)
 let tracksIndexWriteChain: Promise<void> = Promise.resolve();
-
-app.post('/api/storage/track-view', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  try {
-    const cleanId = String(req.body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
-    if (!cleanId) return res.status(400).json({ success: false, viewsCount: null });
-
-    const { client, bucket } = await getR2Context(req);
-    const key = `tracks/${cleanId}.json`;
-    const nowTs = Date.now();
-    const randId = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
-    const eventKey = `views_events/${cleanId}/${nowTs}_${randId}.v`;
-
-    // 1. Write unique zero-collision event object directly to R2
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: eventKey,
-        Body: Buffer.from('1', 'utf-8'),
-        ContentType: 'text/plain',
-      })
-    );
-
-    // 2. Read authoritative track base + list all uncompacted event keys directly from R2
-    const [trackObj, eventKeys] = await Promise.all([
-      client.send(new GetObjectCommand({ Bucket: bucket, Key: key })).catch(() => null),
-      listAllR2KeysS3(client, bucket, `views_events/${cleanId}/`),
-    ]);
-
-    if (!trackObj?.Body) {
-      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: eventKey })).catch(() => {});
-      return res.status(404).json({ success: false, viewsCount: null });
-    }
-
-    const trackData = JSON.parse(await trackObj.Body.transformToString('utf-8'));
-    if (!trackData || typeof trackData !== 'object') {
-      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: eventKey })).catch(() => {});
-      return res.status(404).json({ success: false, viewsCount: null });
-    }
-
-    const base = Number(trackData.viewsBase ?? trackData.viewsCount) || 0;
-    const compactedTs = Number(trackData.viewsCompactedUpToTs) || 0;
-    const parsedEvents: { key: string; ts: number }[] = [];
-    for (const ek of eventKeys) {
-      const parsed = parseViewEventKey(ek);
-      if (parsed && parsed.ts > compactedTs) {
-        parsedEvents.push({ key: ek, ts: parsed.ts });
-      }
-    }
-    const authoritativeViews = base + parsedEvents.length;
-
-    // 3. Background compaction via strict ETag-CAS when >= 40 uncompacted keys accumulate (only keys >= 20s old)
-    const cutoffTs = Date.now() - 20000;
-    const hasEnoughOldKeys = parsedEvents.filter((e) => e.ts <= cutoffTs).length >= 25 || parsedEvents.length >= 50;
-    if (hasEnoughOldKeys) {
-      void (async () => {
-        try {
-          const allKeysNow = await listAllR2KeysS3(client, bucket, `views_events/${cleanId}/`).catch(() => [] as string[]);
-          const allParsed = allKeysNow
-            .map((k) => {
-              const p = parseViewEventKey(k);
-              return p ? { key: k, ts: p.ts } : null;
-            })
-            .filter((x): x is { key: string; ts: number } => Boolean(x));
-
-          let casWon = false;
-          let keysToDelete: string[] = [];
-          let finalCompactedViews = authoritativeViews;
-
-          for (let attempt = 0; attempt < 6; attempt++) {
-            const curObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key })).catch(() => null);
-            if (!curObj?.Body || !curObj.ETag) break;
-            const curTrack = JSON.parse(await curObj.Body.transformToString('utf-8'));
-            const curCompacted = Number(curTrack.viewsCompactedUpToTs) || 0;
-            const curBase = Number(curTrack.viewsBase ?? curTrack.viewsCount) || 0;
-            if (cutoffTs <= curCompacted) break;
-            const compactable = allParsed.filter((e) => e.ts > curCompacted && e.ts <= cutoffTs);
-            if (compactable.length === 0) break;
-            const newerCount = allParsed.filter((e) => e.ts > cutoffTs).length;
-            const nextBase = curBase + compactable.length;
-            const nextTotal = nextBase + newerCount;
-            const updatedTrack = {
-              ...curTrack,
-              viewsBase: nextBase,
-              viewsCompactedUpToTs: cutoffTs,
-              viewsCount: nextTotal,
-            };
-            try {
-              await client.send(
-                new PutObjectCommand({
-                  Bucket: bucket,
-                  Key: key,
-                  Body: Buffer.from(JSON.stringify(updatedTrack, null, 2), 'utf-8'),
-                  ContentType: 'application/json',
-                  IfMatch: curObj.ETag,
-                })
-              );
-              casWon = true;
-              keysToDelete = allParsed.filter((e) => e.ts <= cutoffTs).map((e) => e.key);
-              finalCompactedViews = nextTotal;
-              break;
-            } catch (putErr: any) {
-              const code = String(putErr?.name || putErr?.Code || '');
-              const status = Number(putErr?.$metadata?.httpStatusCode || 0);
-              if (status === 412 || code.includes('PreconditionFailed')) {
-                await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
-                continue;
-              }
-              break;
-            }
-          }
-
-          if (casWon && keysToDelete.length > 0) {
-            for (let i = 0; i < keysToDelete.length; i += 20) {
-              const batch = keysToDelete.slice(i, i + 20);
-              await Promise.all(
-                batch.map((Key) => client.send(new DeleteObjectCommand({ Bucket: bucket, Key })).catch(() => {}))
-              );
-            }
-          }
-
-          void (tracksIndexWriteChain = tracksIndexWriteChain
-            .then(async () => {
-              try {
-                const idxObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: 'tracks_index.json' }));
-                if (!idxObj.Body) return;
-                const idxData = JSON.parse(await idxObj.Body.transformToString('utf-8'));
-                if (!Array.isArray(idxData)) return;
-                let changed = false;
-                const nextArr = idxData.map((t: any) => {
-                  if (t?.id === cleanId && (Number(t.viewsCount) || 0) < finalCompactedViews) {
-                    changed = true;
-                    return { ...t, viewsCount: finalCompactedViews };
-                  }
-                  return t;
-                });
-                if (changed) {
-                  await client.send(
-                    new PutObjectCommand({
-                      Bucket: bucket,
-                      Key: 'tracks_index.json',
-                      Body: Buffer.from(JSON.stringify(nextArr, null, 2), 'utf-8'),
-                      ContentType: 'application/json',
-                    })
-                  );
-                }
-              } catch {}
-            })
-            .catch(() => {}));
-        } catch {}
-      })();
-    }
-
-    return res.json({ success: true, viewsCount: authoritativeViews, authoritative: true });
-  } catch {
-    return res.status(503).json({ success: false, viewsCount: null });
-  }
-});
 
 // Safe metadata enrichment route for bgColor or empty/untagged genre (cannot overwrite other track fields)
 app.post('/api/storage/track-enrich', async (req, res) => {
@@ -4332,7 +4114,6 @@ app.post('/api/storage/track-subtitles', async (req, res) => {
       subtitlesDisabled: false,
       subtitlesIncomplete: nextIncomplete,
       ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
-      viewsCount: Number(existing.viewsCount) || 0,
     };
 
     await client.send(

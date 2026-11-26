@@ -58,20 +58,6 @@ const WORKER_STATUS_CACHE_TTL_MS = 60000;
 const workerFeedInFlight = new Map<string, Promise<WorkerFeedSnapshot>>();
 const workerStatusCache = new Map<string, { ts: number; configured: boolean; bucket: string }>();
 
-function parseViewEventKey(key: string): { trackId: string; ts: number } | null {
-  if (!key.startsWith('views_events/')) return null;
-  const rest = key.slice('views_events/'.length);
-  const slashIdx = rest.indexOf('/');
-  if (slashIdx <= 0) return null;
-  const trackId = rest.slice(0, slashIdx);
-  const fileName = rest.slice(slashIdx + 1);
-  const match = fileName.match(/^(\d+)_/);
-  if (!match) return null;
-  const ts = Number(match[1]);
-  if (!Number.isFinite(ts) || ts <= 0) return null;
-  return { trackId, ts };
-}
-
 function serializeJsonForHtmlScript(value: unknown): string {
   return JSON.stringify(value)
     .replace(/</g, '\\u003c')
@@ -711,33 +697,12 @@ export default {
           return out;
         };
 
-        const [trackKeys, profileKeys, albumKeys, viewEventKeys, indexData] = await Promise.all([
+        const [trackKeys, profileKeys, albumKeys, indexData] = await Promise.all([
           listR2JsonKeysTop('tracks/').catch(() => [] as string[]),
           listR2JsonKeysTop('profiles/').catch(() => [] as string[]),
           listR2JsonKeysTop('albums/').catch(() => [] as string[]),
-          listR2AllKeysTop('views_events/').catch(() => [] as string[]),
           readR2JsonTop('tracks_index.json'),
         ]);
-
-        const viewEventTsByTrack = new Map<string, number[]>();
-        for (const vk of viewEventKeys) {
-          const parsed = parseViewEventKey(vk);
-          if (!parsed) continue;
-          const arr = viewEventTsByTrack.get(parsed.trackId);
-          if (arr) arr.push(parsed.ts);
-          else viewEventTsByTrack.set(parsed.trackId, [parsed.ts]);
-        }
-
-        const countLiveTrackViews = (rawTrack: any, fallbackViews = 0): number => {
-          const base = Number(rawTrack?.viewsBase ?? rawTrack?.viewsCount ?? fallbackViews) || 0;
-          const compactedTs = Number(rawTrack?.viewsCompactedUpToTs) || 0;
-          const events = viewEventTsByTrack.get(String(rawTrack?.id || '')) || [];
-          let pending = 0;
-          for (const ts of events) {
-            if (ts > compactedTs) pending += 1;
-          }
-          return base + pending;
-        };
 
         const [loadedTracks, loadedProfiles, loadedAlbums] = await Promise.all([
           readInBatches(trackKeys, (k) => readR2JsonTop(k)),
@@ -753,12 +718,10 @@ export default {
                 uploadedByEmail: _omit,
                 viewsBase: _omitBase,
                 viewsCompactedUpToTs: _omitTs,
+                viewsCount: _omitViews,
                 ...cleanTrack
               } = t;
-              trackMap.set(cleanTrack.id, {
-                ...cleanTrack,
-                viewsCount: countLiveTrackViews(t),
-              });
+              trackMap.set(cleanTrack.id, cleanTrack);
             }
           });
         }
@@ -769,13 +732,10 @@ export default {
               uploadedByEmail: _omit,
               viewsBase: _omitBase,
               viewsCompactedUpToTs: _omitTs,
+              viewsCount: _omitViews,
               ...cleanTrack
             } = t;
-            const prev = trackMap.get(cleanTrack.id);
-            trackMap.set(cleanTrack.id, {
-              ...cleanTrack,
-              viewsCount: countLiveTrackViews(t, Number(prev?.viewsCount) || 0),
-            });
+            trackMap.set(cleanTrack.id, cleanTrack);
           }
         });
 
@@ -816,7 +776,13 @@ export default {
 
     const syncTrackInIndexWorker = async (trackObj: any) => {
       if (!trackObj?.id) return;
-      const { uploadedByEmail: _omit, ...cleanTrack } = trackObj;
+      const {
+        uploadedByEmail: _omit,
+        viewsBase: _omitBase,
+        viewsCompactedUpToTs: _omitTs,
+        viewsCount: _omitViews,
+        ...cleanTrack
+      } = trackObj;
       try {
         if (env.R2_BUCKET) {
           for (let attempt = 0; attempt < 5; attempt++) {
@@ -831,7 +797,6 @@ export default {
             const prev = map.get(cleanTrack.id);
             map.set(cleanTrack.id, {
               ...cleanTrack,
-              viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(cleanTrack.viewsCount) || 0),
               playsCount: Math.max(Number(prev?.playsCount) || 0, Number(cleanTrack.playsCount) || 0),
             });
             const bytes = encoder.encode(JSON.stringify(Array.from(map.values())));
@@ -853,7 +818,6 @@ export default {
         const prev = map.get(cleanTrack.id);
         map.set(cleanTrack.id, {
           ...cleanTrack,
-          viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(cleanTrack.viewsCount) || 0),
           playsCount: Math.max(Number(prev?.playsCount) || 0, Number(cleanTrack.playsCount) || 0),
         });
         await writeR2JsonTop('tracks_index.json', Array.from(map.values()));
@@ -1183,17 +1147,9 @@ export default {
               if (existingUid && !sess?.isAdmin) {
                 incoming.uploadedByUid = existingUid;
               }
-              if (existing.viewsBase !== undefined) {
-                incoming.viewsBase = Number(existing.viewsBase) || 0;
-              }
-              if (existing.viewsCompactedUpToTs !== undefined) {
-                incoming.viewsCompactedUpToTs = Number(existing.viewsCompactedUpToTs) || 0;
-              }
-              incoming.viewsCount = Math.max(
-                Number(existing.viewsCount) || 0,
-                Number(existing.viewsBase) || 0,
-                Number(incoming.viewsCount) || 0
-              );
+              delete incoming.viewsBase;
+              delete incoming.viewsCompactedUpToTs;
+              delete incoming.viewsCount;
               if (!incoming.uploadedByEmail) {
                 if (existing.uploadedByEmail) {
                   incoming.uploadedByEmail = existing.uploadedByEmail;
@@ -1242,17 +1198,28 @@ export default {
                 });
                 const mergedArr = incomingArr.map((item: any) => {
                   if (!item?.id) return item;
-                  const { uploadedByEmail: _omitIncomingEmail, ...cleanIncoming } = item;
+                  const {
+                    uploadedByEmail: _omitIncomingEmail,
+                    viewsBase: _omitIncomingBase,
+                    viewsCompactedUpToTs: _omitIncomingTs,
+                    viewsCount: _omitIncomingViews,
+                    ...cleanIncoming
+                  } = item;
                   const prev = existingMap.get(cleanIncoming.id);
                   if (!prev) return cleanIncoming;
                   const prevOwner = String(prev.uploadedByUid || '').replace(/^artist_/, '').trim();
                   if (!sess.isAdmin && prevOwner && prevOwner !== cleanSessUid) {
-                    const { uploadedByEmail: _omitPrevEmail, ...cleanPrev } = prev;
+                    const {
+                      uploadedByEmail: _omitPrevEmail,
+                      viewsBase: _omitPrevBase,
+                      viewsCompactedUpToTs: _omitPrevTs,
+                      viewsCount: _omitPrevViews,
+                      ...cleanPrev
+                    } = prev;
                     return cleanPrev;
                   }
                   return {
                     ...cleanIncoming,
-                    viewsCount: Math.max(Number(prev.viewsCount) || 0, Number(cleanIncoming.viewsCount) || 0),
                     playsCount: Math.max(Number(prev.playsCount) || 0, Number(cleanIncoming.playsCount) || 0),
                   };
                 });
@@ -1408,7 +1375,7 @@ export default {
       }
     }
 
-    // 3a. Single Track Lookup directly from R2 (deep links & live subtitle hydration + live views_events)
+    // 3a. Single Track Lookup directly from R2 (deep links & live subtitle hydration)
     if (pathname.startsWith('/api/storage/track/') && request.method === 'GET') {
       try {
         const rawParam = pathname.slice('/api/storage/track/'.length);
@@ -1417,29 +1384,20 @@ export default {
           return jsonResponse({ success: false, error: 'Missing track id' }, 400);
         }
         const key = `tracks/${cleanId}.json`;
-        const [parsed, eventKeys] = await Promise.all([
-          readR2JsonTop(key),
-          listR2AllKeysTop(`views_events/${cleanId}/`).catch(() => [] as string[]),
-        ]);
+        const parsed = await readR2JsonTop(key);
         if (!parsed || typeof parsed !== 'object') {
           return jsonResponse({ success: false, error: 'Track not found' }, 404);
-        }
-        const base = Number(parsed.viewsBase ?? parsed.viewsCount) || 0;
-        const compactedTs = Number(parsed.viewsCompactedUpToTs) || 0;
-        let pendingCount = 0;
-        for (const vk of eventKeys) {
-          const ev = parseViewEventKey(vk);
-          if (ev && ev.ts > compactedTs) pendingCount += 1;
         }
         const {
           uploadedByEmail: _omitEmail,
           viewsBase: _omitBase,
           viewsCompactedUpToTs: _omitTs,
+          viewsCount: _omitViews,
           ...cleanTrack
         } = parsed;
         return jsonResponse({
           success: true,
-          track: { ...cleanTrack, viewsCount: base + pendingCount },
+          track: cleanTrack,
         });
       } catch (err: any) {
         return jsonResponse({ success: false, error: err?.message || 'Track lookup failed' }, 500);
@@ -1561,20 +1519,7 @@ export default {
         if (filePath.startsWith('tracks/') && filePath.endsWith('.json')) {
           const deletedId = filePath.slice('tracks/'.length, -'.json'.length).replace(/[^a-zA-Z0-9_\-]/g, '');
           if (deletedId) {
-            const purgeDeletedTrackMeta = (async () => {
-              await removeTrackFromIndexWorker(deletedId);
-              const evKeys = await listR2AllKeysTop(`views_events/${deletedId}/`).catch(() => [] as string[]);
-              for (let i = 0; i < evKeys.length; i += 20) {
-                const batch = evKeys.slice(i, i + 20);
-                if (env.R2_BUCKET) {
-                  await env.R2_BUCKET.delete(batch).catch(() => {});
-                } else {
-                  await Promise.all(
-                    batch.map((k) => signedR2Fetch(creds, 'DELETE', `/${creds.bucket}/${encodeS3Path(k)}`).catch(() => {}))
-                  );
-                }
-              }
-            })();
+            const purgeDeletedTrackMeta = removeTrackFromIndexWorker(deletedId);
             if (ctx?.waitUntil) ctx.waitUntil(purgeDeletedTrackMeta);
             else void purgeDeletedTrackMeta;
           }
@@ -2877,200 +2822,6 @@ export default {
       }
     }
 
-    // 13b. Collision-Free Per-Event R2 Ledger Track Views Counter (100% Parallel-Safe Single Source of Truth)
-    if (pathname === '/api/storage/track-view' && request.method === 'POST') {
-      try {
-        const body: any = await request.json();
-        const cleanId = String(body?.trackId || '').replace(/[^a-zA-Z0-9_\-]/g, '');
-        if (!cleanId) return jsonResponse({ success: false, viewsCount: null }, 400);
-
-        const key = `tracks/${cleanId}.json`;
-        const nowTs = Date.now();
-        const randId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID().replace(/-/g, '').slice(0, 10)
-            : `${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 6)}`;
-        const eventKey = `views_events/${cleanId}/${nowTs}_${randId}.v`;
-        const eventBytes = encoder.encode('1');
-
-        // 1. Write unique zero-collision event object directly to R2
-        if (env.R2_BUCKET) {
-          await env.R2_BUCKET.put(eventKey, eventBytes, { httpMetadata: { contentType: 'text/plain' } });
-        } else {
-          const s3EventPath = `/${creds.bucket}/${encodeS3Path(eventKey)}`;
-          const putEv = await signedR2Fetch(creds, 'PUT', s3EventPath, {}, eventBytes, { 'Content-Type': 'text/plain' });
-          if (!putEv.ok) {
-            return jsonResponse({ success: false, viewsCount: null }, 503);
-          }
-        }
-
-        // 2. Read authoritative track base + list all uncompacted event keys directly from R2
-        const [trackData, eventKeys] = await Promise.all([
-          readR2JsonTop(key),
-          listR2AllKeysTop(`views_events/${cleanId}/`),
-        ]);
-
-        if (!trackData || typeof trackData !== 'object') {
-          await r2DeleteKey(eventKey).catch(() => {});
-          return jsonResponse({ success: false, viewsCount: null }, 404);
-        }
-
-        const base = Number(trackData.viewsBase ?? trackData.viewsCount) || 0;
-        const compactedTs = Number(trackData.viewsCompactedUpToTs) || 0;
-        const parsedEvents: { key: string; ts: number }[] = [];
-        for (const ek of eventKeys) {
-          const parsed = parseViewEventKey(ek);
-          if (parsed && parsed.ts > compactedTs) {
-            parsedEvents.push({ key: ek, ts: parsed.ts });
-          }
-        }
-        const authoritativeViews = base + parsedEvents.length;
-
-        // 3. Background compaction via strict ETag-CAS when >= 40 uncompacted keys accumulate (only keys >= 20s old)
-        const cutoffTs = Date.now() - 20000;
-        const hasEnoughOldKeys = parsedEvents.filter((e) => e.ts <= cutoffTs).length >= 25 || parsedEvents.length >= 50;
-        if (hasEnoughOldKeys) {
-          const compactTask = (async () => {
-            try {
-              const allKeysNow = await listR2AllKeysTop(`views_events/${cleanId}/`).catch(() => [] as string[]);
-              const allParsed = allKeysNow
-                .map((k) => {
-                  const p = parseViewEventKey(k);
-                  return p ? { key: k, ts: p.ts } : null;
-                })
-                .filter((x): x is { key: string; ts: number } => Boolean(x));
-
-              let casWon = false;
-              let keysToDelete: string[] = [];
-              let finalCompactedViews = authoritativeViews;
-
-              if (env.R2_BUCKET) {
-                for (let attempt = 0; attempt < 6; attempt++) {
-                  const obj = await env.R2_BUCKET.get(key);
-                  if (!obj) break;
-                  const curTrack = JSON.parse(await obj.text());
-                  const curCompacted = Number(curTrack.viewsCompactedUpToTs) || 0;
-                  const curBase = Number(curTrack.viewsBase ?? curTrack.viewsCount) || 0;
-                  if (cutoffTs <= curCompacted) break;
-                  const compactable = allParsed.filter((e) => e.ts > curCompacted && e.ts <= cutoffTs);
-                  if (compactable.length === 0) break;
-                  const newerCount = allParsed.filter((e) => e.ts > cutoffTs).length;
-                  const nextBase = curBase + compactable.length;
-                  const nextTotal = nextBase + newerCount;
-                  const updatedTrack = {
-                    ...curTrack,
-                    viewsBase: nextBase,
-                    viewsCompactedUpToTs: cutoffTs,
-                    viewsCount: nextTotal,
-                  };
-                  const bytes = encoder.encode(JSON.stringify(updatedTrack, null, 2));
-                  const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
-                  if (obj.httpEtag) putOpts.onlyIf = { etagMatches: obj.httpEtag };
-                  const resPut = await env.R2_BUCKET.put(key, bytes, putOpts);
-                  if (resPut !== null) {
-                    casWon = true;
-                    keysToDelete = allParsed.filter((e) => e.ts <= cutoffTs).map((e) => e.key);
-                    finalCompactedViews = nextTotal;
-                    break;
-                  }
-                  await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
-                }
-              } else {
-                const s3Path = `/${creds.bucket}/${encodeS3Path(key)}`;
-                for (let attempt = 0; attempt < 6; attempt++) {
-                  const getRes = await signedR2Fetch(creds, 'GET', s3Path);
-                  if (!getRes.ok) break;
-                  const etag = getRes.headers.get('etag') || '';
-                  if (!etag) break;
-                  const curTrack = await getRes.json().catch(() => null);
-                  if (!curTrack) break;
-                  const curCompacted = Number(curTrack.viewsCompactedUpToTs) || 0;
-                  const curBase = Number(curTrack.viewsBase ?? curTrack.viewsCount) || 0;
-                  if (cutoffTs <= curCompacted) break;
-                  const compactable = allParsed.filter((e) => e.ts > curCompacted && e.ts <= cutoffTs);
-                  if (compactable.length === 0) break;
-                  const newerCount = allParsed.filter((e) => e.ts > cutoffTs).length;
-                  const nextBase = curBase + compactable.length;
-                  const nextTotal = nextBase + newerCount;
-                  const updatedTrack = {
-                    ...curTrack,
-                    viewsBase: nextBase,
-                    viewsCompactedUpToTs: cutoffTs,
-                    viewsCount: nextTotal,
-                  };
-                  const bytes = encoder.encode(JSON.stringify(updatedTrack, null, 2));
-                  const putRes = await signedR2Fetch(creds, 'PUT', s3Path, {}, bytes, {
-                    'Content-Type': 'application/json',
-                    'If-Match': etag,
-                  });
-                  if (putRes.status === 412) {
-                    await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
-                    continue;
-                  }
-                  if (putRes.ok) {
-                    casWon = true;
-                    keysToDelete = allParsed.filter((e) => e.ts <= cutoffTs).map((e) => e.key);
-                    finalCompactedViews = nextTotal;
-                  }
-                  break;
-                }
-              }
-
-              if (casWon && keysToDelete.length > 0) {
-                for (let i = 0; i < keysToDelete.length; i += 20) {
-                  const batch = keysToDelete.slice(i, i + 20);
-                  if (env.R2_BUCKET) {
-                    await env.R2_BUCKET.delete(batch).catch(() => {});
-                  } else {
-                    await Promise.all(
-                      batch.map((k) => signedR2Fetch(creds, 'DELETE', `/${creds.bucket}/${encodeS3Path(k)}`).catch(() => {}))
-                    );
-                  }
-                }
-              }
-
-              // Also keep tracks_index.json updated via retried CAS
-              if (env.R2_BUCKET) {
-                for (let attempt = 0; attempt < 5; attempt++) {
-                  const idxObj = await env.R2_BUCKET.get('tracks_index.json');
-                  if (!idxObj) break;
-                  const idxData = JSON.parse(await idxObj.text());
-                  if (!Array.isArray(idxData)) break;
-                  let changed = false;
-                  const nextArr = idxData.map((t: any) => {
-                    if (t?.id === cleanId && (Number(t.viewsCount) || 0) < finalCompactedViews) {
-                      changed = true;
-                      return { ...t, viewsCount: finalCompactedViews };
-                    }
-                    return t;
-                  });
-                  if (!changed) break;
-                  const putOpts: any = { httpMetadata: { contentType: 'application/json' } };
-                  if (idxObj.httpEtag) putOpts.onlyIf = { etagMatches: idxObj.httpEtag };
-                  const resPut = await env.R2_BUCKET.put('tracks_index.json', encoder.encode(JSON.stringify(nextArr, null, 2)), putOpts);
-                  if (resPut !== null) break;
-                  await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 45)));
-                }
-              }
-            } catch {}
-          })();
-          if (ctx?.waitUntil) {
-            ctx.waitUntil(compactTask);
-          } else {
-            void compactTask;
-          }
-        }
-
-        return jsonResponse({
-          success: true,
-          viewsCount: authoritativeViews,
-          authoritative: true,
-        });
-      } catch {
-        return jsonResponse({ success: false, viewsCount: null }, 503);
-      }
-    }
-
     // 13b-2. Safe metadata enrichment route for bgColor or empty/untagged genre
     if (pathname === '/api/storage/track-enrich' && request.method === 'POST') {
       try {
@@ -3233,7 +2984,6 @@ export default {
           subtitlesDisabled: false,
           subtitlesIncomplete: nextIncomplete,
           ...(nextCompletedUpTo > 0 ? { subtitlesCompletedUpTo: nextCompletedUpTo } : {}),
-          viewsCount: Number(existing.viewsCount) || 0,
         };
 
         await r2WriteJson(key, updated);

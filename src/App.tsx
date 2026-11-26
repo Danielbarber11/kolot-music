@@ -2,12 +2,10 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
 import { SongsView } from './components/SongsView';
+import { SongPlayerPage } from './components/SongPlayerPage';
 import { SplashScreen } from './components/SplashScreen';
 import { Language, JamendoTrack, ArtistProfile, Album } from './types';
 
-const SongPlayerPage = React.lazy(() =>
-  import('./components/SongPlayerPage').then((m) => ({ default: m.SongPlayerPage }))
-);
 const AccessibilityPage = React.lazy(() =>
   import('./components/AccessibilityPage').then((m) => ({ default: m.AccessibilityPage }))
 );
@@ -18,21 +16,15 @@ import {
   fetchAllRealSongs,
   getCachedArtistProfiles,
   getCachedAlbums,
-  incrementTrackViewInMemory,
-  syncTrackViewFromServer,
   removeTrackFromMemory,
   TRACK_SUBTITLES_UPDATED_EVENT,
-  TRACK_VIEWS_UPDATED_EVENT,
   TRACK_UPDATED_EVENT,
   TRACK_DELETED_EVENT,
   ALBUMS_UPDATED_EVENT,
 } from './services/multiMusicService';
 import {
   getStreamingMediaUrl,
-  incrementTrackViewsInCloud,
-  fetchSingleTrackFromCloud,
   fetchSingleTrackStatusFromCloud,
-  isTrackViewIncrementPending,
 } from './services/cloudStorageService';
 import { SecurityGuard } from './components/SecurityGuard';
 import { activateIosPlaybackSession } from './services/iosAudioHelper';
@@ -185,39 +177,16 @@ export default function App() {
   const handleEnterTrack = (track: JamendoTrack, albumContext?: Album | null) => {
     activateIosPlaybackSession();
     const existingTrack = allTracks.find((t) => t.id === track.id);
-    const currentViews = Math.max(existingTrack?.viewsCount ?? 0, track.viewsCount ?? 0);
-    const nextViews = currentViews + 1;
     const updatedTrack: JamendoTrack = {
       ...(existingTrack || track),
       ...track,
-      viewsCount: nextViews,
     };
 
-    incrementTrackViewInMemory(track.id);
-    setAllTracks((prev) =>
-      prev.some((t) => t.id === track.id)
-        ? prev.map((t) => (t.id === track.id ? { ...t, viewsCount: nextViews } : t))
-        : prev
-    );
     setActiveAlbumContext(albumContext ?? null);
     syncSongQueryParam(track.id);
     setActivePlayerTrack(updatedTrack);
     trackPageView(`/?song=${encodeURIComponent(track.id)}`, track.name);
-
-    void incrementTrackViewsInCloud(track).then((serverViews) => {
-      if (typeof serverViews === 'number' && Number.isFinite(serverViews)) {
-        trackSongPlay({ ...track, viewsCount: serverViews });
-      } else {
-        trackSongPlay({ ...track, viewsCount: nextViews });
-        fetchSingleTrackFromCloud(track.id)
-          .then((fresh) => {
-            if (fresh && typeof fresh.viewsCount === 'number' && !isTrackViewIncrementPending(track.id)) {
-              syncTrackViewFromServer(track.id, Number(fresh.viewsCount), true);
-            }
-          })
-          .catch(() => {});
-      }
-    });
+    trackSongPlay(updatedTrack);
   };
 
   const lastCloudSyncRef = React.useRef<number>(Date.now());
@@ -234,13 +203,9 @@ export default function App() {
           if (!cur) return cur;
           const match = fresh.find((t) => t.id === cur.id);
           if (!match) return cur;
-          const authoritativeViews = isTrackViewIncrementPending(cur.id)
-            ? Math.max(Number(cur.viewsCount) || 0, Number(match.viewsCount) || 0)
-            : Number(match.viewsCount) || 0;
           return {
             ...cur,
             ...match,
-            viewsCount: authoritativeViews,
             playsCount: Math.max(Number(cur.playsCount) || 0, Number(match.playsCount) || 0),
           };
         });
@@ -280,20 +245,15 @@ export default function App() {
         }
       }
       if (targetTrack && active) {
-        const nextViews = (Number(targetTrack.viewsCount) || 0) + 1;
-        const hydrated = { ...targetTrack, viewsCount: nextViews };
-        incrementTrackViewInMemory(targetTrack.id);
         setAllTracks((prev) =>
           prev.some((t) => t.id === targetTrack!.id)
-            ? prev.map((t) => (t.id === targetTrack!.id ? hydrated : t))
-            : [hydrated, ...prev]
+            ? prev.map((t) => (t.id === targetTrack!.id ? targetTrack! : t))
+            : [targetTrack!, ...prev]
         );
         trackPageView(`/?song=${encodeURIComponent(targetTrack.id)}`, targetTrack.name);
         setActiveAlbumContext(null);
-        setActivePlayerTrack(hydrated);
-        void incrementTrackViewsInCloud(targetTrack).then((serverViews) => {
-          trackSongPlay({ ...targetTrack!, viewsCount: serverViews ?? nextViews });
-        });
+        setActivePlayerTrack(targetTrack);
+        trackSongPlay(targetTrack);
       }
     };
 
@@ -375,7 +335,6 @@ export default function App() {
               t.id === updated.id
                 ? {
                     ...updated,
-                    viewsCount: Math.max(Number(t.viewsCount) || 0, Number(updated.viewsCount) || 0),
                     playsCount: Math.max(Number(t.playsCount) || 0, Number(updated.playsCount) || 0),
                   }
                 : t
@@ -387,41 +346,7 @@ export default function App() {
           ? {
               ...cur,
               ...updated,
-              viewsCount: Math.max(Number(cur.viewsCount) || 0, Number(updated.viewsCount) || 0),
               playsCount: Math.max(Number(cur.playsCount) || 0, Number(updated.playsCount) || 0),
-            }
-          : cur
-      );
-    };
-
-    const handleViewsUpdated = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ trackId?: string; viewsCount?: number; authoritative?: boolean }>)?.detail;
-      const trackId = detail?.trackId;
-      const serverViews = Number(detail?.viewsCount);
-      if (!trackId || !Number.isFinite(serverViews) || serverViews < 0 || !active) return;
-      const isAuthoritative = detail?.authoritative !== false;
-
-      setAllTracks((prev) =>
-        prev.some((t) => t.id === trackId)
-          ? prev.map((t) =>
-              t.id === trackId
-                ? {
-                    ...t,
-                    viewsCount: isAuthoritative
-                      ? serverViews
-                      : Math.max(Number(t.viewsCount) || 0, serverViews),
-                  }
-                : t
-            )
-          : prev
-      );
-      setActivePlayerTrack((cur) =>
-        cur && cur.id === trackId
-          ? {
-              ...cur,
-              viewsCount: isAuthoritative
-                ? serverViews
-                : Math.max(Number(cur.viewsCount) || 0, serverViews),
             }
           : cur
       );
@@ -454,7 +379,6 @@ export default function App() {
 
     window.addEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
     window.addEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
-    window.addEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
     window.addEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
     window.addEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
     window.addEventListener('online', handleOnline);
@@ -466,7 +390,6 @@ export default function App() {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener(TRACK_SUBTITLES_UPDATED_EVENT, handleSubtitlesUpdated);
       window.removeEventListener(TRACK_UPDATED_EVENT, handleTrackUpdated);
-      window.removeEventListener(TRACK_VIEWS_UPDATED_EVENT, handleViewsUpdated);
       window.removeEventListener(TRACK_DELETED_EVENT, handleTrackDeleted);
       window.removeEventListener(ALBUMS_UPDATED_EVENT, handleAlbumsUpdated);
       window.removeEventListener('online', handleOnline);
@@ -643,37 +566,35 @@ export default function App() {
             activeAccessibilityCount={activeAccessibilityCount}
           />
 
-          {/* Full-Page Luxury Player Overlay with Smooth Silk Transition */}
+          {/* Full-Page Luxury Player Overlay with Instant Open */}
           <AnimatePresence>
             {activePlayerTrack && (
-              <Suspense fallback={null}>
-                <SongPlayerPage
-                  key={activePlayerTrack.id}
-                  track={activePlayerTrack}
-                  activeAlbumContext={activeAlbumContext}
-                  onBack={handleExitTrack}
-                  onFilterByArtist={handleExitTrack}
-                  isLiked={likedSongIds.includes(activePlayerTrack.id)}
-                  onToggleLike={handleToggleLikeSong}
-                  onRequireAuth={() => {
-                    loginWithGoogle().catch(() => {});
-                  }}
-                  lang={lang}
-                  allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
-                  allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
-                  allAlbums={allAlbums}
-                  onPlayTrack={handleEnterTrack}
-                  onRemoveTrack={(trackId) => {
-                    removeTrackFromMemory(trackId);
-                    setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
-                    if (activePlayerTrack?.id === trackId) {
-                      syncSongQueryParam(null);
-                      setActivePlayerTrack(null);
-                      setActiveAlbumContext(null);
-                    }
-                  }}
-                />
-              </Suspense>
+              <SongPlayerPage
+                key={activePlayerTrack.id}
+                track={activePlayerTrack}
+                activeAlbumContext={activeAlbumContext}
+                onBack={handleExitTrack}
+                onFilterByArtist={handleExitTrack}
+                isLiked={likedSongIds.includes(activePlayerTrack.id)}
+                onToggleLike={handleToggleLikeSong}
+                onRequireAuth={() => {
+                  loginWithGoogle().catch(() => {});
+                }}
+                lang={lang}
+                allTracks={allTracks.length > 0 ? allTracks : getInstantSongPool()}
+                allArtists={allArtists.length > 0 ? allArtists : getCachedArtistProfiles()}
+                allAlbums={allAlbums}
+                onPlayTrack={handleEnterTrack}
+                onRemoveTrack={(trackId) => {
+                  removeTrackFromMemory(trackId);
+                  setAllTracks((prev) => prev.filter((t) => t.id !== trackId));
+                  if (activePlayerTrack?.id === trackId) {
+                    syncSongQueryParam(null);
+                    setActivePlayerTrack(null);
+                    setActiveAlbumContext(null);
+                  }
+                }}
+              />
             )}
           </AnimatePresence>
         </div>

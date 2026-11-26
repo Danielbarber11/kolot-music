@@ -8,10 +8,9 @@ import {
   fetchArtistProfileByUidFromCloud,
   uploadArtistProfileToCloud,
   fetchAlbumsFromCloud,
-  isTrackViewIncrementPending,
   primeDirectStreamUpload,
 } from './cloudStorageService';
-import { primeServerAiStatus } from './onDeviceWhisperService';
+import { primeServerAiStatus } from '../utils/aiStatusCache';
 import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
@@ -264,7 +263,6 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
             : !!(existing.subtitlesIncomplete || t.subtitlesIncomplete),
         subtitlesCompletedUpTo: Math.max(existing.subtitlesCompletedUpTo || 0, t.subtitlesCompletedUpTo || 0) || undefined,
         playsCount: Math.max(existing.playsCount || 0, t.playsCount || 0),
-        viewsCount: Math.max(existing.viewsCount || 0, t.viewsCount || 0),
         karaokeEnabled: existing.karaokeEnabled !== undefined ? existing.karaokeEnabled : t.karaokeEnabled,
         karaokeAudioUrl:
           existing.karaokeEnabled === false
@@ -279,7 +277,6 @@ export function deduplicateTracks(tracks: JamendoTrack[]): JamendoTrack[] {
   return sortTracksChronologically(Array.from(trackMap.values()));
 }
 
-export const TRACK_VIEWS_UPDATED_EVENT = 'kolot:track-views-updated';
 export const TRACK_UPDATED_EVENT = 'kolot:track-updated';
 export const TRACK_DELETED_EVENT = 'kolot:track-deleted';
 
@@ -303,7 +300,6 @@ export function upsertTrackInMemory(updatedTrack: JamendoTrack): JamendoTrack[] 
         t.id === updatedTrack.id
           ? {
               ...updatedTrack,
-              viewsCount: Math.max(Number(t.viewsCount) || 0, Number(updatedTrack.viewsCount) || 0),
               playsCount: Math.max(Number(t.playsCount) || 0, Number(updatedTrack.playsCount) || 0),
             }
           : t
@@ -316,61 +312,6 @@ export function upsertTrackInMemory(updatedTrack: JamendoTrack): JamendoTrack[] 
     } catch {}
   }
   return memorySessionTracks;
-}
-
-export function incrementTrackViewInMemory(trackId: string): number {
-  let nextViews = 1;
-  memorySessionTracks = memorySessionTracks.map((t) => {
-    if (t.id === trackId) {
-      nextViews = (Number(t.viewsCount) || 0) + 1;
-      return { ...t, viewsCount: nextViews };
-    }
-    return t;
-  });
-  return nextViews;
-}
-
-export function syncTrackViewFromServer(
-  trackId: string,
-  serverViewsCount: number,
-  authoritative = true
-): void {
-  if (!trackId || !Number.isFinite(serverViewsCount) || serverViewsCount < 0) return;
-  let finalViews = serverViewsCount;
-  memorySessionTracks = memorySessionTracks.map((t) => {
-    if (t.id === trackId) {
-      finalViews = authoritative
-        ? serverViewsCount
-        : Math.max(Number(t.viewsCount) || 0, serverViewsCount);
-      return { ...t, viewsCount: finalViews };
-    }
-    return t;
-  });
-  try {
-    const cached = getCachedCloudTracks();
-    if (cached.some((t) => t.id === trackId)) {
-      const updated = cached.map((t) =>
-        t.id === trackId
-          ? {
-              ...t,
-              viewsCount: authoritative
-                ? finalViews
-                : Math.max(Number(t.viewsCount) || 0, finalViews),
-            }
-          : t
-      );
-      saveCachedCloudTracks(updated);
-    }
-  } catch {}
-  if (typeof window !== 'undefined') {
-    try {
-      window.dispatchEvent(
-        new CustomEvent(TRACK_VIEWS_UPDATED_EVENT, {
-          detail: { trackId, viewsCount: finalViews, authoritative },
-        })
-      );
-    } catch {}
-  }
 }
 
 export const TRACK_SUBTITLES_UPDATED_EVENT = 'kolot:track-subtitles-updated';
@@ -559,14 +500,7 @@ export async function fetchAllRealSongs(
       if (t?.id) incomingById.set(t.id, t);
     });
     latestMerged = deduplicateTracks([...incoming, ...latestMerged])
-      .filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id))
-      .map((t) => {
-        const freshCloud = incomingById.get(t.id);
-        if (freshCloud && !isTrackViewIncrementPending(t.id)) {
-          return { ...t, viewsCount: Number(freshCloud.viewsCount) || 0 };
-        }
-        return t;
-      });
+      .filter((t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id));
     saveCachedCloudTracks(latestMerged);
     if (onProgress) onProgress(latestMerged.length);
     batchListeners.forEach((cb) => {

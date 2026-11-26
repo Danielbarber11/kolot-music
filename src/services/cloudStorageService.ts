@@ -273,7 +273,6 @@ async function syncTracksIndexInBackground(trackToSave: JamendoTrack): Promise<v
     const prev = map.get(trackToSave.id);
     map.set(trackToSave.id, {
       ...trackToSave,
-      viewsCount: Math.max(Number(prev?.viewsCount) || 0, Number(trackToSave.viewsCount) || 0),
       playsCount: Math.max(Number(prev?.playsCount) || 0, Number(trackToSave.playsCount) || 0),
     });
     await fetch('/api/storage/upload', {
@@ -1054,50 +1053,6 @@ export async function incrementTrackPlaysInCloud(track: JamendoTrack): Promise<n
     }
   } catch {}
   return optimistic;
-}
-
-const pendingTrackViewIncrements = new Map<string, Promise<number | null>>();
-
-export function isTrackViewIncrementPending(trackId: string): boolean {
-  return Boolean(trackId && pendingTrackViewIncrements.has(trackId));
-}
-
-export async function waitForPendingTrackViewIncrement(trackId: string): Promise<void> {
-  const pending = pendingTrackViewIncrements.get(trackId);
-  if (pending) {
-    await pending.catch(() => {});
-  }
-}
-
-export function incrementTrackViewsInCloud(track: JamendoTrack): Promise<number | null> {
-  if (!track?.id) return Promise.resolve(null);
-  const cleanId = track.id;
-  const promise = (async (): Promise<number | null> => {
-    try {
-      const res = await fetch(`/api/storage/track-view?_t=${Date.now()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-        cache: 'no-store',
-        body: JSON.stringify({ trackId: cleanId }),
-        keepalive: true,
-      });
-      if (!res.ok) return null;
-      const data = await res.json().catch(() => null);
-      if (data?.success && typeof data.viewsCount === 'number' && Number.isFinite(data.viewsCount)) {
-        const committedViews = Number(data.viewsCount);
-        const m = await import('./multiMusicService').catch(() => null);
-        m?.syncTrackViewFromServer(cleanId, committedViews, true);
-        return committedViews;
-      }
-    } catch {}
-    return null;
-  })().finally(() => {
-    if (pendingTrackViewIncrements.get(cleanId) === promise) {
-      pendingTrackViewIncrements.delete(cleanId);
-    }
-  });
-  pendingTrackViewIncrements.set(cleanId, promise);
-  return promise;
 }
 
 // Exports for use in components

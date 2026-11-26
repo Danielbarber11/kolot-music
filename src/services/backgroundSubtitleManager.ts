@@ -1,12 +1,6 @@
 import { JamendoTrack, SubtitleSegment } from '../types';
 import { saveGeneratedSubtitlesToCloud, getStreamingMediaUrl } from './cloudStorageService';
 import { syncTrackSubtitlesInMemory } from './multiMusicService';
-import {
-  decodeAudioToMono16k,
-  generateSubtitlesWithGeminiMethod,
-  isServerAiConfigured,
-  transcribePcmWindowOnDevice,
-} from './onDeviceWhisperService';
 
 export interface SubtitleDraftSnapshot {
   segments: SubtitleSegment[];
@@ -243,6 +237,13 @@ export function startUploadPrefetchJob(options: {
       const source = options.audioFile || options.audioUrl;
       if (!source) return null;
 
+      const {
+        decodeAudioToMono16k,
+        generateSubtitlesWithGeminiMethod,
+        isServerAiConfigured,
+        transcribePcmWindowOnDevice,
+      } = await import('./onDeviceWhisperService');
+
       // 1. Fast server AI when configured (produces full song in ~4-10s)
       const aiConfigured = await isServerAiConfigured().catch(() => false);
       if (aiConfigured && !controller.signal.aborted) {
@@ -455,6 +456,13 @@ export function startProgressiveTrackSubtitleJob(options: {
 
   const runner = (async () => {
     try {
+      const {
+        decodeAudioToMono16k,
+        generateSubtitlesWithGeminiMethod,
+        isServerAiConfigured,
+        transcribePcmWindowOnDevice,
+      } = await import('./onDeviceWhisperService');
+
       const hasExistingSubs = Boolean(
         !options.forceRestart &&
         (targetTrack.subtitleSegments?.length ||

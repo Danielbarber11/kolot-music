@@ -18,42 +18,12 @@ if (env.backends?.onnx?.wasm) {
   env.backends.onnx.wasm.numThreads = 1;
 }
 
+import { primeServerAiStatus, isServerAiConfigured } from '../utils/aiStatusCache';
+export { primeServerAiStatus, isServerAiConfigured };
+
 let audioClassifierPipelinePromise: Promise<any> | null = null;
-let cachedAiStatus: { aiConfigured: boolean; ts: number } | null = null;
-let inFlightAiStatusPromise: Promise<boolean> | null = null;
 let sharedWhisperWorker: Worker | null = null;
 let nextWhisperReqId = 1;
-
-export function primeServerAiStatus(aiConfigured: boolean): void {
-  cachedAiStatus = { aiConfigured: Boolean(aiConfigured), ts: Date.now() };
-}
-
-export async function isServerAiConfigured(): Promise<boolean> {
-  if (cachedAiStatus && Date.now() - cachedAiStatus.ts < 300000) {
-    return cachedAiStatus.aiConfigured;
-  }
-  if (inFlightAiStatusPromise) {
-    return inFlightAiStatusPromise;
-  }
-  inFlightAiStatusPromise = (async () => {
-    try {
-      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      const timer = controller ? setTimeout(() => controller.abort(), 1800) : null;
-      const res = await fetch('/api/ai/status', { signal: controller?.signal, cache: 'no-store' });
-      if (timer) clearTimeout(timer);
-      if (!res.ok) return false;
-      const data: any = await res.json().catch(() => null);
-      const configured = Boolean(data?.aiConfigured);
-      cachedAiStatus = { aiConfigured: configured, ts: Date.now() };
-      return configured;
-    } catch {
-      return false;
-    } finally {
-      inFlightAiStatusPromise = null;
-    }
-  })();
-  return inFlightAiStatusPromise;
-}
 
 function getOrCreateWhisperWorker(): Worker {
   if (!sharedWhisperWorker) {
@@ -94,47 +64,8 @@ function isMobileOrConstrainedDevice(): boolean {
   return false;
 }
 
-/**
- * Strips all punctuation, periods, question marks, numbers, brackets, and non-letter symbols,
- * leaving strictly letters and single spaces, while collapsing repetitive Whisper hallucination loops.
- */
-export function sanitizeSubtitleLettersOnly(rawText: string): string {
-  if (!rawText || typeof rawText !== 'string') return '';
-
-  let cleaned = rawText
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\*[^*]*\*/g, ' ')
-    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, ' ');
-
-  cleaned = cleaned
-    .replace(/[^\p{L}\p{M}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!cleaned) return '';
-
-  const words = cleaned.split(' ').filter(Boolean);
-  const dedupedWords: string[] = [];
-  let repeatCount = 0;
-  let prevLower = '';
-
-  for (const w of words) {
-    const lower = w.toLowerCase();
-    if (lower === prevLower) {
-      repeatCount += 1;
-      if (repeatCount < 2) {
-        dedupedWords.push(w);
-      }
-    } else {
-      repeatCount = 0;
-      prevLower = lower;
-      dedupedWords.push(w);
-    }
-  }
-
-  return dedupedWords.join(' ').trim();
-}
+import { sanitizeSubtitleLettersOnly } from '../utils/subtitleTextUtils';
+export { sanitizeSubtitleLettersOnly };
 
 /**
  * 100% free unlimited En<->He translator: prefers browser on-device Translator API,

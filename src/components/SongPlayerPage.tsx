@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, Suspense } from 'react';
 import {
   Play,
   Pause,
@@ -24,9 +24,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment, Album } from '../types';
 import { findArtistForTrack, getArtistConcertShows, formatConcertDate } from '../utils/concertUtils';
 import { TrackCoverArt, isAuthenticCover } from './TrackCoverArt';
-import { ArtistProfileModal } from './ArtistProfileModal';
-import { ArtistPortalModal } from './ArtistPortalModal';
-import { ReportSongModal } from './ReportSongModal';
 import {
   AuthUser,
   onAuthUserChanged,
@@ -41,8 +38,6 @@ import {
   incrementTrackPlaysInCloud,
   fetchSingleTrackFromCloud,
   fetchSingleTrackStatusFromCloud,
-  isTrackViewIncrementPending,
-  waitForPendingTrackViewIncrement,
 } from '../services/cloudStorageService';
 import { trackEvent } from '../services/analyticsService';
 import {
@@ -53,12 +48,21 @@ import {
   removeMemoryArtistProfile,
   updateMemoryTracksArtistAvatar,
   syncTrackSubtitlesInMemory,
-  syncTrackViewFromServer,
   removeTrackFromMemory,
 } from '../services/multiMusicService';
 import { ensureTrackSubtitlesInBackground, subscribeTrackSubtitles } from '../services/backgroundSubtitleManager';
 import { generateSynchronizedLyrics } from '../aiLyricsGenerator';
 import { activateIosPlaybackSession } from '../services/iosAudioHelper';
+
+const ArtistProfileModal = React.lazy(() =>
+  import('./ArtistProfileModal').then((m) => ({ default: m.ArtistProfileModal }))
+);
+const ArtistPortalModal = React.lazy(() =>
+  import('./ArtistPortalModal').then((m) => ({ default: m.ArtistPortalModal }))
+);
+const ReportSongModal = React.lazy(() =>
+  import('./ReportSongModal').then((m) => ({ default: m.ReportSongModal }))
+);
 
 const isHebrewText = (text: string) => /[\u0590-\u05FF]/.test(text);
 
@@ -492,15 +496,10 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
     });
 
     fetchSingleTrackFromCloud(track.id)
-      .then(async (freshTrack) => {
+      .then((freshTrack) => {
         if (cancelled || !freshTrack || freshTrack.id !== track.id) return;
         syncTrackSubtitlesInMemory(freshTrack);
         applyFreshTrackSubs(freshTrack);
-        if (isTrackViewIncrementPending(track.id)) {
-          await waitForPendingTrackViewIncrement(track.id);
-        } else if (typeof freshTrack.viewsCount === 'number') {
-          syncTrackViewFromServer(track.id, Number(freshTrack.viewsCount), true);
-        }
         // Collaborative auto-resume if another user left incomplete subtitles OR track still lacks subtitles
         if (!freshTrack.subtitlesDisabled) {
           void ensureTrackSubtitlesInBackground(freshTrack, isHe ? 'he' : 'en');
@@ -2334,82 +2333,92 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
       )}
 
       {/* REPORT MODAL */}
-      <ReportSongModal
-        track={track}
-        isOpen={isReportModalOpen}
-        onClose={() => setIsReportModalOpen(false)}
-        lang={lang}
-      />
+      {isReportModalOpen && (
+        <Suspense fallback={null}>
+          <ReportSongModal
+            track={track}
+            isOpen={isReportModalOpen}
+            onClose={() => setIsReportModalOpen(false)}
+            lang={lang}
+          />
+        </Suspense>
+      )}
 
       {/* ARTIST PROFILE MODAL */}
       <AnimatePresence>
         {isArtistProfileOpen && (
-          <ArtistProfileModal
-            artistName={track.artistName}
-            artistUid={track.uploadedByUid}
-            isOpen={isArtistProfileOpen}
-            onClose={() => setIsArtistProfileOpen(false)}
-            allTracks={Array.isArray(allTracks) ? allTracks : []}
-            allArtists={effectiveArtists}
-            allAlbums={allAlbums}
-            currentTrack={track}
-            onPlayTrack={(newTrack: JamendoTrack, albumCtx?: Album | null) => {
-              setIsArtistProfileOpen(false);
-              if (onPlayTrack) {
-                onPlayTrack(newTrack, albumCtx ?? null);
-              }
-            }}
-            lang={lang}
-            onToggleLike={onToggleLike}
-            likedSongIds={isLiked ? [track.id] : []}
-            onRemoveTrack={onRemoveTrack}
-          />
+          <Suspense fallback={null}>
+            <ArtistProfileModal
+              artistName={track.artistName}
+              artistUid={track.uploadedByUid}
+              isOpen={isArtistProfileOpen}
+              onClose={() => setIsArtistProfileOpen(false)}
+              allTracks={Array.isArray(allTracks) ? allTracks : []}
+              allArtists={effectiveArtists}
+              allAlbums={allAlbums}
+              currentTrack={track}
+              onPlayTrack={(newTrack: JamendoTrack, albumCtx?: Album | null) => {
+                setIsArtistProfileOpen(false);
+                if (onPlayTrack) {
+                  onPlayTrack(newTrack, albumCtx ?? null);
+                }
+              }}
+              lang={lang}
+              onToggleLike={onToggleLike}
+              likedSongIds={isLiked ? [track.id] : []}
+              onRemoveTrack={onRemoveTrack}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 
       {/* ARTIST PORTAL MODAL */}
-      <ArtistPortalModal
-        isOpen={isArtistPortalOpen}
-        onClose={() => {
-          setIsArtistPortalOpen(false);
-        }}
-        lang={lang}
-        allAlbums={allAlbums}
-        onTrackPublished={(newTrack) => {
-          if (onPlayTrack) {
-            onPlayTrack(newTrack, null);
-          }
-        }}
-        onPlayTrack={(newTrack, albumCtx) => {
-          setIsArtistPortalOpen(false);
-          if (onPlayTrack) {
-            onPlayTrack(newTrack, albumCtx ?? null);
-          }
-        }}
-        onArtistUpdated={(updatedArtist) => {
-          upsertMemoryArtistProfile(updatedArtist);
-          const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
-          updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
-          setLoadedArtists((prev) => {
-            const idx = prev.findIndex((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() === cleanUpdatedUid);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = { ...next[idx], ...updatedArtist };
-              return next;
-            }
-            return [updatedArtist, ...prev];
-          });
-        }}
-        allTracks={allTracks}
-        onAccountDeleted={(deletedUid) => {
-          const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
-          removeMemoryArtistProfile(deletedUid);
-          setLoadedArtists((prev) =>
-            prev.filter((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() !== cleanDeleted)
-          );
-        }}
-        onRemoveTrack={onRemoveTrack}
-      />
+      {isArtistPortalOpen && (
+        <Suspense fallback={null}>
+          <ArtistPortalModal
+            isOpen={isArtistPortalOpen}
+            onClose={() => {
+              setIsArtistPortalOpen(false);
+            }}
+            lang={lang}
+            allAlbums={allAlbums}
+            onTrackPublished={(newTrack) => {
+              if (onPlayTrack) {
+                onPlayTrack(newTrack, null);
+              }
+            }}
+            onPlayTrack={(newTrack, albumCtx) => {
+              setIsArtistPortalOpen(false);
+              if (onPlayTrack) {
+                onPlayTrack(newTrack, albumCtx ?? null);
+              }
+            }}
+            onArtistUpdated={(updatedArtist) => {
+              upsertMemoryArtistProfile(updatedArtist);
+              const cleanUpdatedUid = (updatedArtist.googleUid || updatedArtist.id || '').replace(/^artist_/, '').toLowerCase().trim();
+              updateMemoryTracksArtistAvatar(cleanUpdatedUid, updatedArtist.avatarUrl, updatedArtist.name);
+              setLoadedArtists((prev) => {
+                const idx = prev.findIndex((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() === cleanUpdatedUid);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = { ...next[idx], ...updatedArtist };
+                  return next;
+                }
+                return [updatedArtist, ...prev];
+              });
+            }}
+            allTracks={allTracks}
+            onAccountDeleted={(deletedUid) => {
+              const cleanDeleted = deletedUid.replace(/^artist_/, '').toLowerCase().trim();
+              removeMemoryArtistProfile(deletedUid);
+              setLoadedArtists((prev) =>
+                prev.filter((a) => (a.googleUid || a.id || '').replace(/^artist_/, '').toLowerCase().trim() !== cleanDeleted)
+              );
+            }}
+            onRemoveTrack={onRemoveTrack}
+          />
+        </Suspense>
+      )}
     </motion.div>
   );
 };
