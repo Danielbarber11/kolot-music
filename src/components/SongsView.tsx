@@ -41,6 +41,8 @@ import {
   fetchRealAlbums,
   getCachedAlbums,
   fetchBootstrapData,
+  hasCompletedBootstrap,
+  incrementTrackViewInMemory,
   checkTermsAcceptedInR2,
   saveTermsAcceptedToR2,
   getArtistAccountByUid,
@@ -72,7 +74,12 @@ import {
 } from '../services/authService';
 import { prewarmTrackColor, getFormattedPlayCount, getTrackInstantColor } from '../services/colorService';
 import { removeTrackFromStorage } from '../services/localTrackStorage';
-import { deleteTrackFromCloud, getStreamingMediaUrl, saveTrackGenreInCloud } from '../services/cloudStorageService';
+import {
+  deleteTrackFromCloud,
+  getStreamingMediaUrl,
+  saveTrackGenreInCloud,
+  incrementTrackViewsInCloud,
+} from '../services/cloudStorageService';
 import {
   CANONICAL_GENRES,
   normalizeGenreId,
@@ -510,22 +517,24 @@ export const SongsView: React.FC<SongsViewProps> = ({
   useEffect(() => {
     let active = true;
 
-    fetchBootstrapData()
-      .then((boot) => {
-        if (!active || !boot) return;
-        const validSongs = (boot.tracks || []).filter(isValidTrackWithOwner);
-        setAllTracks(validSongs);
-        onTracksSync?.(validSongs);
-        if (Array.isArray(boot.profiles)) {
-          setAllArtists(boot.profiles);
-          onArtistsSync?.(boot.profiles);
-        }
-        if (Array.isArray(boot.albums) && boot.albums.length > 0) {
-          setRemoteAlbums(boot.albums);
-          onAlbumsSync?.(boot.albums);
-        }
-      })
-      .catch(() => {});
+    if (!hasCompletedBootstrap() || getInstantSongPool().length === 0) {
+      fetchBootstrapData()
+        .then((boot) => {
+          if (!active || !boot) return;
+          const validSongs = (boot.tracks || []).filter(isValidTrackWithOwner);
+          setAllTracks(validSongs);
+          onTracksSync?.(validSongs);
+          if (Array.isArray(boot.profiles)) {
+            setAllArtists(boot.profiles);
+            onArtistsSync?.(boot.profiles);
+          }
+          if (Array.isArray(boot.albums) && boot.albums.length > 0) {
+            setRemoteAlbums(boot.albums);
+            onAlbumsSync?.(boot.albums);
+          }
+        })
+        .catch(() => {});
+    }
 
     let lastRefreshAt = Date.now();
     const refreshFromCloud = (force = false) => {
@@ -646,8 +655,11 @@ export const SongsView: React.FC<SongsViewProps> = ({
     if (onPlayTrack) {
       onPlayTrack(track, albumContext ?? null);
     } else {
+      const nextViews = (Number(track.viewsCount) || 0) + 1;
+      incrementTrackViewInMemory(track.id);
       setPlayerAlbumContext(albumContext ?? null);
-      setPlayerTrack(track);
+      setPlayerTrack({ ...track, viewsCount: nextViews });
+      void incrementTrackViewsInCloud(track);
     }
   };
 

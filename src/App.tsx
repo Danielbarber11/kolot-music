@@ -13,6 +13,7 @@ const AccessibilityPage = React.lazy(() =>
 );
 import {
   getInstantSongPool,
+  hasCompletedBootstrap,
   fetchBootstrapData,
   fetchAllRealSongs,
   getCachedArtistProfiles,
@@ -298,11 +299,20 @@ export default function App() {
 
     const preloadDataAndTopCovers = async () => {
       try {
-        const boot = await fetchBootstrapData();
+        const alreadyBootstrapped = hasCompletedBootstrap() && getInstantSongPool().length > 0;
+        const boot = alreadyBootstrapped
+          ? {
+              tracks: getInstantSongPool(),
+              profiles: getCachedArtistProfiles(),
+              albums: getCachedAlbums(),
+            }
+          : await fetchBootstrapData();
         if (!active) return;
-        setAllTracks(boot.tracks);
-        setAllArtists(boot.profiles);
-        setAllAlbums(boot.albums);
+        if (!alreadyBootstrapped) {
+          setAllTracks(boot.tracks);
+          setAllArtists(boot.profiles);
+          setAllAlbums(boot.albums);
+        }
 
         if (pendingDeepLinkRef.current) {
           void openRequestedSong(boot.tracks);
@@ -323,11 +333,16 @@ export default function App() {
       }
     };
 
-    const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 220));
+    if (hasCompletedBootstrap() && getInstantSongPool().length > 0) {
+      setIsInitializing(false);
+      void preloadDataAndTopCovers();
+    } else {
+      const maxWait = new Promise<void>((resolve) => setTimeout(resolve, 2500));
 
-    Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
-      if (active) setIsInitializing(false);
-    });
+      Promise.race([preloadDataAndTopCovers(), maxWait]).finally(() => {
+        if (active) setIsInitializing(false);
+      });
+    }
 
     const handlePopState = () => {
       const songFromUrl = getSongIdFromUrl();

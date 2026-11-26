@@ -3,6 +3,10 @@ import { primeServerAiStatus } from './onDeviceWhisperService';
 
 let cachedDirectStreamUpload: boolean | null = null;
 
+export function primeDirectStreamUpload(enabled: boolean): void {
+  cachedDirectStreamUpload = Boolean(enabled);
+}
+
 export interface CloudStorageConfig {
   capacityMb: number;
   usedBytes: number;

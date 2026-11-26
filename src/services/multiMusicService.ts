@@ -9,7 +9,9 @@ import {
   uploadArtistProfileToCloud,
   fetchAlbumsFromCloud,
   isTrackViewIncrementPending,
+  primeDirectStreamUpload,
 } from './cloudStorageService';
+import { primeServerAiStatus } from './onDeviceWhisperService';
 import { getDeletedSongIds, markSongAsDeleted } from './deletedTracksService';
 
 /**
@@ -672,9 +674,55 @@ export function fetchBootstrapData(force = false): Promise<{
   return bootstrapPromise;
 }
 
-// Start eager prefetch immediately when module evaluates (overlaps with React/DOM init)
+function consumeSsrBootstrapPayload(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = (window as any).__KOLOT_BOOTSTRAP__;
+    if (!raw || typeof raw !== 'object' || !raw.success) return false;
+    try {
+      delete (window as any).__KOLOT_BOOTSTRAP__;
+    } catch {
+      (window as any).__KOLOT_BOOTSTRAP__ = undefined;
+    }
+    try {
+      document.getElementById('kolot-bootstrap-data')?.remove();
+    } catch {}
+
+    if (typeof raw.aiConfigured === 'boolean') {
+      primeServerAiStatus(raw.aiConfigured);
+    }
+    if (typeof raw.directStreamUpload === 'boolean') {
+      primeDirectStreamUpload(raw.directStreamUpload);
+    }
+
+    const deletedIds = getDeletedSongIds();
+    const cleanedTracks = deduplicateTracks(Array.isArray(raw.tracks) ? raw.tracks : []).filter(
+      (t) => isValidTrackWithOwner(t) && !deletedIds.has(t.id)
+    );
+    saveCachedCloudTracks(cleanedTracks);
+
+    const profileMap = new Map<string, ArtistProfile>();
+    (Array.isArray(raw.profiles) ? raw.profiles : []).forEach((ca: any) => {
+      const key = String(ca?.googleUid || ca?.id || '').replace(/^artist_/, '').trim();
+      if (!key) return;
+      profileMap.set(key, { ...ca, id: key, googleUid: key });
+    });
+    memorySessionProfiles = Array.from(profileMap.values());
+    if (Array.isArray(raw.albums)) {
+      memorySessionAlbums = raw.albums;
+    }
+    hasBootstrapped = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Hydrate synchronously from SSR HTML bootstrap if present, else start eager prefetch
 if (typeof window !== 'undefined') {
-  void fetchBootstrapData();
+  if (!consumeSsrBootstrapPayload()) {
+    void fetchBootstrapData();
+  }
 }
 
 let initPromise: Promise<any> | null = null;
