@@ -4437,42 +4437,108 @@ export default {
         pathname.startsWith('/assets/') ||
         /\.(?:js|mjs|css|wasm|map|json|txt|xml|svg|png|jpg|jpeg|webp|ico|woff2?)$/i.test(pathname);
 
+      // Fetch the SPA HTML document cleanly without forwarding conditional headers (prevents 304 null-body crash)
+      // and following internal 3xx redirects (e.g. /index.html -> / under Cloudflare Workers auto-trailing-slash)
+      const fetchAssetDocument = async (): Promise<Response> => {
+        const candidatePaths = ['/', '/index.html'];
+        let lastRes: Response | null = null;
+        for (const startPath of candidatePaths) {
+          let currentUrl = new URL(startPath, url);
+          for (let hop = 0; hop < 3; hop++) {
+            const res = await env.ASSETS!.fetch(new Request(currentUrl.toString(), { method: 'GET' }));
+            if (res.status >= 300 && res.status < 400) {
+              const loc = res.headers.get('location');
+              try {
+                await res.body?.cancel();
+              } catch {}
+              if (loc) {
+                const nextUrl = new URL(loc, currentUrl);
+                if (nextUrl.origin === url.origin && nextUrl.href !== currentUrl.href) {
+                  currentUrl = nextUrl;
+                  continue;
+                }
+              }
+              break;
+            }
+            if (res.status === 200) {
+              return res;
+            }
+            lastRes = res;
+            break;
+          }
+        }
+        return (
+          lastRes ||
+          new Response(
+            '<!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>Kolot Music</title></head><body><div id="root"></div></body></html>',
+            {
+              status: 200,
+              headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            }
+          )
+        );
+      };
+
       const serveBootstrappedHtmlResponse = async (assetRes: Response) => {
         const headers = new Headers(assetRes.headers);
         headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
         headers.set('Pragma', 'no-cache');
-        if (request.method !== 'GET') {
-          return applyWorkerSecurityHeaders(new Response(assetRes.body, { status: assetRes.status, headers }));
+        if (request.method === 'HEAD') {
+          try {
+            await assetRes.body?.cancel();
+          } catch {}
+          headers.delete('content-length');
+          headers.delete('etag');
+          headers.delete('last-modified');
+          return applyWorkerSecurityHeaders(
+            new Response(null, { status: assetRes.status >= 300 && assetRes.status < 400 ? 200 : assetRes.status, headers })
+          );
+        }
+        if (request.method !== 'GET' || assetRes.status !== 200) {
+          const isNullBodyStatus =
+            assetRes.status === 204 ||
+            assetRes.status === 304 ||
+            (assetRes.status >= 100 && assetRes.status < 200);
+          return applyWorkerSecurityHeaders(
+            new Response(isNullBodyStatus ? null : assetRes.body, { status: assetRes.status, headers })
+          );
         }
         const contentTypeHdr = String(headers.get('content-type') || '');
         if (contentTypeHdr && !contentTypeHdr.toLowerCase().includes('text/html')) {
           return applyWorkerSecurityHeaders(new Response(assetRes.body, { status: assetRes.status, headers }));
         }
-        const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
-        const bootstrapTask = getWorkerFeedSnapshot()
-          .then((snap) => ({
-            success: true,
-            aiConfigured,
-            directStreamUpload: Boolean(env.R2_BUCKET),
-            tracks: snap.tracks,
-            profiles: snap.profiles,
-            albums: snap.albums,
-          }))
-          .catch(() => null);
-        const timeoutTask = new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000));
-        const [htmlText, bootPayload] = await Promise.all([
-          assetRes.text(),
-          Promise.race([bootstrapTask, timeoutTask]),
-        ]);
-        const finalHtml = bootPayload ? injectBootstrapIntoHtml(htmlText, bootPayload) : htmlText;
+        const htmlText = await assetRes.text();
+        let finalHtml = htmlText;
+        try {
+          const aiConfigured = Boolean((env.GEMINI_API_KEY || '').trim() || (env.OPENAI_API_KEY || '').trim());
+          const bootstrapTask = getWorkerFeedSnapshot()
+            .then((snap) => ({
+              success: true,
+              aiConfigured,
+              directStreamUpload: Boolean(env.R2_BUCKET),
+              tracks: snap.tracks,
+              profiles: snap.profiles,
+              albums: snap.albums,
+            }))
+            .catch(() => null);
+          const timeoutTask = new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000));
+          const bootPayload = await Promise.race([bootstrapTask, timeoutTask]);
+          if (bootPayload) {
+            finalHtml = injectBootstrapIntoHtml(htmlText, bootPayload);
+          }
+        } catch {
+          finalHtml = htmlText;
+        }
         headers.delete('content-length');
         headers.delete('content-encoding');
+        headers.delete('etag');
+        headers.delete('last-modified');
         headers.set('Content-Type', 'text/html; charset=utf-8');
-        return applyWorkerSecurityHeaders(new Response(finalHtml, { status: assetRes.status, headers }));
+        return applyWorkerSecurityHeaders(new Response(finalHtml, { status: 200, headers }));
       };
 
       if (isDocumentRequest) {
-        const docRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+        const docRes = await fetchAssetDocument();
         return serveBootstrappedHtmlResponse(docRes);
       }
 
@@ -4481,14 +4547,22 @@ export default {
         if (pathname.startsWith('/api/') || isStaticAssetPath) {
           return applyWorkerSecurityHeaders(new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store' } }));
         }
-        const spaRes = await env.ASSETS.fetch(new Request(new URL('/index.html', url), request));
+        const spaRes = await fetchAssetDocument();
         return serveBootstrappedHtmlResponse(spaRes);
       }
 
       if (pathname.startsWith('/assets/')) {
         const headers = new Headers(assetRes.headers);
         headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return applyWorkerSecurityHeaders(new Response(assetRes.body, { status: assetRes.status, headers }));
+        const isNullBodyStatus = assetRes.status === 204 || assetRes.status === 304;
+        return applyWorkerSecurityHeaders(
+          new Response(isNullBodyStatus ? null : assetRes.body, { status: assetRes.status, headers })
+        );
+      }
+
+      const assetCt = String(assetRes.headers.get('content-type') || '').toLowerCase();
+      if (!isStaticAssetPath && assetRes.status === 200 && assetCt.includes('text/html') && request.method === 'GET') {
+        return serveBootstrappedHtmlResponse(assetRes);
       }
 
       return applyWorkerSecurityHeaders(assetRes);
