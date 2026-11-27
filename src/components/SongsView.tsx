@@ -26,6 +26,7 @@ import {
   Guitar,
   Headphones,
   Film,
+  BarChart3,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, Album, CURRENT_TERMS_VERSION } from '../types';
@@ -100,6 +101,9 @@ const TermsModal = React.lazy(() =>
 );
 const AuthModal = React.lazy(() =>
   import('./AuthModal').then((m) => ({ default: m.AuthModal }))
+);
+const AdminAnalyticsModal = React.lazy(() =>
+  import('./AdminAnalyticsModal').then((m) => ({ default: m.AdminAnalyticsModal }))
 );
 import { markSongAsDeleted } from '../services/deletedTracksService';
 import { useNetworkHealth } from '../services/networkHealthService';
@@ -206,6 +210,7 @@ export const SongsView: React.FC<SongsViewProps> = ({
   const [bulkClassifyNotice, setBulkClassifyNotice] = useState<string | null>(null);
 
   const [isArtistPortalOpen, setIsArtistPortalOpen] = useState(false);
+  const [isAdminAnalyticsOpen, setIsAdminAnalyticsOpen] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [showLegalTermsModal, setShowLegalTermsModal] = useState(false);
   const [showPromoBanner, setShowPromoBanner] = useState(true);
@@ -1122,6 +1127,19 @@ export const SongsView: React.FC<SongsViewProps> = ({
               </button>
             )}
 
+            {/* Admin-Only Google Analytics & Users Dashboard Button */}
+            {authUser?.isAdmin && (
+              <button
+                type="button"
+                onClick={() => setIsAdminAnalyticsOpen(true)}
+                className="w-9 h-9 aspect-square rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border bg-white/10 text-sky-200 hover:text-white hover:bg-white/20 border-sky-400/35"
+                title={isHe ? 'ניהול צפיות ומשתמשים (Google Analytics)' : 'Admin Analytics & Users'}
+                aria-label={isHe ? 'ניהול צפיות ומשתמשים' : 'Admin Analytics'}
+              >
+                <BarChart3 className="w-4 h-4" />
+              </button>
+            )}
+
             {/* Google Sign-in Button */}
             {!authUser ? (
               <button
@@ -1360,6 +1378,19 @@ export const SongsView: React.FC<SongsViewProps> = ({
             }`}
           />
         </button>
+
+        {/* Mobile Admin Analytics Button (Admin Only) */}
+        {authUser?.isAdmin && (
+          <button
+            type="button"
+            onClick={() => setIsAdminAnalyticsOpen(true)}
+            className="w-10 h-10 aspect-square rounded-full flex items-center justify-center transition-colors cursor-pointer shrink-0 border bg-white/10 text-sky-200 hover:text-white hover:bg-white/20 border-sky-400/35"
+            title={isHe ? 'ניהול צפיות ומשתמשים' : 'Admin Analytics'}
+            aria-label={isHe ? 'ניהול צפיות ומשתמשים' : 'Admin Analytics'}
+          >
+            <BarChart3 className="w-4 h-4" />
+          </button>
+        )}
 
         {/* Mobile Search Trigger (Opens keyboard with input anchored at the TOP of the screen) */}
         <div className="relative flex-1 min-w-0 flex items-center">
@@ -2742,6 +2773,14 @@ export const SongsView: React.FC<SongsViewProps> = ({
             onClose={() => {
               setIsArtistPortalOpen(false);
             }}
+            onOpenAdminAnalytics={
+              authUser?.isAdmin
+                ? () => {
+                    setIsArtistPortalOpen(false);
+                    setIsAdminAnalyticsOpen(true);
+                  }
+                : undefined
+            }
             lang={lang}
             allAlbums={popularAlbums}
             onAlbumsSync={(albums) => {
@@ -2869,6 +2908,21 @@ export const SongsView: React.FC<SongsViewProps> = ({
               setAuthUser(user);
               setAuthModalError(null);
               setIsArtistPortalOpen(true);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {/* ADMIN-ONLY GOOGLE ANALYTICS & USERS MODAL */}
+      {authUser?.isAdmin && isAdminAnalyticsOpen && (
+        <Suspense fallback={null}>
+          <AdminAnalyticsModal
+            isOpen={isAdminAnalyticsOpen}
+            onClose={() => setIsAdminAnalyticsOpen(false)}
+            lang={lang}
+            onOpenSongById={(trackId) => {
+              const found = allTracks.find((t) => t.id === trackId);
+              if (found) openSongPlayer(found, null);
             }}
           />
         </Suspense>

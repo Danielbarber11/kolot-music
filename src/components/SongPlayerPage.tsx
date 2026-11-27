@@ -19,6 +19,7 @@ import {
   Ticket,
   Calendar,
   ExternalLink,
+  Eye,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { JamendoTrack, Language, ArtistProfile, SubtitleSegment, Album } from '../types';
@@ -39,7 +40,7 @@ import {
   fetchSingleTrackFromCloud,
   fetchSingleTrackStatusFromCloud,
 } from '../services/cloudStorageService';
-import { trackEvent } from '../services/analyticsService';
+import { trackEvent, fetchSongGaViews } from '../services/analyticsService';
 import {
   getCachedArtistProfiles,
   getArtistAccountByUid,
@@ -248,6 +249,24 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
   const [trackRemovedError, setTrackRemovedError] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [gaViewsInfo, setGaViewsInfo] = useState<{ configured: boolean; viewsCount: number | null }>({
+    configured: false,
+    viewsCount: null,
+  });
+
+  useEffect(() => {
+    let active = true;
+    setGaViewsInfo({ configured: false, viewsCount: null });
+    fetchSongGaViews(track.id)
+      .then((res) => {
+        if (!active) return;
+        setGaViewsInfo({ configured: res.configured, viewsCount: res.viewsCount });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [track.id]);
   const [loadedArtists, setLoadedArtists] = useState<ArtistProfile[]>(() => getCachedArtistProfiles());
   const effectiveArtists = React.useMemo(() => {
     const map = new Map<string, ArtistProfile>();
@@ -2082,6 +2101,18 @@ export const SongPlayerPage: React.FC<SongPlayerPageProps> = ({
             <div>
               <span className="text-white/60 block font-bold text-[10px]">{isHe ? 'שנת הוצאה:' : 'Release Year:'}</span>
               <span className="font-bold text-white/90">{track.publishedDate || new Date().getFullYear().toString()}</span>
+            </div>
+
+            <div>
+              <span className="text-white/60 block font-bold text-[10px] flex items-center gap-1">
+                <Eye className="w-3 h-3 text-white/70 shrink-0" />
+                <span>{isHe ? 'צפיות (Google Analytics):' : 'Views (Google Analytics):'}</span>
+              </span>
+              <span className="font-bold text-white/95">
+                {typeof gaViewsInfo.viewsCount === 'number'
+                  ? gaViewsInfo.viewsCount.toLocaleString(isHe ? 'he-IL' : 'en-US')
+                  : '—'}
+              </span>
             </div>
 
             {track.writers && (

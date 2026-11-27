@@ -1,5 +1,11 @@
 // Cloudflare Worker Full-Stack Adapter for Kolot R2 Music
 // Handles /api/storage/*, /api/proxy-image, /api/ai/transcribe, and SPA static assets
+import {
+  fetchFullGa4AnalyticsSnapshot,
+  Ga4AnalyticsSnapshot,
+  buildAdminAnalyticsPayload,
+  sanitizeAdminWindows,
+} from './lib/ga4DataApi.ts';
 
 export interface WorkerR2Object {
   key: string;
@@ -46,6 +52,10 @@ export interface Env {
   CLIENT_SECRET?: string;
   GOOGLE_CLIENT_SECRET?: string;
   APP_URL?: string;
+  GA_PROPERTY_ID?: string;
+  GA_SERVICE_ACCOUNT_JSON?: string;
+  GA_CLIENT_EMAIL?: string;
+  GA_PRIVATE_KEY?: string;
 }
 
 interface WorkerFeedSnapshot {
@@ -57,6 +67,9 @@ interface WorkerFeedSnapshot {
 const WORKER_STATUS_CACHE_TTL_MS = 60000;
 const workerFeedInFlight = new Map<string, Promise<WorkerFeedSnapshot>>();
 const workerStatusCache = new Map<string, { ts: number; configured: boolean; bucket: string }>();
+const workerGaSnapshotCache = new Map<string, Ga4AnalyticsSnapshot>();
+const workerGaSnapshotInFlight = new Map<string, Promise<Ga4AnalyticsSnapshot>>();
+const workerGaForceRefreshAt = new Map<string, number>();
 
 function serializeJsonForHtmlScript(value: unknown): string {
   return JSON.stringify(value)
@@ -1310,7 +1323,7 @@ export default {
           return jsonResponse({ success: false, error: 'Invalid prefix' }, 400);
         }
         const lowerPrefix = prefix.toLowerCase();
-        const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/', 'views_events/'];
+        const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/', 'views_events/', 'analytics/', 'accounts_seen/'];
         const sess = await extractSessionTop();
         const isAdmin = Boolean(sess?.isAdmin);
 
@@ -1560,7 +1573,9 @@ export default {
         lowerPath.startsWith('legal_docs/') ||
         lowerPath.startsWith('reports/') ||
         lowerPath.startsWith('contact_messages/') ||
-        lowerPath.startsWith('favorites/')
+        lowerPath.startsWith('favorites/') ||
+        lowerPath.startsWith('analytics/') ||
+        lowerPath.startsWith('accounts_seen/')
       ) {
         const sess = await extractSessionTop();
         if (!sess?.isAdmin) {
@@ -3476,6 +3491,149 @@ export default {
       }
     }
 
+    // 13f. Google Analytics 4 Song Views & Admin Analytics Dashboard Endpoints
+    const GA_REPORT_CACHE_KEY = 'analytics/ga_report_cache.json';
+    const ADMIN_WINDOWS_KEY = 'analytics/admin_windows.json';
+    const GA_CACHE_TTL_MS = 5 * 60 * 1000;
+    const GA_FORCE_REFRESH_COOLDOWN_MS = 15 * 1000;
+
+    const getCachedGa4SnapshotWorker = async (forceRefresh = false): Promise<Ga4AnalyticsSnapshot> => {
+      const now = Date.now();
+      const memCached = workerGaSnapshotCache.get(feedCacheKey);
+
+      if (!forceRefresh && memCached && now - memCached.updatedAt < GA_CACHE_TTL_MS) {
+        return memCached;
+      }
+
+      if (forceRefresh) {
+        const lastForce = workerGaForceRefreshAt.get(feedCacheKey) || 0;
+        if (now - lastForce < GA_FORCE_REFRESH_COOLDOWN_MS && memCached) {
+          return memCached;
+        }
+        workerGaForceRefreshAt.set(feedCacheKey, now);
+      }
+
+      if (!forceRefresh) {
+        try {
+          const cached = (await readR2JsonTop(GA_REPORT_CACHE_KEY)) as Ga4AnalyticsSnapshot | null;
+          if (cached && typeof cached.updatedAt === 'number' && now - cached.updatedAt < GA_CACHE_TTL_MS) {
+            workerGaSnapshotCache.set(feedCacheKey, cached);
+            return cached;
+          }
+        } catch {}
+      }
+
+      const inFlight = workerGaSnapshotInFlight.get(feedCacheKey);
+      if (inFlight) return inFlight;
+
+      const job = (async (): Promise<Ga4AnalyticsSnapshot> => {
+        const fresh = await fetchFullGa4AnalyticsSnapshot(env as Record<string, any>);
+        if (fresh.configured && !fresh.error) {
+          workerGaSnapshotCache.set(feedCacheKey, fresh);
+          await writeR2JsonTop(GA_REPORT_CACHE_KEY, fresh).catch(() => {});
+          return fresh;
+        }
+        if (memCached && memCached.configured && !memCached.error) {
+          return { ...memCached, error: fresh.error };
+        }
+        return fresh;
+      })().finally(() => {
+        workerGaSnapshotInFlight.delete(feedCacheKey);
+      });
+
+      workerGaSnapshotInFlight.set(feedCacheKey, job);
+      return job;
+    };
+
+    if (pathname.startsWith('/api/analytics/song/') && request.method === 'GET') {
+      try {
+        const rawParam = pathname.slice('/api/analytics/song/'.length);
+        const cleanId = decodeURIComponent(rawParam).replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!cleanId) {
+          return jsonResponse({ success: false, error: 'Missing trackId' }, 400);
+        }
+        const snap = await getCachedGa4SnapshotWorker(false);
+        const ready = snap.configured && !snap.error;
+        return jsonResponse(
+          {
+            success: true,
+            configured: snap.configured,
+            viewsCount: ready ? (snap.viewsByTrackId[cleanId] ?? 0) : null,
+            updatedAt: snap.updatedAt,
+          },
+          200,
+          { 'Cache-Control': 'public, max-age=60' }
+        );
+      } catch {
+        return jsonResponse({
+          success: true,
+          configured: false,
+          viewsCount: null,
+          updatedAt: Date.now(),
+        });
+      }
+    }
+
+    if (pathname === '/api/admin/analytics-dashboard' && request.method === 'GET') {
+      try {
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const forceRefresh = url.searchParams.get('refresh') === '1';
+        const [feedSnap, gaSnap, rawWindows, seenKeys] = await Promise.all([
+          getWorkerFeedSnapshot(),
+          getCachedGa4SnapshotWorker(forceRefresh),
+          readR2JsonTop(ADMIN_WINDOWS_KEY),
+          listR2JsonKeysTop('accounts_seen/').catch(() => [] as string[]),
+        ]);
+
+        const accountsSeen: any[] = [];
+        for (let i = 0; i < seenKeys.length; i += 50) {
+          const chunk = await Promise.all(seenKeys.slice(i, i + 50).map((k) => readR2JsonTop(k)));
+          chunk.forEach((item) => {
+            if (item && typeof item === 'object') accountsSeen.push(item);
+          });
+        }
+
+        const payload = buildAdminAnalyticsPayload({
+          tracks: feedSnap.tracks,
+          profiles: feedSnap.profiles,
+          accountsSeen,
+          gaSnapshot: gaSnap,
+          windows: sanitizeAdminWindows(rawWindows),
+        });
+
+        return jsonResponse(payload);
+      } catch (err: any) {
+        return jsonResponse(
+          { success: false, error: err?.message || 'שגיאה בטעינת נתוני האנליטיקס' },
+          500
+        );
+      }
+    }
+
+    if (pathname === '/api/admin/analytics-windows' && request.method === 'POST') {
+      try {
+        if (!isSameOriginOrBearerWorker()) {
+          return jsonResponse({ success: false, error: 'Cross-site request blocked' }, 403);
+        }
+        const sess = await extractSessionTop();
+        if (!sess?.isAdmin) {
+          return jsonResponse({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' }, 403);
+        }
+        const body = await request.json().catch(() => null);
+        const cleanWindows = sanitizeAdminWindows(body?.windows);
+        await writeR2JsonTop(ADMIN_WINDOWS_KEY, cleanWindows);
+        return jsonResponse({ success: true, windows: cleanWindows });
+      } catch (err: any) {
+        return jsonResponse(
+          { success: false, error: err?.message || 'שגיאה בשמירת חלונות הצפיות' },
+          500
+        );
+      }
+    }
+
     // 14. Single-Request Bootstrap Feed (tracks + profiles + albums loaded via warm isolate cache)
     if (pathname === '/api/bootstrap' && request.method === 'GET') {
       try {
@@ -3878,6 +4036,13 @@ export default {
             const importedUrl = await importExternalAvatarWorker(uid, googlePhotoUrl);
             if (importedUrl) canonicalAvatarUrl = importedUrl;
           }
+
+          await r2WriteJson(`accounts_seen/${uid}.json`, {
+            uid,
+            displayName,
+            avatarUrl: canonicalAvatarUrl || '',
+            lastSeenAt: new Date().toISOString(),
+          }).catch(() => {});
 
           if (existingProfile || canonicalAvatarUrl) {
             const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};
