@@ -19,12 +19,6 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import multer from 'multer';
-import {
-  fetchFullGa4AnalyticsSnapshot,
-  Ga4AnalyticsSnapshot,
-  buildAdminAnalyticsPayload,
-  sanitizeAdminWindows,
-} from './lib/ga4DataApi.ts';
 
 // Load environment variables immediately
 dotenv.config();
@@ -1279,7 +1273,7 @@ app.get('/api/storage/list', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid prefix' });
     }
     const lowerPrefix = prefix.toLowerCase();
-    const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/', 'views_events/', 'analytics/', 'accounts_seen/'];
+    const PRIVATE_PREFIXES = ['reports/', 'contact_messages/', 'legal_docs/', 'favorites/', 'views_events/'];
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsedSession = extractSessionFromRequest(req, sessionSecret);
     const isAdmin = Boolean(parsedSession?.session?.isAdmin);
@@ -1730,9 +1724,7 @@ app.get('/api/storage/raw/*', async (req, res) => {
     lowerPath.startsWith('legal_docs/') ||
     lowerPath.startsWith('reports/') ||
     lowerPath.startsWith('contact_messages/') ||
-    lowerPath.startsWith('favorites/') ||
-    lowerPath.startsWith('analytics/') ||
-    lowerPath.startsWith('accounts_seen/')
+    lowerPath.startsWith('favorites/')
   ) {
     const { sessionSecret } = getGoogleOAuthCreds();
     const parsed = extractSessionFromRequest(req, sessionSecret);
@@ -1747,9 +1739,7 @@ app.get('/api/storage/raw/*', async (req, res) => {
     lowerPath.startsWith('legal_docs/') ||
     lowerPath.startsWith('reports/') ||
     lowerPath.startsWith('contact_messages/') ||
-    lowerPath.startsWith('favorites/') ||
-    lowerPath.startsWith('analytics/') ||
-    lowerPath.startsWith('accounts_seen/');
+    lowerPath.startsWith('favorites/');
   const needsJsonRedaction =
     isJson &&
     (lowerPath.startsWith('profiles/') || lowerPath.startsWith('tracks/') || lowerPath === 'tracks_index.json');
@@ -4629,208 +4619,6 @@ app.get('/api/admin/legal-doc', async (req, res) => {
   }
 });
 
-const GA_REPORT_CACHE_KEY = 'analytics/ga_report_cache.json';
-const ADMIN_WINDOWS_KEY = 'analytics/admin_windows.json';
-const GA_CACHE_TTL_MS = 5 * 60 * 1000;
-const GA_FORCE_REFRESH_COOLDOWN_MS = 15 * 1000;
-const serverGaSnapshotCache = new Map<string, Ga4AnalyticsSnapshot>();
-const serverGaSnapshotInFlight = new Map<string, Promise<Ga4AnalyticsSnapshot>>();
-const serverGaForceRefreshAt = new Map<string, number>();
-
-async function getCachedGa4SnapshotServer(
-  client: S3Client | null,
-  bucket: string,
-  forceRefresh = false
-): Promise<Ga4AnalyticsSnapshot> {
-  const cacheBucketKey = bucket || '__default__';
-  const now = Date.now();
-  const memCached = serverGaSnapshotCache.get(cacheBucketKey);
-
-  if (!forceRefresh && memCached && now - memCached.updatedAt < GA_CACHE_TTL_MS) {
-    return memCached;
-  }
-
-  if (forceRefresh) {
-    const lastForce = serverGaForceRefreshAt.get(cacheBucketKey) || 0;
-    if (now - lastForce < GA_FORCE_REFRESH_COOLDOWN_MS && memCached) {
-      return memCached;
-    }
-    serverGaForceRefreshAt.set(cacheBucketKey, now);
-  }
-
-  if (!forceRefresh && client && bucket) {
-    try {
-      const cachedObj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: GA_REPORT_CACHE_KEY })).catch(() => null);
-      if (cachedObj?.Body) {
-        const parsed = JSON.parse(await cachedObj.Body.transformToString('utf-8')) as Ga4AnalyticsSnapshot;
-        if (parsed && typeof parsed.updatedAt === 'number' && now - parsed.updatedAt < GA_CACHE_TTL_MS) {
-          serverGaSnapshotCache.set(cacheBucketKey, parsed);
-          return parsed;
-        }
-      }
-    } catch {}
-  }
-
-  const inFlight = serverGaSnapshotInFlight.get(cacheBucketKey);
-  if (inFlight) return inFlight;
-
-  const job = (async (): Promise<Ga4AnalyticsSnapshot> => {
-    const fresh = await fetchFullGa4AnalyticsSnapshot(process.env as Record<string, any>);
-    if (fresh.configured && !fresh.error) {
-      serverGaSnapshotCache.set(cacheBucketKey, fresh);
-      if (client && bucket) {
-        await client
-          .send(
-            new PutObjectCommand({
-              Bucket: bucket,
-              Key: GA_REPORT_CACHE_KEY,
-              Body: Buffer.from(JSON.stringify(fresh), 'utf-8'),
-              ContentType: 'application/json',
-            })
-          )
-          .catch(() => {});
-      }
-      return fresh;
-    }
-
-    if (memCached && memCached.configured && !memCached.error) {
-      return { ...memCached, error: fresh.error };
-    }
-    return fresh;
-  })().finally(() => {
-    serverGaSnapshotInFlight.delete(cacheBucketKey);
-  });
-
-  serverGaSnapshotInFlight.set(cacheBucketKey, job);
-  return job;
-}
-
-app.get('/api/analytics/song/:trackId', async (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=60');
-  try {
-    const cleanId = decodeURIComponent(String(req.params.trackId || '')).replace(/[^a-zA-Z0-9_\-]/g, '');
-    if (!cleanId) {
-      return res.status(400).json({ success: false, error: 'Missing trackId' });
-    }
-    let client: S3Client | null = null;
-    let bucket = '';
-    try {
-      const ctx = await getR2Context(req);
-      client = ctx.client;
-      bucket = ctx.bucket;
-    } catch {}
-    const snap = await getCachedGa4SnapshotServer(client, bucket, false);
-    const ready = snap.configured && !snap.error;
-    return res.json({
-      success: true,
-      configured: snap.configured,
-      viewsCount: ready ? (snap.viewsByTrackId[cleanId] ?? 0) : null,
-      updatedAt: snap.updatedAt,
-    });
-  } catch (err: any) {
-    return res.status(200).json({
-      success: true,
-      configured: false,
-      viewsCount: null,
-      updatedAt: Date.now(),
-    });
-  }
-});
-
-app.get('/api/admin/analytics-dashboard', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  try {
-    const { sessionSecret } = getGoogleOAuthCreds();
-    const parsed = extractSessionFromRequest(req, sessionSecret);
-    if (!parsed?.session?.isAdmin) {
-      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
-    }
-
-    const forceRefresh = String(req.query.refresh || '') === '1';
-    let client: S3Client | null = null;
-    let bucket = '';
-    try {
-      const ctx = await getR2Context(req);
-      client = ctx.client;
-      bucket = ctx.bucket;
-    } catch {}
-
-    const readJsonS3 = async (key: string) => {
-      if (!client || !bucket) return null;
-      try {
-        const obj = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-        return obj.Body ? JSON.parse(await obj.Body.transformToString('utf-8')) : null;
-      } catch {
-        return null;
-      }
-    };
-
-    const [feedSnap, gaSnap, rawWindows, accountSeenKeys] = await Promise.all([
-      client && bucket
-        ? getConsolidatedFeedSnapshot(client, bucket)
-        : Promise.resolve({ tracks: [], profiles: [], albums: [], fetchedAt: Date.now() }),
-      getCachedGa4SnapshotServer(client, bucket, forceRefresh),
-      readJsonS3(ADMIN_WINDOWS_KEY),
-      client && bucket ? listAllR2KeysS3(client, bucket, 'accounts_seen/') : Promise.resolve([] as string[]),
-    ]);
-
-    const seenJsonKeys = accountSeenKeys.filter((k) => k.endsWith('.json'));
-    const accountsSeen: any[] = [];
-    for (let i = 0; i < seenJsonKeys.length; i += 50) {
-      const chunk = await Promise.all(seenJsonKeys.slice(i, i + 50).map((k) => readJsonS3(k)));
-      chunk.forEach((item) => {
-        if (item && typeof item === 'object') accountsSeen.push(item);
-      });
-    }
-
-    const payload = buildAdminAnalyticsPayload({
-      tracks: feedSnap.tracks,
-      profiles: feedSnap.profiles,
-      accountsSeen,
-      gaSnapshot: gaSnap,
-      windows: sanitizeAdminWindows(rawWindows),
-    });
-
-    return res.json(payload);
-  } catch (err: any) {
-    return res.status(500).json({
-      success: false,
-      error: err?.message || 'שגיאה בטעינת נתוני האנליטיקס',
-    });
-  }
-});
-
-app.post('/api/admin/analytics-windows', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  try {
-    if (!isSameOriginOrBearerExpress(req)) {
-      return res.status(403).json({ success: false, error: 'Cross-site request blocked' });
-    }
-    const { sessionSecret } = getGoogleOAuthCreds();
-    const parsed = extractSessionFromRequest(req, sessionSecret);
-    if (!parsed?.session?.isAdmin) {
-      return res.status(403).json({ success: false, error: 'גישה מותרת למנהל המערכת בלבד.' });
-    }
-
-    const cleanWindows = sanitizeAdminWindows(req.body?.windows);
-    const { client, bucket } = await getR2Context(req);
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: ADMIN_WINDOWS_KEY,
-        Body: Buffer.from(JSON.stringify(cleanWindows, null, 2), 'utf-8'),
-        ContentType: 'application/json',
-      })
-    );
-    return res.json({ success: true, windows: cleanWindows });
-  } catch (err: any) {
-    return res.status(500).json({
-      success: false,
-      error: err?.message || 'שגיאה בשמירת חלונות הצפיות',
-    });
-  }
-});
-
 // 4j. Single-Request Bootstrap Feed (cached + tracks + profiles + albums loaded in parallel)
 app.get('/api/bootstrap', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
@@ -5290,26 +5078,6 @@ app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
           canonicalAvatarUrl = importedR2Url;
         }
       }
-
-      // Record Google account login in accounts_seen/ for admin active/no-profile analytics
-      await client
-        .send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: `accounts_seen/${uid}.json`,
-            Body: Buffer.from(
-              JSON.stringify({
-                uid,
-                displayName,
-                avatarUrl: canonicalAvatarUrl || '',
-                lastSeenAt: new Date().toISOString(),
-              }),
-              'utf-8'
-            ),
-            ContentType: 'application/json',
-          })
-        )
-        .catch(() => {});
 
       if (existingProfile || canonicalAvatarUrl) {
         const { googleEmail: _omitEmail, ...cleanExisting } = existingProfile || {};

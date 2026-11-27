@@ -41,7 +41,6 @@ import {
   RotateCcw,
   MapPin,
   Heart,
-  BarChart3,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -146,7 +145,6 @@ interface ArtistPortalModalProps {
   onRemoveTrack?: (trackId: string) => void;
   onArtistUpdated?: (artist: ArtistProfile) => void;
   onAccountDeleted?: (deletedUid: string) => void;
-  onOpenAdminAnalytics?: () => void;
 }
 
 export const ArtistPortalModal: React.FC<ArtistPortalModalProps> = (props) => {
@@ -167,7 +165,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
   onRemoveTrack,
   onArtistUpdated,
   onAccountDeleted,
-  onOpenAdminAnalytics,
 }) => {
   const isHe = lang === 'he';
 
@@ -4570,16 +4567,6 @@ const ArtistPortalModalContent: React.FC<ArtistPortalModalProps> = ({
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 shrink-0">
-                          {currentUser?.isAdmin && onOpenAdminAnalytics && (
-                            <button
-                              type="button"
-                              onClick={onOpenAdminAnalytics}
-                              className="min-h-[44px] px-4 py-2 rounded-full bg-sky-500/20 hover:bg-sky-500/30 text-sky-100 text-xs font-bold border border-sky-400/35 inline-flex items-center gap-2 cursor-pointer transition-colors"
-                            >
-                              <BarChart3 className="w-4 h-4 shrink-0" />
-                              <span>{isHe ? 'ניהול צפיות (GA4) ומשתמשים' : 'GA4 Analytics & Users'}</span>
-                            </button>
-                          )}
                           {currentUser && (
                             <button
                               type="button"
